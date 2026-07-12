@@ -98,18 +98,39 @@ export default function JoinerBoxesPage() {
                                 <div>
                                   <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">My Items in this Box</p>
                                   <div className="border border-border rounded-xl overflow-hidden divide-y divide-border/50">
-                                    {mine.items.map((it: any, idx: number) => (
-                                      <div key={idx} className="flex items-center gap-3 px-4 py-3 text-sm">
-                                        <div className="flex-1 min-w-0">
-                                          <p className="font-medium">{it.description || it.item_type}</p>
-                                          <p className="text-xs text-muted-foreground">
-                                            {it.shop_name}{it.round_number ? ` #${it.round_number}` : ''}{it.member_name ? ` · ${it.member_name}` : ''}
-                                          </p>
-                                        </div>
-                                        {it.amount_claimed > 1 && <span className="text-xs text-muted-foreground">×{it.amount_claimed}</span>}
-                                        {it.price_eur && <span className="font-mono text-sm font-semibold">{formatEur(it.price_eur * it.amount_claimed)}</span>}
-                                      </div>
-                                    ))}
+                                    {(() => {
+                                      const joinerWeight = mine.weight_g || 0
+                                      const emsAmt = mine.ems_amount_eur ?? mine.ems_share_eur ?? 0
+                                      const joinerItemRate = joinerWeight > 0 ? emsAmt / joinerWeight : 0
+                                      return mine.items.map((it: any, idx: number) => {
+                                        const inclusions = it.inclusions_count || 0
+                                        const totalPcs = (it.amount_claimed || 1) + inclusions
+                                        const itemEms = joinerItemRate * (it.weight_g || 0)
+                                        const ratePerPc = totalPcs > 0 ? itemEms / totalPcs : 0
+                                        return (
+                                          <div key={idx} className="flex items-center gap-3 px-4 py-3 text-sm">
+                                            <div className="flex-1 min-w-0">
+                                              <p className="font-medium">{it.description || it.item_type}</p>
+                                              <p className="text-xs text-muted-foreground">
+                                                {it.shop_name}{it.round_number ? ` #${it.round_number}` : ''}{it.member_name ? ` · ${it.member_name}` : ''}
+                                              </p>
+                                              {det?.ems_payment_requested && itemEms > 0 && (
+                                                <p className="text-xs text-primary font-semibold mt-0.5">
+                                                  {inclusions > 0
+                                                    ? `${it.amount_claimed} + ${inclusions} incl. = ${totalPcs} PCs × ${formatEur(ratePerPc)}`
+                                                    : `${it.amount_claimed || 1} × ${formatEur(ratePerPc)}`
+                                                  }
+                                                </p>
+                                              )}
+                                            </div>
+                                            {det?.ems_payment_requested && itemEms > 0
+                                              ? <span className="font-mono text-sm font-semibold text-primary">{formatEur(itemEms)}</span>
+                                              : it.amount_claimed > 1 && <span className="text-xs text-muted-foreground">×{it.amount_claimed}</span>
+                                            }
+                                          </div>
+                                        )
+                                      })
+                                    })()}
                                   </div>
                                 </div>
                               )}

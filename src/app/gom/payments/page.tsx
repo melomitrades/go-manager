@@ -49,7 +49,7 @@ export default function GomPaymentsPage() {
     ])
     setPayments(Array.isArray(pmts) ? pmts : [])
     setOrders(Array.isArray(ords) ? ords : [])
-    setJoinerItems(Array.isArray(ji) ? ji.filter((i: any) => i.proof_submitted) : [])
+    setJoinerItems(Array.isArray(ji) ? ji.filter((i: any) => i.proof_submitted || i.proof_url) : [])
     setLoading(false)
   }, [])
 
@@ -166,7 +166,16 @@ export default function GomPaymentsPage() {
 
   async function loadProof(item: any) {
     const key = item.id
-    if (key in proofCache) return
+    if (key in proofCache) {
+      if (proofCache[key]) setPreviewProof(proofCache[key])
+      return
+    }
+    // If proof_url already on item (old rows), use it directly
+    if (item.proof_url) {
+      setProofCache(prev => ({ ...prev, [key]: item.proof_url }))
+      setPreviewProof(item.proof_url)
+      return
+    }
     setLoadingProof(key)
     const params = new URLSearchParams({ type: item.type, joiner_id: item.joiner_id })
     if (item.order_id) params.set('order_id', item.order_id)
@@ -177,7 +186,7 @@ export default function GomPaymentsPage() {
     if (res.proof_url) setPreviewProof(res.proof_url)
   }
 
-  const pendingProofCount = joinerItems.filter((i: any) => !i.paid && i.proof_submitted).length
+  const pendingProofCount = joinerItems.filter((i: any) => !i.paid && (i.proof_submitted || i.proof_url)).length
 
   // ── render ─────────────────────────────────────────────────────────────────
 
@@ -374,7 +383,7 @@ export default function GomPaymentsPage() {
               return (
                 <div className="space-y-5">
                   {Object.entries(batches).map(([batchKey, batchItems]) => {
-                    const pendingItems = batchItems.filter((i: any) => !i.paid && i.proof_submitted)
+                    const pendingItems = batchItems.filter((i: any) => !i.paid && (i.proof_submitted || i.proof_url))
                     const firstItem = batchItems[0]
                     const fullName = batchItems.find((i: any) => i.full_name)?.full_name
                     const joinerName = firstItem?.joiner_name || firstItem?.joiner_username || 'Unknown'
@@ -431,7 +440,7 @@ export default function GomPaymentsPage() {
                                 <span className="text-sm font-semibold">{formatEur(item.amount_eur)}</span>
                                 {item.paid ? (
                                   <span className="text-xs font-bold text-emerald-600 w-16 text-right">✓ Paid</span>
-                                ) : item.proof_submitted ? (
+                                ) : (item.proof_submitted || item.proof_url) ? (
                                   <button onClick={() => validateJoinerPayment(item)}
                                     className="text-xs bg-emerald-500 text-white px-2.5 py-1 rounded-lg font-semibold hover:bg-emerald-600 transition-colors flex items-center gap-1 w-20 justify-center">
                                     <Check size={10}/> Validate

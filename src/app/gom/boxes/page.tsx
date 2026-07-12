@@ -255,13 +255,95 @@ export default function GomBoxesPage() {
                       {/* Joiner shares panel */}
                       {isExpanded && (
                         <div className="mt-5 pt-4 border-t border-border">
-                          <p className="text-sm font-semibold mb-3">Joiner Shares <span className="text-xs text-muted-foreground font-normal">— by item weight</span></p>
+                          <div className="flex items-center justify-between mb-3 gap-3">
+                            <p className="text-sm font-semibold">Joiner Shares <span className="text-xs text-muted-foreground font-normal">— by item weight</span></p>
+                            {shares && (
+                              <div className="flex gap-2 flex-shrink-0">
+                                <button
+                                  onClick={async () => {
+                                    if (shares?.ems_payment_requested) return
+                                    const excluded = excludedJoiners[box.id] || new Set()
+                                    const totalW = shares.joiners.filter((j: any) => !excluded.has(j.joiner_id)).reduce((s: number, j: any) => s + (j.weight_g || 0), 0)
+                                    const emsTotal = parseFloat(box.ems_total_eur || 0)
+                                    const joiner_shares = shares.joiners
+                                      .filter((j: any) => !excluded.has(j.joiner_id))
+                                      .map((j: any) => ({
+                                        joiner_id: j.joiner_id,
+                                        ems_amount_eur: totalW > 0 ? Math.ceil((emsTotal * j.weight_g / totalW) * 100) / 100 : 0,
+                                      }))
+                                    await fetch(`/api/boxes/${box.id}`, {
+                                      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ action: 'publish_ems', joiner_shares }),
+                                    })
+                                    await loadShares(box.id)
+                                  }}
+                                  disabled={shares?.ems_payment_requested}
+                                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${shares?.ems_payment_requested ? 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default' : 'bg-primary text-primary-foreground border-primary hover:opacity-90'}`}
+                                >
+                                  {shares?.ems_payment_requested ? '✓ EMS sent' : '💸 Ask EMS'}
+                                </button>
+                                <button
+                                  onClick={async () => {
+                                    if (shares?.customs_payment_requested) return
+                                    const excluded = excludedJoiners[box.id] || new Set()
+                                    const totalW = shares.joiners.filter((j: any) => !excluded.has(j.joiner_id)).reduce((s: number, j: any) => s + (j.weight_g || 0), 0)
+                                    const customsTotal = parseFloat(box.customs_total_eur || 0)
+                                    const joiner_shares = shares.joiners
+                                      .filter((j: any) => !excluded.has(j.joiner_id))
+                                      .map((j: any) => ({
+                                        joiner_id: j.joiner_id,
+                                        customs_amount_eur: totalW > 0 ? Math.ceil((customsTotal * j.weight_g / totalW) * 100) / 100 : 0,
+                                      }))
+                                    await fetch(`/api/boxes/${box.id}`, {
+                                      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ action: 'publish_customs', joiner_shares }),
+                                    })
+                                    await loadShares(box.id)
+                                  }}
+                                  disabled={shares?.customs_payment_requested}
+                                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${shares?.customs_payment_requested ? 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default' : 'bg-sky-600 text-white border-sky-600 hover:opacity-90'}`}
+                                >
+                                  {shares?.customs_payment_requested ? '✓ Customs sent' : '🛃 Ask Customs'}
+                                </button>
+                              </div>
+                            )}
+                          </div>
                           {sharesLoading === box.id ? (
                             <div className="flex justify-center py-4"><div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"/></div>
                           ) : !shares?.joiners?.length ? (
                             <p className="text-sm text-muted-foreground">No items found across linked orders. Link orders with items to see shares.</p>
                           ) : (
                             <div className="rounded-xl border border-border overflow-hidden">
+                              {/* Rate card */}
+                              {(() => {
+                                const excluded = excludedJoiners[box.id] || new Set()
+                                const totalWeight = shares.joiners.reduce((sum: number, j: any) => excluded.has(j.joiner_id) ? sum : sum + (j.weight_g || 0), 0)
+                                if (totalWeight === 0) return null
+                                const emsTotal = parseFloat(box.ems_total_eur || 0)
+                                const ratePerGram = emsTotal / totalWeight
+                                const itemTypes: any[] = shares.itemTypes || []
+                                const LABELS: Record<string, string> = { photocard: 'Photocard / Inclusion', album: 'Album', photobook: 'Photobook', custom: 'Custom' }
+                                if (itemTypes.length === 0) return null
+                                return (
+                                  <div className="px-4 py-3 bg-primary/5 border-b border-border">
+                                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Rate per unit</p>
+                                    <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                                      {itemTypes.map((it: any) => {
+                                        const label = LABELS[it.item_type] || it.custom_label || it.item_type
+                                        const wg = parseFloat(it.weight_g || 0)
+                                        const rate = Math.ceil(ratePerGram * wg * 100) / 100
+                                        return (
+                                          <div key={it.item_type} className="flex items-center gap-1.5 text-sm">
+                                            <span className="text-muted-foreground">{label} ({wg}g):</span>
+                                            <span className="font-bold text-primary font-mono">{formatEur(rate)}</span>
+                                          </div>
+                                        )
+                                      })}
+                                      <span className="text-xs text-muted-foreground self-center">({totalWeight.toFixed(0)}g total)</span>
+                                    </div>
+                                  </div>
+                                )
+                              })()}
                               {/* Header */}
                               <div className="overflow-x-auto">
                               <div className="min-w-max grid grid-cols-[32px_1fr_55px_55px_65px_70px_85px_80px_90px_80px] gap-2 px-4 py-2 bg-secondary/50 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -310,7 +392,9 @@ export default function GomBoxesPage() {
                                       const emsTotal = parseFloat(box.ems_total_eur || 0)
                                       const joinerWeight = s.weight_g || 0
                                       const isExcluded = excluded.has(s.joiner_id)
-                                      const emsShare = !isExcluded && totalWeight > 0 ? Math.ceil((emsTotal * joinerWeight / totalWeight) * 100) / 100 : 0
+                                      // Use locked amount if published, otherwise compute live
+                                      const lockedAmt = s.ems_amount_eur != null ? parseFloat(s.ems_amount_eur) : null
+                                      const emsShare = lockedAmt ?? (!isExcluded && totalWeight > 0 ? Math.ceil((emsTotal * joinerWeight / totalWeight) * 100) / 100 : 0)
                                       const joinerItemRate = joinerWeight > 0 ? emsShare / joinerWeight : 0
 
                                       const groups: Record<string, { shop: string; desc: string; members: string[]; qty: number; inclusions: number; weight_g: number }> = {}

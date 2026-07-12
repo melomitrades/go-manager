@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
         SELECT order_id, joiner_id, SUM(price_eur * amount_claimed) as amount_eur
         FROM order_items GROUP BY order_id, joiner_id
       ) agg ON agg.order_id = ojp.order_id AND agg.joiner_id = ojp.joiner_id
-      WHERE ojp.proof_submitted = true
+      WHERE (ojp.proof_submitted = true OR ojp.proof_url IS NOT NULL)
       ORDER BY ojp.paid ASC NULLS FIRST
     `).catch(() => [] as any[])
 
@@ -93,7 +93,7 @@ export async function GET(req: NextRequest) {
         FROM box_joiner_shares bjs
         JOIN boxes b ON b.id = bjs.box_id
         JOIN profiles p ON p.id = bjs.joiner_id
-        WHERE bjs.proof_submitted = true
+        WHERE (bjs.proof_submitted = true OR bjs.proof_url IS NOT NULL)
       `).catch(() => [] as any[]),
       query(`
         SELECT bjs.id, bjs.joiner_id, bjs.customs_paid as paid, bjs.customs_proof_submitted as proof_submitted,
@@ -103,7 +103,7 @@ export async function GET(req: NextRequest) {
         FROM box_joiner_shares bjs
         JOIN boxes b ON b.id = bjs.box_id
         JOIN profiles p ON p.id = bjs.joiner_id
-        WHERE bjs.customs_proof_submitted = true
+        WHERE (bjs.customs_proof_submitted = true OR bjs.customs_proof_url IS NOT NULL)
       `).catch(() => [] as any[]),
     ])
 
