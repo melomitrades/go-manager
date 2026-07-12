@@ -40,18 +40,34 @@ export default function GomPaymentsPage() {
 
   // ── fetch ──────────────────────────────────────────────────────────────────
 
+  const [paidItems, setPaidItems] = useState<any[]>([])
+
+  const [joinerItemsLoaded, setJoinerItemsLoaded] = useState(false)
+  const [joinerLoading, setJoinerLoading] = useState(false)
+
   const fetchData = useCallback(async () => {
     setLoading(true)
-    const [pmts, ords, ji] = await Promise.all([
+    const [pmts, ords] = await Promise.all([
       fetch('/api/payments').then(r => r.json()).catch(() => []),
-      fetch('/api/orders').then(r => r.json()).catch(() => []),
-      fetch('/api/joiner-payments?all=true').then(r => r.json()).catch(() => []),
+      fetch('/api/orders?lite=true').then(r => r.json()).catch(() => []),
     ])
     setPayments(Array.isArray(pmts) ? pmts : [])
     setOrders(Array.isArray(ords) ? ords : [])
-    setJoinerItems(Array.isArray(ji) ? ji.filter((i: any) => i.proof_submitted || i.proof_url) : [])
     setLoading(false)
   }, [])
+
+  const fetchJoinerItems = useCallback(async (force = false) => {
+    if ((joinerItemsLoaded && !force) || joinerLoading) return
+    setJoinerLoading(true)
+    const [ji, paid] = await Promise.all([
+      fetch('/api/joiner-payments?all=true').then(r => r.json()).catch(() => []),
+      fetch('/api/joiner-payments/all-paid').then(r => r.json()).catch(() => []),
+    ])
+    setJoinerItems(Array.isArray(ji) ? ji.filter((i: any) => i.proof_submitted || i.proof_url) : [])
+    setPaidItems(Array.isArray(paid) ? paid : [])
+    setJoinerItemsLoaded(true)
+    setJoinerLoading(false)
+  }, [joinerItemsLoaded, joinerLoading])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -71,8 +87,8 @@ export default function GomPaymentsPage() {
   // We compute per order_id
 
   function totalJoinerPaidForOrder(orderId: string): number {
-    return joinerItems
-      .filter((i: any) => i.order_id === orderId && i.paid)
+    return paidItems
+      .filter((i: any) => i.order_id === orderId && i.paid === true)
       .reduce((s: number, i: any) => s + (parseFloat(i.amount_eur) || 0), 0)
   }
 
@@ -201,10 +217,10 @@ export default function GomPaymentsPage() {
       {/* Tabs */}
       <div className="flex border-b border-border px-4 sm:px-6 overflow-x-auto">
         {(['payments', 'joiner-proofs'] as const).map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)}
+          <button key={tab} onClick={() => { setActiveTab(tab); if (tab === 'joiner-proofs') fetchJoinerItems() }}
             className={`px-5 py-3 text-sm font-semibold border-b-2 -mb-px transition-all whitespace-nowrap ${activeTab === tab ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
             {tab === 'payments' ? 'GOM Payments' : (
-              <>Joiner Payment Proofs{pendingProofCount > 0 && (
+              <>Joiner Payment Proofs{joinerItemsLoaded && pendingProofCount > 0 && (
                 <span className="ml-1.5 bg-primary text-primary-foreground text-xs px-1.5 py-0.5 rounded-full">{pendingProofCount}</span>
               )}</>
             )}
@@ -338,7 +354,10 @@ export default function GomPaymentsPage() {
         {/* ── JOINER PROOFS TAB ─────────────────────────────────────────── */}
         {activeTab === 'joiner-proofs' && (
           <div className="space-y-4">
-            {joinerItems.length > 0 && (
+            {joinerLoading && (
+              <div className="flex justify-center py-16"><div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"/></div>
+            )}
+            {!joinerLoading && joinerItemsLoaded && joinerItems.length > 0 && (
               <div className="space-y-3">
                 <div className="flex gap-1 bg-secondary/50 rounded-xl p-1 w-fit">
                   {(['all', 'pending', 'validated'] as const).map(f => (
@@ -361,7 +380,7 @@ export default function GomPaymentsPage() {
             )}
 
             {joinerItems.length === 0 ? (
-              <div className="text-center py-10 text-sm text-muted-foreground">No joiner payment submissions yet.</div>
+              <div className="text-center py-10 text-sm text-muted-foreground">{joinerItemsLoaded ? 'No joiner payment submissions yet.' : ''}</div>
             ) : (() => {
               const filtered = joinerItems.filter((item: any) => {
                 if (proofFilter === 'pending' && item.paid) return false
