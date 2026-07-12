@@ -63,7 +63,7 @@ export default function GomPaymentsPage() {
       fetch('/api/joiner-payments?all=true').then(r => r.json()).catch(() => []),
       fetch('/api/joiner-payments/all-paid').then(r => r.json()).catch(() => []),
     ])
-    setJoinerItems(Array.isArray(ji) ? ji.filter((i: any) => i.proof_submitted || i.proof_url) : [])
+    setJoinerItems(Array.isArray(ji) ? ji : [])
     setPaidItems(Array.isArray(paid) ? paid : [])
     setJoinerItemsLoaded(true)
     setJoinerLoading(false)
@@ -202,7 +202,7 @@ export default function GomPaymentsPage() {
     if (res.proof_url) setPreviewProof(res.proof_url)
   }
 
-  const pendingProofCount = joinerItems.filter((i: any) => !i.paid && (i.proof_submitted || i.proof_url)).length
+  const pendingProofCount = joinerItems.filter((i: any) => !i.paid).length
 
   // ── render ─────────────────────────────────────────────────────────────────
 
@@ -402,7 +402,7 @@ export default function GomPaymentsPage() {
               return (
                 <div className="space-y-5">
                   {Object.entries(batches).map(([batchKey, batchItems]) => {
-                    const pendingItems = batchItems.filter((i: any) => !i.paid && (i.proof_submitted || i.proof_url))
+                    const pendingItems = batchItems.filter((i: any) => !i.paid)
                     const firstItem = batchItems[0]
                     const fullName = batchItems.find((i: any) => i.full_name)?.full_name
                     const joinerName = firstItem?.joiner_name || firstItem?.joiner_username || 'Unknown'
@@ -459,7 +459,7 @@ export default function GomPaymentsPage() {
                                 <span className="text-sm font-semibold">{formatEur(item.amount_eur)}</span>
                                 {item.paid ? (
                                   <span className="text-xs font-bold text-emerald-600 w-16 text-right">✓ Paid</span>
-                                ) : (item.proof_submitted || item.proof_url) ? (
+                                ) : true ? (
                                   <button onClick={() => validateJoinerPayment(item)}
                                     className="text-xs bg-emerald-500 text-white px-2.5 py-1 rounded-lg font-semibold hover:bg-emerald-600 transition-colors flex items-center gap-1 w-20 justify-center">
                                     <Check size={10}/> Validate

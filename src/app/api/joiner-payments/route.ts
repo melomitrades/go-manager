@@ -16,7 +16,7 @@ async function ensureTables() {
     proof_url TEXT,
     UNIQUE(order_id, joiner_id)
   )`).catch(() => {})
-  if (!jpMigDone) { jpMigDone = true; await Promise.all([query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_url TEXT').catch(()=>{}), query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS full_name TEXT').catch(()=>{})]) }
+  if (!jpMigDone) { jpMigDone = true; await Promise.all([query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_url TEXT').catch(()=>{}), query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS full_name TEXT').catch(()=>{}), query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_submitted BOOLEAN DEFAULT false').catch(()=>{})]).then(() => { query('UPDATE order_joiner_paid SET proof_submitted=true WHERE proof_url IS NOT NULL AND (proof_submitted IS NULL OR proof_submitted=false)').catch(()=>{}) }) }
   await query(`CREATE TABLE IF NOT EXISTS box_joiner_shares (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     box_id UUID REFERENCES boxes(id) ON DELETE CASCADE,
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
         SELECT order_id, joiner_id, SUM(price_eur * amount_claimed) as amount_eur
         FROM order_items GROUP BY order_id, joiner_id
       ) agg ON agg.order_id = ojp.order_id AND agg.joiner_id = ojp.joiner_id
-      WHERE (ojp.proof_submitted = true OR ojp.proof_url IS NOT NULL)
+      WHERE ojp.proof_url IS NOT NULL
       ORDER BY ojp.paid ASC NULLS FIRST
     `).catch(() => [] as any[])
 
@@ -93,7 +93,7 @@ export async function GET(req: NextRequest) {
         FROM box_joiner_shares bjs
         JOIN boxes b ON b.id = bjs.box_id
         JOIN profiles p ON p.id = bjs.joiner_id
-        WHERE (bjs.proof_submitted = true OR bjs.proof_url IS NOT NULL)
+        WHERE bjs.proof_url IS NOT NULL
       `).catch(() => [] as any[]),
       query(`
         SELECT bjs.id, bjs.joiner_id, bjs.customs_paid as paid, bjs.customs_proof_submitted as proof_submitted,
@@ -103,7 +103,7 @@ export async function GET(req: NextRequest) {
         FROM box_joiner_shares bjs
         JOIN boxes b ON b.id = bjs.box_id
         JOIN profiles p ON p.id = bjs.joiner_id
-        WHERE (bjs.customs_proof_submitted = true OR bjs.customs_proof_url IS NOT NULL)
+        WHERE bjs.customs_proof_url IS NOT NULL
       `).catch(() => [] as any[]),
     ])
 
@@ -239,16 +239,15 @@ export async function PATCH(req: NextRequest) {
         await query(`UPDATE order_joiner_paid SET paid=true, paid_at=now() WHERE order_id=$1`, [order_id])
       }
     } else {
-      // Joiner submitting proof — upsert then explicitly update proof_url + full_name
+      // Joiner submitting proof
       await query(`
-        INSERT INTO order_joiner_paid (order_id, joiner_id, paid, paid_at, proof_url, full_name)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO order_joiner_paid (order_id, joiner_id, paid, proof_url, proof_submitted, full_name)
+        VALUES ($1, $2, false, $3, true, $4)
         ON CONFLICT (order_id, joiner_id) DO UPDATE
-          SET paid = EXCLUDED.paid,
-              paid_at = EXCLUDED.paid_at,
-              proof_url = CASE WHEN EXCLUDED.proof_url IS NOT NULL THEN EXCLUDED.proof_url ELSE order_joiner_paid.proof_url END,
+          SET proof_url = CASE WHEN EXCLUDED.proof_url IS NOT NULL THEN EXCLUDED.proof_url ELSE order_joiner_paid.proof_url END,
+              proof_submitted = true,
               full_name = CASE WHEN EXCLUDED.full_name IS NOT NULL THEN EXCLUDED.full_name ELSE order_joiner_paid.full_name END
-      `, [order_id, userId, paid ?? false, paid ? new Date().toISOString() : null, proof_url ?? null, full_name ?? null])
+      `, [order_id, userId, proof_url ?? null, full_name ?? null])
     }
   } else if (type === 'ems' && box_id) {
     if (proof_url) {
