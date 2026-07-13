@@ -61,18 +61,18 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
 
   const inclusions = await query(`
     SELECT
-      oi.joiner_id,
+      COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
       p.display_name,
       p.username,
       SUM(COALESCE(oi.inclusions_count, 0)) AS total_inclusions,
       SUM(COALESCE(oi.price_krw, 0) * COALESCE(oi.amount_claimed, 1)) as total_krw
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
-    JOIN profiles p ON p.id = oi.joiner_id
+    JOIN profiles p ON p.id = COALESCE(oi.joiner_id, o.personal_joiner_id)
     WHERE ${whereClause}
-      AND oi.joiner_id IS NOT NULL
+      AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
       AND COALESCE(oi.inclusions_count, 0) > 0
-    GROUP BY oi.joiner_id, p.display_name, p.username
+    GROUP BY COALESCE(oi.joiner_id, o.personal_joiner_id), p.display_name, p.username
     ORDER BY total_inclusions DESC
   `, inclusionParams).catch(() => [] as any[])
 
@@ -92,7 +92,16 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     WHERE pa.session_id=$1
   `, [params.sessionId]).catch(() => [] as any[])
 
-  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result, _debug: { sessionOrderIds, whereClause, inclusionParams: inclusionParams.map(p => Array.isArray(p) ? `array[${p.length}]` : p) } })
+  // Debug: check what order_items exist for these orders
+  const debugItems = await query(`
+    SELECT oi.order_id, oi.joiner_id, o.personal_joiner_id, oi.inclusions_count, oi.item_type, oi.description, oi.amount_claimed
+    FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id
+    WHERE ${whereClause}
+    LIMIT 20
+  `, inclusionParams).catch(() => [] as any[])
+
+  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result, _debug: { sessionOrderIds, whereClause, inclusionParams: inclusionParams.map((p: any) => Array.isArray(p) ? `array[${p.length}]` : p), debugItems } })
 }
 
 export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {
