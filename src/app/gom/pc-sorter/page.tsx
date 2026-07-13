@@ -190,6 +190,8 @@ export default function GomPcSorterPage() {
   }
 
   async function saveInclusions() {
+    if (!inclusionsModal) return
+    setSaving(true)
     const assignments: any[] = []
     for (const [joiner_id, vMap] of Object.entries(inclusionDrafts)) {
       for (const [version_id, cnt] of Object.entries(vMap)) {
