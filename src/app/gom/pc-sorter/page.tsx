@@ -577,10 +577,13 @@ export default function GomPcSorterPage() {
                                   <input
                                     type="number" min="0"
                                     value={inclusionDrafts[j.joiner_id]?.[v.id] || ''}
-                                    onChange={e => setInclusionDrafts(prev => ({
-                                      ...prev,
-                                      [j.joiner_id]: { ...(prev[j.joiner_id] || {}), [v.id]: e.target.value }
-                                    }))}
+                                    onChange={e => {
+                                      const val = e.target.value
+                                      setInclusionDrafts(prev => ({
+                                        ...prev,
+                                        [j.joiner_id]: { ...(prev[j.joiner_id] || {}), [v.id]: val }
+                                      }))
+                                    }}
                                     className="w-16 px-2 py-1.5 rounded-lg border border-input bg-background text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/25"
                                     placeholder="0"
                                   />
