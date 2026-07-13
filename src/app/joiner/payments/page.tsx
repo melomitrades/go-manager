@@ -38,8 +38,11 @@ export default function JoinerPaymentsPage() {
   const awaitingProof = unpaidItems.filter(i => !i.proof_submitted && !i.proof_url)
   // Items selectable = those not yet submitted (no proof_url) — orders only
   const selectableItems = awaitingProof
+  const selectableBoxItems = boxItems.filter(i => !i.paid && !i.proof_submitted && !i.proof_url)
   const selectedItems = selectableItems.filter(i => selected.has(i.id))
-  const selectedTotal = selectedItems.reduce((s, i) => s + i.amount_eur, 0)
+  const selectedBoxItems = selectableBoxItems.filter(i => selected.has(i.id))
+  const allSelectedItems = [...selectedItems, ...selectedBoxItems]
+  const selectedTotal = allSelectedItems.reduce((s, i) => s + i.amount_eur, 0)
   const allSelected = selectableItems.length > 0 && selectableItems.every(i => selected.has(i.id))
 
   function toggle(id: string) {
@@ -54,20 +57,25 @@ export default function JoinerPaymentsPage() {
   }
 
   async function submit() {
-    if (!proof || !fullName.trim() || selected.size === 0) return
+    if (!proof || selected.size === 0) return
+    // Order items require full name; box items do not
+    if (selectedItems.length > 0 && !fullName.trim()) return
     setSubmitting(true)
-    const toSubmit = selectedItems
-    await Promise.all(toSubmit.map(item =>
+    await Promise.all(allSelectedItems.map(item =>
       fetch('/api/joiner-payments', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: item.type, order_id: item.order_id, box_id: item.box_id,
-          paid: false, proof_url: proof, full_name: fullName.trim(),
+          type: item.type,
+          order_id: item.order_id || null,
+          box_id: item.box_id || null,
+          paid: false,
+          proof_url: proof,
+          full_name: item.type === 'order' ? fullName.trim() : null,
         }),
       })
     ))
-    setSubmittedIds(prev => { const n = new Set(prev); toSubmit.forEach(i => n.add(i.id)); return n })
+    setSubmittedIds(prev => { const n = new Set(prev); allSelectedItems.forEach(i => n.add(i.id)); return n })
     setSelected(new Set())
     setProof('')
     setSubmitting(false)
@@ -75,7 +83,7 @@ export default function JoinerPaymentsPage() {
   }
 
   const paymentInfos = [...new Map(
-    selectedItems.filter(i => i.payment_info).map(i => [i.payment_info, i.payment_info])
+    allSelectedItems.filter((i: any) => i.payment_info).map((i: any) => [i.payment_info, i.payment_info])
   ).values()]
 
   if (loading) return (
@@ -170,7 +178,7 @@ export default function JoinerPaymentsPage() {
             {/* Selected summary */}
             <div className="flex items-center justify-between px-5 py-4 bg-primary/5 border-b border-primary/15">
               <div>
-                <p className="text-sm font-semibold">{selected.size} order{selected.size !== 1 ? 's' : ''} selected</p>
+                <p className="text-sm font-semibold">{allSelectedItems.length} item{allSelectedItems.length !== 1 ? 's' : ''} selected</p>
                 <p className="font-display text-2xl font-bold text-primary">{formatEur(selectedTotal)}</p>
               </div>
               <button onClick={() => { setSelected(new Set()); setProof('') }} className="text-muted-foreground hover:text-foreground"><X size={16}/></button>
@@ -182,20 +190,22 @@ export default function JoinerPaymentsPage() {
                 ⚠️ Please upload <strong>one proof per payment</strong>. If you paid to different GOMs separately, you need to submit a separate proof for each.
               </div>
 
-              {/* Payment infos */}
-              {paymentInfos.map((info, idx) => (
+              {/* Payment infos for all selected items */}
+              {[...new Map(allSelectedItems.filter(i => i.payment_info).map((i: any) => [i.payment_info, i.payment_info])).values()].map((info: any, idx: number) => (
                 <div key={idx} className="border border-primary/25 bg-primary/5 rounded-xl px-3 py-2.5">
                   <p className="text-xs font-bold text-primary uppercase tracking-wide mb-1">💳 Payment Info</p>
                   <p className="text-xs whitespace-pre-wrap">{info}</p>
                 </div>
               ))}
 
-              {/* Full name */}
-              <div>
-                <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Full name on the payment</label>
-                <input type="text" placeholder="e.g. Jane Doe" value={fullName} onChange={e => setFullName(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25"/>
-              </div>
+              {/* Full name — only required if order items selected */}
+              {selectedItems.length > 0 && (
+                <div>
+                  <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Full name on the payment</label>
+                  <input type="text" placeholder="e.g. Jane Doe" value={fullName} onChange={e => setFullName(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25"/>
+                </div>
+              )}
 
               {/* Proof upload */}
               {proof ? (
@@ -209,16 +219,16 @@ export default function JoinerPaymentsPage() {
                 <label className="w-full border-2 border-dashed border-border hover:border-primary/50 rounded-xl py-6 flex flex-col items-center gap-2 text-muted-foreground hover:text-primary cursor-pointer transition-all">
                   <Upload size={20}/>
                   <p className="text-sm font-semibold">Upload proof of payment</p>
-                  <p className="text-xs text-center">This covers all {selected.size} selected order{selected.size !== 1 ? 's' : ''}</p>
+                  <p className="text-xs text-center">This covers all {allSelectedItems.length} selected item{allSelectedItems.length !== 1 ? 's' : ''}</p>
                   <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }}/>
                 </label>
               )}
 
               {proof && (
-                <Button onClick={submit} disabled={submitting || !fullName.trim()} className="w-full">
+                <Button onClick={submit} disabled={submitting || (selectedItems.length > 0 && !fullName.trim())} className="w-full">
                   {submitting
                     ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/> Submitting…</>
-                    : <><Send size={14}/> Submit proof for {selected.size} order{selected.size !== 1 ? 's' : ''}</>
+                    : <><Send size={14}/> Submit proof for {allSelectedItems.length} item{allSelectedItems.length !== 1 ? 's' : ''}</>
                   }
                 </Button>
               )}

@@ -173,22 +173,48 @@ export default function GomPcSorterPage() {
     const vers: any[] = d?.versions || []
     if (!vers.length) return
 
-    // Fetch inclusions from API (already computed with album logic)
     const det = await fetch(`/api/pc-sorter/${inclusionsModal.sessionId}`).then(r=>r.json())
     const inclusions: any[] = det.inclusions || []
 
     setInclusionDrafts(() => {
       const next: Record<string, Record<string, string>> = {}
-      for (const j of inclusions) {
-        if (!j.total_inclusions || j.total_inclusions <= 0) continue
+
+      // Track how many inclusions each version has been assigned so far (for balancing)
+      const versionTotals: Record<string, number> = {}
+      vers.forEach(v => { versionTotals[v.id] = 0 })
+
+      // Sort joiners: process those with >1 inclusions first (easy equal split),
+      // then distribute the 1-inclusion joiners across versions to balance
+      const multiJoiners = inclusions.filter(j => parseInt(j.total_inclusions) > 1)
+      const singleJoiners = inclusions.filter(j => parseInt(j.total_inclusions) === 1)
+
+      // Multi-inclusion joiners: split equally across versions (remainder to first)
+      for (const j of multiJoiners) {
         const total = parseInt(j.total_inclusions)
         const base = Math.floor(total / vers.length)
         const remainder = total % vers.length
         next[j.joiner_id] = {}
         vers.forEach((v, i) => {
-          next[j.joiner_id][v.id] = String(base + (i < remainder ? 1 : 0))
+          const count = base + (i < remainder ? 1 : 0)
+          next[j.joiner_id][v.id] = String(count)
+          versionTotals[v.id] += count
         })
       }
+
+      // Single-inclusion joiners: assign each to the version with the fewest inclusions so far
+      for (const j of singleJoiners) {
+        next[j.joiner_id] = {}
+        vers.forEach(v => { next[j.joiner_id][v.id] = '0' })
+
+        // Pick the version with the lowest current total
+        const targetVersion = vers.reduce((best, v) =>
+          versionTotals[v.id] < versionTotals[best.id] ? v : best
+        , vers[0])
+
+        next[j.joiner_id][targetVersion.id] = '1'
+        versionTotals[targetVersion.id] += 1
+      }
+
       return next
     })
   }

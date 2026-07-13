@@ -16,7 +16,19 @@ async function ensureTables() {
     proof_url TEXT,
     UNIQUE(order_id, joiner_id)
   )`).catch(() => {})
-  if (!jpMigDone) { jpMigDone = true; await Promise.all([query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_url TEXT').catch(()=>{}), query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS full_name TEXT').catch(()=>{}), query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_submitted BOOLEAN DEFAULT false').catch(()=>{})]).then(() => { query('UPDATE order_joiner_paid SET proof_submitted=true WHERE proof_url IS NOT NULL AND (proof_submitted IS NULL OR proof_submitted=false)').catch(()=>{}) }) }
+  if (!jpMigDone) { jpMigDone = true; await Promise.all([
+    query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_url TEXT').catch(()=>{}),
+    query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS full_name TEXT').catch(()=>{}),
+    query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_submitted BOOLEAN DEFAULT false').catch(()=>{}),
+    query('ALTER TABLE box_joiner_shares ADD COLUMN IF NOT EXISTS proof_url TEXT').catch(()=>{}),
+    query('ALTER TABLE box_joiner_shares ADD COLUMN IF NOT EXISTS proof_submitted BOOLEAN DEFAULT false').catch(()=>{}),
+    query('ALTER TABLE box_joiner_shares ADD COLUMN IF NOT EXISTS proof_submitted_at TIMESTAMPTZ').catch(()=>{}),
+    query('ALTER TABLE box_joiner_shares ADD COLUMN IF NOT EXISTS customs_proof_url TEXT').catch(()=>{}),
+    query('ALTER TABLE box_joiner_shares ADD COLUMN IF NOT EXISTS customs_proof_submitted BOOLEAN DEFAULT false').catch(()=>{}),
+    query('ALTER TABLE box_joiner_shares ADD COLUMN IF NOT EXISTS customs_proof_submitted_at TIMESTAMPTZ').catch(()=>{}),
+  ]).then(() => {
+    query('UPDATE order_joiner_paid SET proof_submitted=true WHERE proof_url IS NOT NULL AND (proof_submitted IS NULL OR proof_submitted=false)').catch(()=>{})
+  }) }
   await query(`CREATE TABLE IF NOT EXISTS box_joiner_shares (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     box_id UUID REFERENCES boxes(id) ON DELETE CASCADE,
