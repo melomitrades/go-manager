@@ -4,17 +4,21 @@ import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 
 async function ensureTables() {
-  await query(`ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS box_id UUID REFERENCES boxes(id) ON DELETE SET NULL`).catch(() => {})
-  await query(`ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS order_ids TEXT DEFAULT ''`).catch(() => {})
-  await query(`CREATE TABLE IF NOT EXISTS pc_inclusion_assignments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id UUID REFERENCES pc_sorting_sessions(id) ON DELETE CASCADE,
-    version_id UUID REFERENCES pc_versions(id) ON DELETE CASCADE,
-    joiner_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
-    inclusions_assigned INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(version_id, joiner_id)
-  )`).catch(() => {})
+  await Promise.all([
+    query(`ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS box_id UUID REFERENCES boxes(id) ON DELETE SET NULL`).catch(()=>{}),
+    query(`ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_ids JSONB DEFAULT NULL`).catch(()=>{}),
+    query(`ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS slots JSONB DEFAULT NULL`).catch(()=>{}),
+    query(`ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS order_ids TEXT DEFAULT ''`).catch(()=>{}),
+    query(`CREATE TABLE IF NOT EXISTS pc_inclusion_assignments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      session_id UUID REFERENCES pc_sorting_sessions(id) ON DELETE CASCADE,
+      version_id UUID REFERENCES pc_versions(id) ON DELETE CASCADE,
+      joiner_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
+      inclusions_assigned INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE(version_id, joiner_id)
+    )`).catch(()=>{}),
+  ])
 }
 
 export async function GET(req: NextRequest, { params }: { params: { sessionId: string } }) {
@@ -30,6 +34,7 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
   `, [params.sessionId])
 
   const versions = await query(`SELECT * FROM pc_versions WHERE session_id=$1 ORDER BY created_at`, [params.sessionId])
+
   const photocards = await query(`
     SELECT pc.*, m.name as member_name, m.id as member_id
     FROM pc_photocards pc
@@ -38,33 +43,49 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     ORDER BY pc.version_id, m.sort_order NULLS LAST, m.name
   `, [params.sessionId])
 
-  // Get inclusions per joiner per version (from order_items in linked box orders)
+  // Inclusions: use session order_ids if set, else fall back to box orders
+  const sessionOrderIds: string[] = (() => {
+    try {
+      const oids = (pcSession as any)?.order_ids
+      if (!oids) return []
+      return Array.isArray(oids) ? oids : JSON.parse(oids)
+    } catch { return [] }
+  })()
+
+  const whereClause = sessionOrderIds.length > 0
+    ? `oi.order_id = ANY($2::uuid[])`
+    : `oi.order_id IN (SELECT order_id FROM box_orders WHERE box_id = (SELECT box_id FROM pc_sorting_sessions WHERE id = $1))`
+  const inclusionParams = sessionOrderIds.length > 0 ? [params.sessionId, sessionOrderIds] : [params.sessionId]
+
   const inclusions = await query(`
     SELECT
       oi.joiner_id,
       p.display_name,
       p.username,
-      SUM(oi.inclusions_count) as total_inclusions,
+      SUM(
+        COALESCE(oi.inclusions_count, 0)
+        + CASE
+            WHEN oi.item_type = 'album' OR LOWER(oi.description) LIKE '%album%'
+            THEN COALESCE(oi.amount_claimed, 1)
+            ELSE 0
+          END
+      ) AS total_inclusions,
       SUM(COALESCE(oi.price_krw, 0) * oi.amount_claimed) as total_krw
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
     JOIN profiles p ON p.id = oi.joiner_id
-    WHERE oi.order_id IN (
-      SELECT order_id FROM box_orders WHERE box_id = (
-        SELECT box_id FROM pc_sorting_sessions WHERE id = $1
+    WHERE ${whereClause}
+      AND (
+        oi.inclusions_count > 0
+        OR oi.item_type = 'album'
+        OR LOWER(oi.description) LIKE '%album%'
       )
-    )
-    AND oi.inclusions_count > 0
+      AND oi.joiner_id IS NOT NULL
     GROUP BY oi.joiner_id, p.display_name, p.username
     ORDER BY total_inclusions DESC
-  `, [params.sessionId]).catch(() => [] as any[])
+  `, inclusionParams).catch(() => [] as any[])
 
-  // Get assigned inclusions
-  const assignments = await query(`
-    SELECT * FROM pc_inclusion_assignments WHERE session_id=$1
-  `, [params.sessionId]).catch(() => [] as any[])
-
-  // Get submitted forms
+  const assignments = await query(`SELECT * FROM pc_inclusion_assignments WHERE session_id=$1`, [params.sessionId]).catch(() => [] as any[])
   const forms = await query(`
     SELECT pf.*, p.display_name, p.username
     FROM pc_priority_forms pf
@@ -72,8 +93,6 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     WHERE pf.session_id=$1
     ORDER BY pf.submitted_at DESC
   `, [params.sessionId]).catch(() => [] as any[])
-
-  // Sort results
   const result = await query(`
     SELECT pa.*, m.name as member_name
     FROM pc_assignments pa
@@ -93,9 +112,9 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
 
   const body = await req.json()
 
-  // Joiner submitting priorities
+  // Joiner submitting priorities (per slot per version)
   if (body.priorities !== undefined) {
-    await query('DELETE FROM pc_priority_forms WHERE session_id=$1 AND joiner_id=$2', [params.sessionId, user.id]).catch(() => {})
+    await query('DELETE FROM pc_priority_forms WHERE session_id=$1 AND joiner_id=$2', [params.sessionId, user.id]).catch(()=>{})
     await queryOne(
       'INSERT INTO pc_priority_forms (session_id, joiner_id, form_data) VALUES ($1,$2,$3) RETURNING *',
       [params.sessionId, user.id, JSON.stringify({ priorities: body.priorities })]
@@ -115,44 +134,80 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     return NextResponse.json({ ok: true })
   }
 
-  // GOM: run the sort and assign to sending_out
+  // GOM: run sort — assign members per slot per version based on priorities
   if (body.run_sort) {
-    // Get all submitted forms
-    const allForms = await query(`
-      SELECT pf.joiner_id, pf.form_data FROM pc_priority_forms pf WHERE pf.session_id=$1
-    `, [params.sessionId]).catch(() => [] as any[])
+    const allForms = await query(`SELECT pf.joiner_id, pf.form_data FROM pc_priority_forms pf WHERE pf.session_id=$1`, [params.sessionId]).catch(() => [] as any[])
+    const allAssignments = await query(`SELECT * FROM pc_inclusion_assignments WHERE session_id=$1`, [params.sessionId]).catch(() => [] as any[])
+    const allVersions = await query(`SELECT * FROM pc_versions WHERE session_id=$1`, [params.sessionId]).catch(() => [] as any[])
+    const allPhotocards = await query(`SELECT * FROM pc_photocards WHERE version_id = ANY(SELECT id FROM pc_versions WHERE session_id=$1)`, [params.sessionId]).catch(() => [] as any[])
 
-    // Get inclusions assignments
-    const allAssignments = await query(`
-      SELECT * FROM pc_inclusion_assignments WHERE session_id=$1
-    `, [params.sessionId]).catch(() => [] as any[])
-
-    // For each joiner, create a note in their sending_out entry with their PC sort result
-    for (const a of allAssignments as any[]) {
-      const version = await queryOne('SELECT * FROM pc_versions WHERE id=$1', [a.version_id]).catch(() => null) as any
-      if (!version || !a.inclusions_assigned) continue
-
-      const versionName = version.name || 'Unknown version'
-      const note = `PC Sort: ${a.inclusions_assigned}x ${versionName} inclusions`
-
-      // Find or create sending_out entry for this joiner
-      const existing = await queryOne(
-        'SELECT id, notes FROM sending_out WHERE joiner_id=$1 AND joiner_submitted=true',
-        [a.joiner_id]
-      ).catch(() => null) as any
-
-      if (existing) {
-        const updatedNotes = [existing.notes, note].filter(Boolean).join('\n')
-        await query('UPDATE sending_out SET notes=$1 WHERE id=$2', [updatedNotes, existing.id])
-      }
-      // If no entry yet, save for when they submit
-      await query(`
-        INSERT INTO pc_sorting_session_assignments (session_id, joiner_id, version_id, inclusions_assigned)
-        VALUES ($1,$2,$3,$4) ON CONFLICT (session_id, joiner_id, version_id) DO UPDATE SET inclusions_assigned=$4
-      `, [params.sessionId, a.joiner_id, a.version_id, a.inclusions_assigned]).catch(() => {})
+    // Build priority map: joiner_id -> version_id -> slot_index -> [member_id ordered]
+    const priorityMap: Record<string, any> = {}
+    for (const f of allForms as any[]) {
+      priorityMap[f.joiner_id] = f.form_data?.priorities || {}
     }
 
-    // Mark session as sorted
+    // For each version, for each slot, run a greedy assignment
+    for (const ver of allVersions as any[]) {
+      const slots: string[] = (() => { try { return JSON.parse(ver.slots || '["PC"]') } catch { return ['PC'] } })()
+      const vPhotocards = (allPhotocards as any[]).filter(p => p.version_id === ver.id)
+
+      // Track available stock per member for this version
+      const available: Record<string, number> = {}
+      for (const pc of vPhotocards) available[pc.member_id] = pc.available || pc.total_pulled || 0
+
+      // Joiners who have inclusions in this version
+      const vAssignments = (allAssignments as any[]).filter(a => a.version_id === ver.id)
+
+      for (let slotIdx = 0; slotIdx < slots.length; slotIdx++) {
+        // Collect all joiner slot-requests: each inclusion pack = 1 request for this slot
+        const requests: { joiner_id: string; priorities: string[] }[] = []
+        for (const a of vAssignments) {
+          const joinerId = a.joiner_id
+          const count = a.inclusions_assigned || 0
+          const slotPriorities: string[] = priorityMap[joinerId]?.[ver.id]?.[slotIdx] || []
+          for (let i = 0; i < count; i++) {
+            requests.push({ joiner_id: joinerId, priorities: slotPriorities })
+          }
+        }
+
+        // Greedy: assign each request to their highest-priority available member
+        const results: { joiner_id: string; member_id: string; slot: string }[] = []
+        for (const req of requests) {
+          let assigned: string | null = null
+          for (const memberId of req.priorities) {
+            if ((available[memberId] || 0) > 0) {
+              available[memberId]--
+              assigned = memberId
+              break
+            }
+          }
+          // Fallback: any available member
+          if (!assigned) {
+            const fallback = Object.entries(available).find(([, v]) => v > 0)
+            if (fallback) { available[fallback[0]]--; assigned = fallback[0] }
+          }
+          if (assigned) results.push({ joiner_id: req.joiner_id, member_id: assigned, slot: slots[slotIdx] })
+        }
+
+        // Save results
+        for (const r of results) {
+          const pc = vPhotocards.find(p => p.member_id === r.member_id)
+          if (!pc) continue
+          await query(`
+            INSERT INTO pc_assignments (session_id, joiner_id, photocard_id, version_id)
+            VALUES ($1,$2,$3,$4)
+            ON CONFLICT DO NOTHING
+          `, [params.sessionId, r.joiner_id, pc.id, ver.id]).catch(()=>{})
+        }
+
+        // Update available stock
+        for (const pc of vPhotocards) {
+          await query('UPDATE pc_photocards SET available=$1 WHERE id=$2', [available[pc.member_id] ?? pc.available, pc.id]).catch(()=>{})
+        }
+      }
+    }
+
     await query('UPDATE pc_sorting_sessions SET form_open=false WHERE id=$1', [params.sessionId])
     return NextResponse.json({ ok: true })
   }

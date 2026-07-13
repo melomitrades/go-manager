@@ -4,7 +4,7 @@ import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, R
 import { Button, Card, CardContent, CardHeader, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { formatDate, formatDateTime } from '@/lib/utils'
 
-interface PcVersion { id: string; name: string; members: { member_id: string; name: string; total_pulled: string }[] }
+interface PcVersion { id: string; name: string; slots: string[]; members: { member_id: string; name: string; total_pulled: string }[] }
 
 export default function GomPcSorterPage() {
   const [sessions, setSessions] = useState<any[]>([])
@@ -54,44 +54,52 @@ export default function GomPcSorterPage() {
     await loadDetails(sessionId)
   }
 
-  function addVersion() { setVersions(v => [...v, { id: Math.random().toString(36).slice(2), name:'', members:[] }]) }
+  function addVersion() { setVersions(v => [...v, { id: Math.random().toString(36).slice(2), name:'', slots:['PC'], members:[] }]) }
   function removeVersion(id: string) { setVersions(v => v.filter(x => x.id !== id)) }
   function updateVersionName(id: string, name: string) { setVersions(v => v.map(x => x.id===id?{...x,name}:x)) }
+  function addSlot(vId: string) { setVersions(v => v.map(x => x.id===vId?{...x,slots:[...x.slots,'']}:x)) }
+  function updateSlot(vId: string, si: number, val: string) { setVersions(v => v.map(x => x.id===vId?{...x,slots:x.slots.map((s,i)=>i===si?val:s)}:x)) }
+  function removeSlot(vId: string, si: number) { setVersions(v => v.map(x => x.id===vId?{...x,slots:x.slots.filter((_,i)=>i!==si)}:x)) }
   function addMember(vId: string) { setVersions(v => v.map(x => x.id===vId?{...x,members:[...x.members,{member_id:'',name:'',total_pulled:''}]}:x)) }
   function updateMember(vId: string, idx: number, field: string, val: string) {
     setVersions(v => v.map(x => x.id===vId?{...x,members:x.members.map((m,i)=>i===idx?{...m,[field]:val}:m)}:x))
   }
 
-  // When a box is selected, pre-populate group from box's linked orders
   function orderLabel(o: any) {
     return [o.group?.name, o.round_number ? `R${o.round_number}` : null, o.shop?.name].filter(Boolean).join(' · ') || o.id?.slice(0,8)
   }
 
-  async function onBoxChange(boxId: string) {
+  function onBoxChange(boxId: string) {
     setForm(f => ({ ...f, box_id: boxId }))
-    if (!boxId) return
+    if (!boxId) { setSelectedOrderIds([]); return }
     const box = boxes.find((b: any) => b.id === boxId)
-    if (box?.linked_orders?.[0]) {
-      const firstOrder = box.linked_orders[0]
-      if (firstOrder.group?.id && !form.group_id) {
-        setForm(f => ({ ...f, group_id: firstOrder.group.id }))
-      }
+    // Pre-select all orders linked to this box
+    const linkedIds: string[] = (box?.linked_orders || []).map((o: any) => o.order_id || o.id).filter(Boolean)
+    setSelectedOrderIds(linkedIds)
+    // Auto-fill group from first linked order
+    if (box?.linked_orders?.[0]?.group?.id && !form.group_id) {
+      setForm(f => ({ ...f, group_id: box.linked_orders[0].group.id }))
     }
   }
+
+  // Orders available for this session = only orders linked to the selected box
+  const boxLinkedOrderIds = form.box_id
+    ? (boxes.find((b:any)=>b.id===form.box_id)?.linked_orders||[]).map((o:any)=>o.order_id||o.id).filter(Boolean)
+    : []
+  const availableOrders = orders.filter((o:any) => boxLinkedOrderIds.includes(o.id))
 
   async function handleCreate() {
     if (!form.title) return
     setSaving(true)
-    const selectedBox = boxes.find((b: any) => b.id === form.box_id)
     const group = groups.find((g: any) => g.id === form.group_id)
     const groupMembers: any[] = group?.members || []
 
-    // Build full versions with members from group
     const fullVersions = versions.map(v => ({
       name: v.name,
+      slots: v.slots.filter(s => s.trim()),
       members: groupMembers.map(m => ({
         member_id: m.id,
-        total_pulled: v.members.find(vm => vm.member_id === m.id)?.total_pulled || '0',
+        total_pulled: v.members.find((vm:any) => vm.member_id === m.id)?.total_pulled || '0',
       }))
     }))
 
@@ -103,12 +111,14 @@ export default function GomPcSorterPage() {
         group_id: form.group_id || null,
         box_id: form.box_id || null,
         deadline: form.deadline || null,
+        order_ids: selectedOrderIds.length > 0 ? selectedOrderIds : null,
         versions: fullVersions,
       }),
     })
     setCreateModal(false)
     setForm({ title:'', group_id:'', box_id:'', deadline:'' })
     setVersions([])
+    setSelectedOrderIds([])
     fetchData()
     setSaving(false)
   }
@@ -153,7 +163,31 @@ export default function GomPcSorterPage() {
     setInclusionsModal({ sessionId: session.id, session })
   }
 
-  async function saveInclusions() {
+  async function autoFillFromOrders() {
+    if (!inclusionsModal) return
+    const d = sessionDetails[inclusionsModal.sessionId]
+    const vers: any[] = d?.versions || []
+    if (!vers.length) return
+
+    // Fetch inclusions from API (already computed with album logic)
+    const det = await fetch(`/api/pc-sorter/${inclusionsModal.sessionId}`).then(r=>r.json())
+    const inclusions: any[] = det.inclusions || []
+
+    setInclusionDrafts(() => {
+      const next: Record<string, Record<string, string>> = {}
+      for (const j of inclusions) {
+        if (!j.total_inclusions || j.total_inclusions <= 0) continue
+        const total = parseInt(j.total_inclusions)
+        const base = Math.floor(total / vers.length)
+        const remainder = total % vers.length
+        next[j.joiner_id] = {}
+        vers.forEach((v, i) => {
+          next[j.joiner_id][v.id] = String(base + (i < remainder ? 1 : 0))
+        })
+      }
+      return next
+    })
+  }
     if (!inclusionsModal) return
     setSaving(true)
     const assignments: any[] = []
@@ -318,55 +352,104 @@ export default function GomPcSorterPage() {
       </div>
 
       {/* Create Session Modal */}
-      <Modal open={createModal} onClose={()=>{setCreateModal(false);setForm({title:'',group_id:'',box_id:'',deadline:''});setVersions([])}} title="New PC Sorting Session" size="xl">
+      <Modal open={createModal} onClose={()=>{setCreateModal(false);setForm({title:'',group_id:'',box_id:'',deadline:''});setVersions([]);setSelectedOrderIds([])}} title="New PC Sorting Session" size="xl">
         <div className="space-y-5">
+          {/* Title + Deadline */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             <FormField label="Session Title" required>
-              <Input placeholder="e.g. BTS YTC Round 1" value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))}/>
-            </FormField>
-            <FormField label="Group">
-              <Select options={groups.map((g:any)=>({value:g.id,label:g.name}))} placeholder="Select group…" value={form.group_id} onChange={e=>setForm(f=>({...f,group_id:e.target.value}))}/>
-            </FormField>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-            <FormField label="Linked Box (for inclusions)">
-              <Select options={boxes.map((b:any)=>({value:b.id,label:b.label||'Box'}))} placeholder="Select box…" value={form.box_id} onChange={e=>onBoxChange(e.target.value)}/>
+              <Input placeholder="e.g. No Tragedy Limited" value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))}/>
             </FormField>
             <FormField label="Form Deadline (auto-closes)">
               <Input type="datetime-local" value={form.deadline} onChange={e=>setForm(f=>({...f,deadline:e.target.value}))}/>
             </FormField>
           </div>
 
+          {/* Box → auto-populates orders */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+            <FormField label="Box" required>
+              <Select options={boxes.map((b:any)=>({value:b.id,label:b.label||'Box'}))} placeholder="Select box first…" value={form.box_id} onChange={e=>onBoxChange(e.target.value)}/>
+            </FormField>
+            <FormField label="Group">
+              <Select options={groups.map((g:any)=>({value:g.id,label:g.name}))} placeholder="Select group…" value={form.group_id} onChange={e=>setForm(f=>({...f,group_id:e.target.value}))}/>
+            </FormField>
+          </div>
+
+          {/* Orders from box — checklist */}
+          {form.box_id && (
+            <FormField label="Orders included in this session">
+              <p className="text-xs text-muted-foreground mb-2">All orders from the selected box are pre-selected. Uncheck any that don't apply.</p>
+              <div className="border border-border rounded-xl overflow-hidden max-h-48 overflow-y-auto divide-y divide-border/50">
+                {availableOrders.length === 0 && <p className="text-sm text-muted-foreground p-3">No orders linked to this box.</p>}
+                {availableOrders.map((o:any) => (
+                  <label key={o.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
+                    <input type="checkbox" checked={selectedOrderIds.includes(o.id)}
+                      onChange={()=>setSelectedOrderIds(prev=>prev.includes(o.id)?prev.filter(x=>x!==o.id):[...prev,o.id])}
+                      className="accent-primary w-3.5 h-3.5"/>
+                    <span className="text-sm">{orderLabel(o)}</span>
+                  </label>
+                ))}
+              </div>
+              {selectedOrderIds.length > 0 && <p className="text-xs text-primary font-semibold mt-1">{selectedOrderIds.length} order{selectedOrderIds.length!==1?'s':''} selected</p>}
+            </FormField>
+          )}
+
           {/* Versions */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Versions</p>
+              <div>
+                <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Versions</p>
+                <p className="text-xs text-muted-foreground mt-0.5">One version = one full set (e.g. Ver.A). Define its slot types and member pull counts.</p>
+              </div>
               <Button variant="outline" size="sm" onClick={addVersion}><Plus size={12}/> Add Version</Button>
             </div>
-            {versions.length === 0 && <p className="text-sm text-muted-foreground text-center py-3">Add at least one version (e.g. ver. A, ver. B)</p>}
-            {versions.map((v, vi) => (
+            {versions.length === 0 && <p className="text-sm text-muted-foreground text-center py-3">Add at least one version</p>}
+            {versions.map((v) => (
               <div key={v.id} className="border border-border rounded-xl overflow-hidden">
                 <div className="flex items-center gap-2 px-4 py-3 bg-secondary/30 border-b border-border">
-                  <Input placeholder={`Version name (e.g. ver. A)`} value={v.name} onChange={e=>updateVersionName(v.id,e.target.value)} className="flex-1"/>
+                  <Input placeholder="Version name (e.g. Ver. A)" value={v.name} onChange={e=>updateVersionName(v.id,e.target.value)} className="flex-1"/>
                   <Button variant="ghost" size="icon" onClick={()=>removeVersion(v.id)}><Trash2 size={13} className="text-destructive/50"/></Button>
                 </div>
-                <div className="p-3 space-y-2">
-                  <p className="text-xs text-muted-foreground">Members pulled for this version (leave 0 if equal for all)</p>
-                  {groups.find((g:any)=>g.id===form.group_id)?.members?.map((m: any) => (
-                    <div key={m.id} className="flex items-center gap-3">
-                      <span className="text-sm flex-1">{m.name}</span>
-                      <div className="w-24"><Input type="number" min="0" placeholder="0" value={v.members.find(vm=>vm.member_id===m.id)?.total_pulled||''} onChange={e=>{const idx=v.members.findIndex(vm=>vm.member_id===m.id); if(idx>=0) updateMember(v.id,idx,'total_pulled',e.target.value); else setVersions(vs=>vs.map(x=>x.id===v.id?{...x,members:[...x.members,{member_id:m.id,name:m.name,total_pulled:e.target.value}]}:x))}}/></div>
+                <div className="p-3 space-y-3">
+                  {/* Slot types */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-semibold text-muted-foreground">Slot types in this pack</p>
+                      <button onClick={()=>addSlot(v.id)} className="text-xs text-primary font-semibold hover:underline flex items-center gap-1"><Plus size={11}/> Add slot</button>
                     </div>
-                  )) || <p className="text-xs text-muted-foreground">Select a group first to see members</p>}
+                    <div className="flex flex-wrap gap-2">
+                      {v.slots.map((slot, si) => (
+                        <div key={si} className="flex items-center gap-1">
+                          <input className="w-28 px-2 py-1 text-xs rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary/25"
+                            placeholder="e.g. PC, Lenticular"
+                            value={slot}
+                            onChange={e=>updateSlot(v.id, si, e.target.value)}/>
+                          {v.slots.length > 1 && (
+                            <button onClick={()=>removeSlot(v.id,si)} className="text-destructive/50 hover:text-destructive"><Trash2 size={11}/></button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Pull counts per member */}
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground mb-2">Cards pulled per member</p>
+                    {groups.find((g:any)=>g.id===form.group_id)?.members?.map((m: any) => (
+                      <div key={m.id} className="flex items-center gap-3 mb-1.5">
+                        <span className="text-sm flex-1">{m.name}</span>
+                        <div className="w-24"><Input type="number" min="0" placeholder="0"
+                          value={v.members.find((vm:any)=>vm.member_id===m.id)?.total_pulled||''}
+                          onChange={e=>{const idx=v.members.findIndex((vm:any)=>vm.member_id===m.id); if(idx>=0) updateMember(v.id,idx,'total_pulled',e.target.value); else setVersions(vs=>vs.map(x=>x.id===v.id?{...x,members:[...x.members,{member_id:m.id,name:m.name,total_pulled:e.target.value}]}:x))}}/></div>
+                      </div>
+                    )) || <p className="text-xs text-muted-foreground">Select a group to see members</p>}
+                  </div>
                 </div>
               </div>
             ))}
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
-            <Button variant="outline" onClick={()=>{setCreateModal(false);setVersions([])}}>Cancel</Button>
-            <Button onClick={handleCreate} disabled={saving||!form.title}>{saving?'Creating…':'Create Session'}</Button>
+            <Button variant="outline" onClick={()=>{setCreateModal(false);setVersions([]);setSelectedOrderIds([])}}>Cancel</Button>
+            <Button onClick={handleCreate} disabled={saving||!form.title||!form.box_id}>{saving?'Creating…':'Create Session'}</Button>
           </div>
         </div>
       </Modal>
@@ -436,8 +519,16 @@ export default function GomPcSorterPage() {
         const joiners: any[] = d?.inclusions || []
         const vers: any[] = d?.versions || []
         return (
-          <Modal open={true} onClose={()=>setInclusionsModal(null)} title="Assign Inclusions per Version" subtitle="Assign how many inclusions each joiner gets per version" size="xl">
+          <Modal open={true} onClose={()=>setInclusionsModal(null)} title="Assign Inclusions per Version" subtitle="Inclusions are split equally across versions. Remainder goes to earlier versions." size="xl">
             <div className="space-y-4">
+              {/* Auto-fill button */}
+              <div className="flex items-center justify-between p-3 bg-primary/5 border border-primary/15 rounded-xl">
+                <div>
+                  <p className="text-sm font-semibold">Auto-fill from orders</p>
+                  <p className="text-xs text-muted-foreground">Sums POB inclusions + album claims from selected orders, splits equally across versions</p>
+                </div>
+                <Button size="sm" onClick={autoFillFromOrders}>✨ Auto-fill</Button>
+              </div>
               {/* KRW filter */}
               {joiners.some((j:any) => j.total_krw > 0) && (
                 <div className="flex items-center gap-3">
