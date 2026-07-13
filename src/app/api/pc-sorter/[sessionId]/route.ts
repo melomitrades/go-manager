@@ -53,34 +53,25 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
   })()
 
   const whereClause = sessionOrderIds.length > 0
-    ? `oi.order_id = ANY($2::uuid[])`
+    ? `oi.order_id = ANY(ARRAY[${sessionOrderIds.map((_,i) => `$${i+2}::uuid`).join(',')}])`
     : `oi.order_id IN (SELECT order_id FROM box_orders WHERE box_id = (SELECT box_id FROM pc_sorting_sessions WHERE id = $1))`
-  const inclusionParams = sessionOrderIds.length > 0 ? [params.sessionId, sessionOrderIds] : [params.sessionId]
+  const inclusionParams: any[] = sessionOrderIds.length > 0
+    ? [params.sessionId, ...sessionOrderIds]
+    : [params.sessionId]
 
   const inclusions = await query(`
     SELECT
       oi.joiner_id,
       p.display_name,
       p.username,
-      SUM(
-        COALESCE(oi.inclusions_count, 0)
-        + CASE
-            WHEN oi.item_type = 'album' OR LOWER(oi.description) LIKE '%album%'
-            THEN COALESCE(oi.amount_claimed, 1)
-            ELSE 0
-          END
-      ) AS total_inclusions,
-      SUM(COALESCE(oi.price_krw, 0) * oi.amount_claimed) as total_krw
+      SUM(COALESCE(oi.inclusions_count, 0)) AS total_inclusions,
+      SUM(COALESCE(oi.price_krw, 0) * COALESCE(oi.amount_claimed, 1)) as total_krw
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
     JOIN profiles p ON p.id = oi.joiner_id
     WHERE ${whereClause}
-      AND (
-        oi.inclusions_count > 0
-        OR oi.item_type = 'album'
-        OR LOWER(oi.description) LIKE '%album%'
-      )
       AND oi.joiner_id IS NOT NULL
+      AND COALESCE(oi.inclusions_count, 0) > 0
     GROUP BY oi.joiner_id, p.display_name, p.username
     ORDER BY total_inclusions DESC
   `, inclusionParams).catch(() => [] as any[])
