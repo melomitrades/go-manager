@@ -166,10 +166,18 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     if (mine) {
       const m = mine as any
       const ceil2 = (n: number) => Math.ceil(n * 100) / 100
+      // Always ceil-round live share
       m.ems_share_eur = ceil2(m.ems_share_eur)
       m.customs_share_eur = ceil2(m.customs_share_eur)
-      m.ems_amount_eur = m.ems_amount_eur ?? m.ems_share_eur
-      m.customs_amount_eur = m.customs_amount_eur ?? m.customs_share_eur
+      // Prefer locked amount; if null try direct DB lookup
+      if (m.ems_amount_eur == null) {
+        const row = await queryOne('SELECT ems_amount_eur, customs_amount_eur FROM box_joiner_shares WHERE box_id=$1 AND joiner_id=$2', [params.id, user.id]).catch(() => null) as any
+        m.ems_amount_eur = row?.ems_amount_eur != null ? parseFloat(row.ems_amount_eur) : m.ems_share_eur
+        m.customs_amount_eur = row?.customs_amount_eur != null ? parseFloat(row.customs_amount_eur) : m.customs_share_eur
+      } else {
+        m.ems_amount_eur = parseFloat(m.ems_amount_eur)
+        m.customs_amount_eur = m.customs_amount_eur != null ? parseFloat(m.customs_amount_eur) : m.customs_share_eur
+      }
     }
     return NextResponse.json({ box, joiners: mine ? [mine] : [], itemTypes: boxItemTypes, totalWeight, weightByType, weightByItemType, ems_payment_requested: ems_requested, customs_payment_requested: customs_requested })
   }
