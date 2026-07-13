@@ -117,6 +117,7 @@ export default function GomPcSorterPage() {
         form_open: editForm.form_open,
         deadline: editForm.deadline || null,
         box_id: editForm.box_id || null,
+          order_ids: inclusionOrderIds.length > 0 ? inclusionOrderIds : null,
       }),
     })
     setEditingSession(null)
@@ -210,7 +211,13 @@ export default function GomPcSorterPage() {
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <Button variant="ghost" size="sm" onClick={() => openInclusionsModal(session)}>Inclusions</Button>
-                      <Button variant="ghost" size="sm" onClick={() => { setEditingSession(session); setEditForm({ title:session.title, group_id:session.group_id||'', form_open:session.form_open, deadline:session.deadline?.slice(0,16)||'', box_id:session.box_id||'' }) }}>Edit</Button>
+                      <Button variant="ghost" size="sm" onClick={() => {
+                        setEditingSession(session)
+                        setEditForm({ title:session.title, group_id:session.group_id||'', form_open:session.form_open, deadline:session.deadline?.slice(0,16)||'', box_id:session.box_id||'' })
+                        // Restore saved order_ids for this session
+                        const savedIds = (() => { try { const o = session.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] } })()
+                        setInclusionOrderIds(savedIds.length > 0 ? savedIds : (boxes.find((b:any)=>b.id===session.box_id)?.linked_orders||[]).map((o:any)=>o.order_id||o.id).filter(Boolean))
+                      }}>Edit</Button>
                       <Button variant="ghost" size="icon" onClick={() => handleDelete(session.id)}><Trash2 size={13} className="text-destructive/50"/></Button>
                       <button onClick={() => toggleExpand(session.id)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary px-2 py-1.5 rounded-lg hover:bg-secondary">
                         {isOpen ? <ChevronUp size={14}/> : <ChevronDown size={14}/>} Details
@@ -356,15 +363,50 @@ export default function GomPcSorterPage() {
       </Modal>
 
       {/* Edit Modal */}
-      {editingSession && (
+      {editingSession && (() => {
+        const editBox = boxes.find((b: any) => b.id === editForm.box_id)
+        const editBoxOrderIds: string[] = (editBox?.linked_orders || []).map((o: any) => o.order_id || o.id).filter(Boolean)
+        return (
         <Modal open={!!editingSession} onClose={()=>setEditingSession(null)} title="Edit Session" size="md">
           <div className="space-y-4">
             <FormField label="Title"><Input value={editForm.title} onChange={e=>setEditForm(f=>({...f,title:e.target.value}))}/></FormField>
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Group"><Select options={groups.map((g:any)=>({value:g.id,label:g.name}))} placeholder="Select…" value={editForm.group_id} onChange={e=>setEditForm(f=>({...f,group_id:e.target.value}))}/></FormField>
-              <FormField label="Box"><Select options={boxes.map((b:any)=>({value:b.id,label:b.label||'Box'}))} placeholder="No box…" value={editForm.box_id} onChange={e=>setEditForm(f=>({...f,box_id:e.target.value}))}/></FormField>
+              <FormField label="Box">
+                <Select options={boxes.map((b:any)=>({value:b.id,label:b.label||'Box'}))} placeholder="No box…" value={editForm.box_id}
+                  onChange={e => {
+                    const newBoxId = e.target.value
+                    setEditForm(f=>({...f, box_id: newBoxId}))
+                    const b = boxes.find((x:any) => x.id === newBoxId)
+                    const ids = (b?.linked_orders || []).map((o:any) => o.order_id || o.id).filter(Boolean)
+                    if (ids.length > 0) setInclusionOrderIds(ids)
+                  }}/>
+              </FormField>
             </div>
             <FormField label="Deadline"><Input type="datetime-local" value={editForm.deadline} onChange={e=>setEditForm(f=>({...f,deadline:e.target.value}))}/></FormField>
+
+            {/* Order selection for inclusions */}
+            <FormField label="Orders for inclusions">
+              <p className="text-xs text-muted-foreground mb-2">Select orders whose inclusions count for this session.</p>
+              <div className="border border-border rounded-xl overflow-hidden max-h-40 overflow-y-auto divide-y divide-border/50">
+                {orders.length === 0 && <p className="text-sm text-muted-foreground p-3">No active orders.</p>}
+                {orders.map((o:any) => (
+                  <label key={o.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
+                    <input type="checkbox" checked={inclusionOrderIds.includes(o.id)}
+                      onChange={()=>setInclusionOrderIds(prev=>prev.includes(o.id)?prev.filter(x=>x!==o.id):[...prev,o.id])}
+                      className="accent-primary w-3.5 h-3.5"/>
+                    <span className="text-sm">{orderLabel(o)}</span>
+                  </label>
+                ))}
+              </div>
+              {editBoxOrderIds.length > 0 && inclusionOrderIds.length === 0 && (
+                <button onClick={() => setInclusionOrderIds(editBoxOrderIds)} className="text-xs text-primary underline mt-1">
+                  Pre-select from linked box ({editBoxOrderIds.length} order{editBoxOrderIds.length !== 1 ? 's' : ''})
+                </button>
+              )}
+              {inclusionOrderIds.length > 0 && <p className="text-xs text-primary font-semibold mt-1">{inclusionOrderIds.length} order{inclusionOrderIds.length!==1?'s':''} selected</p>}
+            </FormField>
+
             <div className="flex items-center gap-3">
               <button onClick={()=>setEditForm(f=>({...f,form_open:!f.form_open}))} className={`flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-xl border transition-all ${editForm.form_open?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-secondary text-muted-foreground border-border'}`}>
                 {editForm.form_open?<ToggleRight size={16}/>:<ToggleLeft size={16}/>} Form {editForm.form_open?'open':'closed'}
@@ -376,7 +418,8 @@ export default function GomPcSorterPage() {
             </div>
           </div>
         </Modal>
-      )}
+        )
+      })()}
 
       {/* Inclusions Assignment Modal */}
       {inclusionsModal && (() => {

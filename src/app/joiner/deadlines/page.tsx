@@ -57,23 +57,35 @@ export default function JoinerDeadlinesPage() {
         }
       }
 
-      // Boxes with EMS/customs deadlines
-      const boxes = await fetch('/api/boxes').then(r => r.json()).catch(() => [])
+      // Boxes with EMS/customs deadlines — use joiner's share from payments API
+      const [boxes, paymentItems] = await Promise.all([
+        fetch('/api/boxes').then(r => r.json()).catch(() => []),
+        fetch('/api/joiner-payments').then(r => r.json()).catch(() => []),
+      ])
+      // Build a map of box_id → { ems_amount, customs_amount, ems_paid, customs_paid }
+      const boxPaymentMap: Record<string, { ems?: number; customs?: number; ems_paid?: boolean; customs_paid?: boolean }> = {}
+      for (const p of (Array.isArray(paymentItems) ? paymentItems : [])) {
+        if (p.type === 'ems' && p.box_id) boxPaymentMap[p.box_id] = { ...boxPaymentMap[p.box_id], ems: p.amount_eur, ems_paid: p.paid }
+        if (p.type === 'customs' && p.box_id) boxPaymentMap[p.box_id] = { ...boxPaymentMap[p.box_id], customs: p.amount_eur, customs_paid: p.paid }
+      }
       for (const b of (Array.isArray(boxes) ? boxes : [])) {
-        if (b.ems_deadline && new Date(b.ems_deadline) > new Date()) {
+        const bm = boxPaymentMap[b.id] || {}
+        if (b.ems_deadline && new Date(b.ems_deadline) > new Date() && bm.ems != null) {
           deadlines.push({
             id: `ems-${b.id}`, type: 'ems',
             label: b.label || 'Box',
-            sublabel: `EMS: ${b.ems_total_eur}€`,
+            sublabel: `EMS: ${bm.ems.toFixed(2)}€`,
             deadline: b.ems_deadline,
+            paid: bm.ems_paid,
           })
         }
-        if (b.customs_deadline && new Date(b.customs_deadline) > new Date()) {
+        if (b.customs_deadline && new Date(b.customs_deadline) > new Date() && bm.customs != null) {
           deadlines.push({
             id: `customs-${b.id}`, type: 'customs',
             label: b.label || 'Box',
-            sublabel: `Customs: ${b.customs_total_eur}€`,
+            sublabel: `Customs: ${bm.customs.toFixed(2)}€`,
             deadline: b.customs_deadline,
+            paid: bm.customs_paid,
           })
         }
       }
