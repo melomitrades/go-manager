@@ -10,6 +10,7 @@ export default function GomPcSorterPage() {
   const [sessions, setSessions] = useState<any[]>([])
   const [groups, setGroups] = useState<any[]>([])
   const [boxes, setBoxes] = useState<any[]>([])
+  const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [createModal, setCreateModal] = useState(false)
   const [editingSession, setEditingSession] = useState<any>(null)
@@ -28,14 +29,16 @@ export default function GomPcSorterPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true)
-    const [s, g, b] = await Promise.all([
+    const [s, g, b, o] = await Promise.all([
       fetch('/api/pc-sorter').then(r=>r.json()),
       fetch('/api/groups').then(r=>r.json()),
       fetch('/api/boxes').then(r=>r.json()),
+      fetch('/api/orders?lite=true').then(r=>r.json()),
     ])
     setSessions(Array.isArray(s)?s:[])
     setGroups(Array.isArray(g)?g:[])
     setBoxes(Array.isArray(b)?b:[])
+    setOrders(Array.isArray(o)?o.filter((x:any)=>x.status!=='closed'):[])
     setLoading(false)
   }, [])
   useEffect(() => { fetchData() }, [fetchData])
@@ -60,6 +63,10 @@ export default function GomPcSorterPage() {
   }
 
   // When a box is selected, pre-populate group from box's linked orders
+  function orderLabel(o: any) {
+    return [o.group?.name, o.round_number ? `R${o.round_number}` : null, o.shop?.name].filter(Boolean).join(' · ') || o.id?.slice(0,8)
+  }
+
   async function onBoxChange(boxId: string) {
     setForm(f => ({ ...f, box_id: boxId }))
     if (!boxId) return
