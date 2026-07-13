@@ -320,27 +320,51 @@ export default function GomBoxesPage() {
                                 const totalWeight = shares.joiners.reduce((sum: number, j: any) => excluded.has(j.joiner_id) ? sum : sum + (j.weight_g || 0), 0)
                                 if (totalWeight === 0) return null
                                 const emsTotal = parseFloat(box.ems_total_eur || 0)
-                                const ratePerGram = emsTotal / totalWeight
+                                const customsTotal = parseFloat(box.customs_total_eur || 0)
+                                const emsRpg = emsTotal / totalWeight
+                                const customsRpg = customsTotal / totalWeight
                                 const itemTypes: any[] = shares.itemTypes || []
                                 const LABELS: Record<string, string> = { photocard: 'Photocard / Inclusion', album: 'Album', photobook: 'Photobook', custom: 'Custom' }
                                 if (itemTypes.length === 0) return null
                                 return (
-                                  <div className="px-4 py-3 bg-primary/5 border-b border-border">
-                                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Rate per unit</p>
-                                    <div className="flex flex-wrap gap-x-5 gap-y-1.5">
-                                      {itemTypes.map((it: any) => {
-                                        const label = LABELS[it.item_type] || it.custom_label || it.item_type
-                                        const wg = parseFloat(it.weight_g || 0)
-                                        const rate = Math.ceil(ratePerGram * wg * 100) / 100
-                                        return (
-                                          <div key={it.item_type} className="flex items-center gap-1.5 text-sm">
-                                            <span className="text-muted-foreground">{label} ({wg}g):</span>
-                                            <span className="font-bold text-primary font-mono">{formatEur(rate)}</span>
-                                          </div>
-                                        )
-                                      })}
-                                      <span className="text-xs text-muted-foreground self-center">({totalWeight.toFixed(0)}g total)</span>
-                                    </div>
+                                  <div className="px-4 py-3 bg-primary/5 border-b border-border space-y-2">
+                                    {emsTotal > 0 && (
+                                      <div>
+                                        <p className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-1.5">EMS rate per unit</p>
+                                        <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                                          {itemTypes.map((it: any) => {
+                                            const label = LABELS[it.item_type] || it.custom_label || it.item_type
+                                            const wg = parseFloat(it.weight_g || 0)
+                                            const rate = Math.ceil(emsRpg * wg * 100) / 100
+                                            return (
+                                              <div key={it.item_type} className="flex items-center gap-1.5 text-sm">
+                                                <span className="text-muted-foreground">{label} ({wg}g):</span>
+                                                <span className="font-bold text-blue-600 font-mono">{formatEur(rate)}</span>
+                                              </div>
+                                            )
+                                          })}
+                                          <span className="text-xs text-muted-foreground self-center">({totalWeight.toFixed(0)}g total)</span>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {customsTotal > 0 && (
+                                      <div>
+                                        <p className="text-xs font-bold text-purple-600 uppercase tracking-widest mb-1.5">Customs rate per unit</p>
+                                        <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                                          {itemTypes.map((it: any) => {
+                                            const label = LABELS[it.item_type] || it.custom_label || it.item_type
+                                            const wg = parseFloat(it.weight_g || 0)
+                                            const rate = Math.ceil(customsRpg * wg * 100) / 100
+                                            return (
+                                              <div key={it.item_type} className="flex items-center gap-1.5 text-sm">
+                                                <span className="text-muted-foreground">{label} ({wg}g):</span>
+                                                <span className="font-bold text-purple-600 font-mono">{formatEur(rate)}</span>
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 )
                               })()}
@@ -399,10 +423,11 @@ export default function GomBoxesPage() {
                                       const emsShare = emsRequested ? (lockedEms ?? (!isExcluded && totalWeight > 0 ? ceil2(parseFloat(box.ems_total_eur || 0) * joinerWeight / totalWeight) : 0)) : 0
                                       const emsRate = joinerWeight > 0 ? emsShare / joinerWeight : 0
 
-                                      // Customs — use locked amount if published
+                                      // Customs — show as preview before asking, and as locked after
                                       const customsRequested = shares.customs_payment_requested
+                                      const showCustomsBreakdown = parseFloat(box.customs_total_eur || 0) > 0
                                       const lockedCustoms = s.customs_amount_eur != null ? parseFloat(s.customs_amount_eur) : null
-                                      const customsShare = customsRequested ? (lockedCustoms ?? (!isExcluded && totalWeight > 0 ? ceil2(parseFloat(box.customs_total_eur || 0) * joinerWeight / totalWeight) : 0)) : 0
+                                      const customsShare = showCustomsBreakdown ? (customsRequested ? (lockedCustoms ?? ceil2(parseFloat(box.customs_total_eur || 0) * joinerWeight / (totalWeight || 1))) : ceil2(parseFloat(box.customs_total_eur || 0) * joinerWeight / (totalWeight || 1))) : 0
                                       const customsRate = joinerWeight > 0 ? customsShare / joinerWeight : 0
 
                                       const groups: Record<string, { shop: string; desc: string; members: string[]; qty: number; inclusions: number; weight_g: number }> = {}
@@ -419,7 +444,7 @@ export default function GomBoxesPage() {
                                           {Object.entries(groups).map(([key, g]) => {
                                             const totalPcs = g.qty + g.inclusions
                                             const groupEms = emsRate * (g.weight_g || 0)
-                                            const groupCustoms = customsRate * (g.weight_g || 0)
+                                            const groupCustoms = (showCustomsBreakdown ? customsRate : 0) * (g.weight_g || 0)
                                             const emsPc = totalPcs > 0 ? groupEms / totalPcs : 0
                                             const customsPc = totalPcs > 0 ? groupCustoms / totalPcs : 0
                                             const pcLabel = g.inclusions > 0
@@ -444,9 +469,9 @@ export default function GomBoxesPage() {
                                                       EMS {pcLabel} × {formatEur(emsPc)} = <span className="font-bold">{formatEur(groupEms)}</span>
                                                     </span>
                                                   )}
-                                                  {customsRequested && groupCustoms > 0 && (
-                                                    <span className="text-purple-600" title={`${pcLabel} × ${formatEur(customsPc)}`}>
-                                                      Customs {pcLabel} × {formatEur(customsPc)} = <span className="font-bold">{formatEur(groupCustoms)}</span>
+                                                  {showCustomsBreakdown && groupCustoms > 0 && (
+                                                    <span className={customsRequested ? 'text-purple-600' : 'text-purple-400 italic'} title={customsRequested ? undefined : 'Preview — not yet sent to joiners'}>
+                                                      Customs{!customsRequested && ' (preview)'} {pcLabel} × {formatEur(customsPc)} = <span className="font-bold">{formatEur(groupCustoms)}</span>
                                                     </span>
                                                   )}
                                                 </div>
