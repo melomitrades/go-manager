@@ -21,6 +21,8 @@ export default function GomPcSorterPage() {
   const [krwMinFilter, setKrwMinFilter] = useState<string>('')  // min KRW spent filter
 
   const [form, setForm] = useState({ title:'', group_id:'', box_id:'', deadline:'' })
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([])
+  const [inclusionOrderIds, setInclusionOrderIds] = useState<string[]>([])
   const [versions, setVersions] = useState<PcVersion[]>([])
   const [editForm, setEditForm] = useState({ title:'', group_id:'', form_open:true, deadline:'', box_id:'' })
 
