@@ -1,16 +1,14 @@
 'use client'
-import { useEffect, useState, useRef } from 'react'
-import { Box, ChevronDown, ChevronUp, Check, X, Upload } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Box, ChevronDown, ChevronUp, Check, X } from 'lucide-react'
 import { Card, CardContent, CardHeader, PageHeader, EmptyState } from '@/components/ui'
-import { formatEur, formatKrw } from '@/lib/utils'
+import { formatEur } from '@/lib/utils'
 
 export default function JoinerBoxesPage() {
   const [boxes, setBoxes] = useState<any[]>([])
   const [details, setDetails] = useState<Record<string, any>>({})
   const [expanded, setExpanded] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [uploading, setUploading] = useState<string | null>(null)
-  const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
 
   useEffect(() => {
     fetch('/api/boxes').then(r => r.json()).then(b => {
@@ -28,27 +26,12 @@ export default function JoinerBoxesPage() {
     }
   }
 
-  async function submitProof(boxId: string, action: string, uploadKey: string, file: File) {
-    if (file.size > 5_000_000) { alert('Max 5MB'); return }
-    setUploading(uploadKey)
-    try {
-      const proof_url = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = e => resolve(e.target?.result as string)
-        reader.onerror = reject
-        reader.readAsDataURL(file)
-      })
-      await fetch(`/api/boxes/${boxId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, proof_url }),
-      })
-      const d = await fetch(`/api/boxes/${boxId}?viewAs=joiner`).then(r => r.json())
-      setDetails(prev => ({ ...prev, [boxId]: d }))
-    } catch (e) {
-      console.error(e)
-    }
-    setUploading(null)
+  function StatusBadge({ paid }: { paid: boolean }) {
+    return (
+      <div className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full border ${paid ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-secondary border-border text-muted-foreground'}`}>
+        {paid ? <Check size={10}/> : <X size={10}/>} {paid ? 'Paid' : 'Unpaid'}
+      </div>
+    )
   }
 
   function ItemBreakdown({ items, emsAmt, joinerWeight, label }: { items: any[]; emsAmt: number; joinerWeight: number; label: string }) {
@@ -85,53 +68,13 @@ export default function JoinerBoxesPage() {
                 <p className="font-medium">{g.desc}</p>
                 <p className="text-xs text-muted-foreground">{g.shop}{g.members.length > 0 ? ` · ${g.members.join(', ')}` : ''}</p>
                 {ratePerPc > 0 && (
-                  <p className={`text-xs font-semibold mt-0.5 ${colour}`}>
-                    {pcLabel} × {formatEur(ratePerPc)}
-                  </p>
+                  <p className={`text-xs font-semibold mt-0.5 ${colour}`}>{pcLabel} × {formatEur(ratePerPc)}</p>
                 )}
               </div>
               {groupShare > 0 && <span className={`font-mono text-sm font-bold flex-shrink-0 ${colour}`}>{formatEur(groupShare)}</span>}
             </div>
           )
         })}
-      </div>
-    )
-  }
-
-  function ProofSection({ boxId, action, uploadKey, amount, label, paid, proofUrl, paymentInfo, color = 'primary' }: any) {
-    const colorCls = color === 'sky'
-      ? 'border-sky-200 bg-sky-50/50'
-      : 'border-primary/20 bg-primary/5'
-    const uploadCls = color === 'sky'
-      ? 'border-sky-300 text-sky-600 hover:border-sky-500'
-      : 'border-primary/30 text-primary hover:border-primary/60'
-    if (paid) return null
-    return (
-      <div className={`rounded-xl border p-4 space-y-3 ${colorCls}`}>
-        <p className="text-sm font-semibold">Pay {label}: {formatEur(amount)}</p>
-        {paymentInfo && (
-          <div className="rounded-lg bg-background border border-border px-3 py-2.5">
-            <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide mb-1">Payment Info</p>
-            <p className="text-sm whitespace-pre-wrap">{paymentInfo}</p>
-          </div>
-        )}
-        {proofUrl ? (
-          <div className="space-y-2">
-            <p className="text-xs text-emerald-600 font-semibold">✓ Proof submitted — waiting for GOM confirmation</p>
-            <img src={proofUrl} alt="Proof" className="max-h-32 rounded-lg border object-cover cursor-pointer" onClick={() => window.open(proofUrl, '_blank')}/>
-            <button onClick={() => fileRefs.current[uploadKey]?.click()} className="text-xs text-muted-foreground underline">Replace proof</button>
-          </div>
-        ) : (
-          <button onClick={() => fileRefs.current[uploadKey]?.click()} disabled={uploading === uploadKey}
-            className={`w-full flex items-center justify-center gap-2 border-2 border-dashed rounded-xl py-4 text-sm font-semibold transition-all ${uploadCls}`}>
-            {uploading === uploadKey
-              ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"/>
-              : <><Upload size={14}/> Upload {label} proof</>}
-          </button>
-        )}
-        <input type="file" accept="image/*" className="hidden"
-          ref={el => { fileRefs.current[uploadKey] = el }}
-          onChange={e => { const f = e.target.files?.[0]; if (f) submitProof(boxId, action, uploadKey, f) }}/>
       </div>
     )
   }
@@ -153,7 +96,6 @@ export default function JoinerBoxesPage() {
                 const emsAmt = mine?.ems_amount_eur ?? mine?.ems_share_eur ?? 0
                 const customsAmt = mine?.customs_amount_eur ?? mine?.customs_share_eur ?? 0
                 const joinerWeight = mine?.weight_g || 0
-                const paymentInfo = box.payment_info || null
 
                 return (
                   <Card key={box.id}>
@@ -180,63 +122,41 @@ export default function JoinerBoxesPage() {
 
                         {det && mine && (emsRequested || customsRequested) && (
                           <div className="space-y-4">
-
-                            {/* Totals summary */}
+                            {/* Totals */}
                             <div className={`grid gap-3 ${emsRequested && customsRequested ? 'grid-cols-3' : 'grid-cols-2'}`}>
                               {emsRequested && (
-                                <div className="bg-secondary/40 rounded-xl p-3">
-                                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">EMS</p>
-                                  <p className="text-lg font-bold">{formatEur(emsAmt)}</p>
+                                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
+                                  <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">EMS</p>
+                                  <p className="text-lg font-bold text-blue-700">{formatEur(emsAmt)}</p>
                                   {box.ems_deadline && <p className="text-xs text-amber-600 mt-1 font-semibold">Due {new Date(box.ems_deadline).toLocaleDateString()}</p>}
-                                  <div className={`mt-2 inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full border ${mine.ems_paid ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-secondary border-border text-muted-foreground'}`}>
-                                    {mine.ems_paid ? <Check size={10}/> : <X size={10}/>} {mine.ems_paid ? 'Paid' : 'Unpaid'}
-                                  </div>
+                                  <div className="mt-2"><StatusBadge paid={mine.ems_paid}/></div>
                                 </div>
                               )}
                               {customsRequested && (
-                                <div className="bg-secondary/40 rounded-xl p-3">
-                                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Customs</p>
-                                  <p className="text-lg font-bold">{formatEur(customsAmt)}</p>
+                                <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
+                                  <p className="text-xs font-semibold text-purple-600 uppercase tracking-wide mb-1">Customs</p>
+                                  <p className="text-lg font-bold text-purple-700">{formatEur(customsAmt)}</p>
                                   {box.customs_deadline && <p className="text-xs text-amber-600 mt-1 font-semibold">Due {new Date(box.customs_deadline).toLocaleDateString()}</p>}
-                                  <div className={`mt-2 inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full border ${mine.customs_paid ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-secondary border-border text-muted-foreground'}`}>
-                                    {mine.customs_paid ? <Check size={10}/> : <X size={10}/>} {mine.customs_paid ? 'Paid' : 'Unpaid'}
-                                  </div>
+                                  <div className="mt-2"><StatusBadge paid={mine.customs_paid}/></div>
                                 </div>
                               )}
                               {emsRequested && customsRequested && (
-                                <div className="bg-primary/5 border border-primary/10 rounded-xl p-3">
-                                  <p className="text-xs font-semibold text-primary/70 uppercase tracking-wide mb-1">Total</p>
-                                  <p className="text-lg font-bold text-primary">{formatEur(emsAmt + customsAmt)}</p>
+                                <div className="bg-secondary/40 rounded-xl p-3">
+                                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Total</p>
+                                  <p className="text-lg font-bold">{formatEur(emsAmt + customsAmt)}</p>
+                                  <p className="text-xs text-muted-foreground mt-1">Pay in Payments tab</p>
                                 </div>
                               )}
                             </div>
 
-                            {/* EMS item breakdown */}
+                            {/* EMS breakdown */}
                             {emsRequested && emsAmt > 0 && mine.items?.length > 0 && (
                               <ItemBreakdown items={mine.items} emsAmt={emsAmt} joinerWeight={joinerWeight} label="EMS"/>
                             )}
 
-                            {/* Customs item breakdown */}
+                            {/* Customs breakdown */}
                             {customsRequested && customsAmt > 0 && mine.items?.length > 0 && (
                               <ItemBreakdown items={mine.items} emsAmt={customsAmt} joinerWeight={joinerWeight} label="Customs"/>
-                            )}
-
-                            {/* EMS proof upload */}
-                            {emsRequested && (
-                              <ProofSection
-                                boxId={box.id} action="submit_proof" uploadKey={`${box.id}_ems`}
-                                amount={emsAmt} label="EMS" paid={mine.ems_paid}
-                                proofUrl={mine.proof_url} paymentInfo={paymentInfo}
-                              />
-                            )}
-
-                            {/* Customs proof upload */}
-                            {customsRequested && (
-                              <ProofSection
-                                boxId={box.id} action="submit_customs_proof" uploadKey={`${box.id}_customs`}
-                                amount={customsAmt} label="Customs" paid={mine.customs_paid}
-                                proofUrl={mine.customs_proof_url} paymentInfo={paymentInfo} color="sky"
-                              />
                             )}
                           </div>
                         )}

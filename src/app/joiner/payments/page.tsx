@@ -29,12 +29,14 @@ export default function JoinerPaymentsPage() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  const unpaidItems = items.filter(i => !i.paid)
-  const paidItems = items.filter(i => i.paid)
+  const orderItems = items.filter(i => i.type === 'order')
+  const boxItems = items.filter(i => i.type === 'ems' || i.type === 'customs')
+  const unpaidItems = orderItems.filter(i => !i.paid)
+  const paidItems = orderItems.filter(i => i.paid)
   // Items with proof submitted but not yet validated by GOM
   const pendingItems = unpaidItems.filter(i => i.proof_submitted || i.proof_url)
   const awaitingProof = unpaidItems.filter(i => !i.proof_submitted && !i.proof_url)
-  // Items selectable = those not yet submitted (no proof_url)
+  // Items selectable = those not yet submitted (no proof_url) — orders only
   const selectableItems = awaitingProof
   const selectedItems = selectableItems.filter(i => selected.has(i.id))
   const selectedTotal = selectedItems.reduce((s, i) => s + i.amount_eur, 0)
@@ -94,7 +96,7 @@ export default function JoinerPaymentsPage() {
   return (
     <div className="flex flex-col h-full">
       <PageHeader title="Payments"
-        subtitle={`${formatEur(unpaidItems.reduce((s,i)=>s+i.amount_eur,0))} outstanding`}
+        subtitle={`${formatEur([...unpaidItems,...boxItems.filter(i=>!i.paid)].reduce((s,i)=>s+i.amount_eur,0))} outstanding`}
         action={<Button variant="ghost" size="sm" onClick={fetchData}><RefreshCw size={13}/> Refresh</Button>}
       />
       <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-5">
@@ -221,6 +223,56 @@ export default function JoinerPaymentsPage() {
                 </Button>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ── EMS / Customs section ───────────────────────────── */}
+        {boxItems.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">EMS & Customs</p>
+            {boxItems.map(item => {
+              const isEms = item.type === 'ems'
+              const colour = isEms ? 'border-blue-200 bg-blue-50/40' : 'border-purple-200 bg-purple-50/40'
+              const textColour = isEms ? 'text-blue-700' : 'text-purple-700'
+              const isPending = !item.paid && (item.proof_submitted || item.proof_url)
+              const isSelectable = !item.paid && !item.proof_submitted && !item.proof_url
+              const isSel = selected.has(item.id)
+              return (
+                <div key={item.id}
+                  onClick={() => isSelectable ? toggle(item.id) : undefined}
+                  className={`border-2 rounded-2xl overflow-hidden transition-all ${isPending ? 'opacity-60 border-amber-200 bg-amber-50/40 cursor-default' : item.paid ? 'opacity-50 border-emerald-200 bg-card cursor-default' : isSel ? `border-primary bg-primary/5 cursor-pointer` : `${colour} cursor-pointer hover:border-primary/40`}`}>
+                  <div className="flex items-start gap-3 px-4 py-3.5">
+                    {isSelectable && (
+                      <div className={`w-5 h-5 rounded-md border-2 flex-shrink-0 mt-0.5 flex items-center justify-center transition-all ${isSel ? 'bg-primary border-primary' : 'border-border'}`}>
+                        {isSel && <Check size={11} className="text-white"/>}
+                      </div>
+                    )}
+                    {isPending && <div className="w-4 h-4 rounded-full border-2 border-amber-400 bg-amber-100 flex-shrink-0 mt-1"/>}
+                    {item.paid && <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0 mt-1"><Check size={10} className="text-white"/></div>}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${isEms ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-purple-100 text-purple-700 border-purple-200'}`}>{item.type.toUpperCase()}</span>
+                        {isPending && <span className="text-xs text-amber-600 font-semibold">⏳ Awaiting validation</span>}
+                        {item.paid && <span className="text-xs text-emerald-600 font-semibold">✓ Validated</span>}
+                      </div>
+                      <p className="font-semibold text-sm">{item.label}</p>
+                      {item.deadline && (
+                        <p className={`text-xs mt-0.5 ${new Date(item.deadline) < new Date() ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>
+                          Due: {formatDate(item.deadline)}
+                        </p>
+                      )}
+                      {item.payment_info && isSelectable && (
+                        <div className="mt-2 border border-primary/20 bg-primary/5 rounded-xl px-3 py-2">
+                          <p className="text-xs font-bold text-primary uppercase tracking-wide mb-0.5">💳 Payment Info</p>
+                          <p className="text-xs whitespace-pre-wrap">{item.payment_info}</p>
+                        </div>
+                      )}
+                    </div>
+                    <p className={`font-display text-xl font-bold flex-shrink-0 ${textColour}`}>{formatEur(item.amount_eur)}</p>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
 
