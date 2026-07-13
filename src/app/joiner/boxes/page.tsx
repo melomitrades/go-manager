@@ -35,7 +35,7 @@ export default function JoinerBoxesPage() {
   }
 
   function ItemBreakdown({ items, emsAmt, joinerWeight, label, det }: { items: any[]; emsAmt: number; joinerWeight: number; label: string; det: any }) {
-    if (!items?.length || emsAmt <= 0) return null
+    if (!items?.length) return null
     const isEms = label === 'EMS'
     const colour = isEms ? 'text-blue-600' : 'text-purple-600'
     const bgColour = isEms ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-purple-50 border-purple-200 text-purple-800'
@@ -63,7 +63,10 @@ export default function JoinerBoxesPage() {
 
     return (
       <div className="border border-border rounded-xl overflow-hidden divide-y divide-border/50">
-        <p className={`px-4 py-2 text-xs font-bold uppercase tracking-widest border-b ${bgColour}`}>{label} breakdown</p>
+        <p className={`px-4 py-2 text-xs font-bold uppercase tracking-widest border-b flex items-center justify-between ${bgColour}`}>
+          <span>{label} breakdown</span>
+          {emsAmt === 0 && <span className="font-normal normal-case tracking-normal opacity-70">You are not charged for {label}</span>}
+        </p>
         {Object.entries(groups).map(([key, g]) => {
           const totalPcs = g.qty + g.inclusions
           const groupShare = useWeight
@@ -161,12 +164,12 @@ export default function JoinerBoxesPage() {
                             </div>
 
                             {/* EMS breakdown */}
-                            {emsRequested && emsAmt > 0 && mine.items?.length > 0 && (
+                            {emsRequested && mine.items?.length > 0 && (
                               <ItemBreakdown items={mine.items} emsAmt={emsAmt} joinerWeight={joinerWeight} label="EMS" det={det}/>
                             )}
 
                             {/* Customs breakdown */}
-                            {customsRequested && customsAmt > 0 && mine.items?.length > 0 && (
+                            {customsRequested && mine.items?.length > 0 && (
                               <ItemBreakdown items={mine.items} emsAmt={customsAmt} joinerWeight={joinerWeight} label="Customs" det={det}/>
                             )}
                           </div>
