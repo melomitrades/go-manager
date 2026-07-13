@@ -57,9 +57,7 @@ export default function JoinerPaymentsPage() {
   }
 
   async function submit() {
-    if (!proof || selected.size === 0) return
-    // Order items require full name; box items do not
-    if (selectedItems.length > 0 && !fullName.trim()) return
+    if (!proof || selected.size === 0 || !fullName.trim()) return
     setSubmitting(true)
     await Promise.all(allSelectedItems.map(item =>
       fetch('/api/joiner-payments', {
@@ -71,7 +69,7 @@ export default function JoinerPaymentsPage() {
           box_id: item.box_id || null,
           paid: false,
           proof_url: proof,
-          full_name: item.type === 'order' ? fullName.trim() : null,
+          full_name: fullName.trim(),
         }),
       })
     ))
@@ -198,14 +196,12 @@ export default function JoinerPaymentsPage() {
                 </div>
               ))}
 
-              {/* Full name — only required if order items selected */}
-              {selectedItems.length > 0 && (
-                <div>
-                  <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Full name on the payment</label>
-                  <input type="text" placeholder="e.g. Jane Doe" value={fullName} onChange={e => setFullName(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25"/>
-                </div>
-              )}
+              {/* Full name */}
+              <div>
+                <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Full name on the payment</label>
+                <input type="text" placeholder="e.g. Jane Doe" value={fullName} onChange={e => setFullName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25"/>
+              </div>
 
               {/* Proof upload */}
               {proof ? (
@@ -225,7 +221,7 @@ export default function JoinerPaymentsPage() {
               )}
 
               {proof && (
-                <Button onClick={submit} disabled={submitting || (selectedItems.length > 0 && !fullName.trim())} className="w-full">
+                <Button onClick={submit} disabled={submitting || !fullName.trim()} className="w-full">
                   {submitting
                     ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/> Submitting…</>
                     : <><Send size={14}/> Submit proof for {allSelectedItems.length} item{allSelectedItems.length !== 1 ? 's' : ''}</>
