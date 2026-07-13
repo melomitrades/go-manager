@@ -389,13 +389,21 @@ export default function GomBoxesPage() {
                                     {(() => {
                                       const excluded = excludedJoiners[box.id] || new Set()
                                       const totalWeight = shares.joiners.reduce((sum: number, j: any) => excluded.has(j.joiner_id) ? sum : sum + (j.weight_g || 0), 0)
-                                      const emsTotal = parseFloat(box.ems_total_eur || 0)
                                       const joinerWeight = s.weight_g || 0
                                       const isExcluded = excluded.has(s.joiner_id)
-                                      // Use locked amount if published, otherwise compute live
-                                      const lockedAmt = s.ems_amount_eur != null ? parseFloat(s.ems_amount_eur) : null
-                                      const emsShare = lockedAmt ?? (!isExcluded && totalWeight > 0 ? Math.ceil((emsTotal * joinerWeight / totalWeight) * 100) / 100 : 0)
-                                      const joinerItemRate = joinerWeight > 0 ? emsShare / joinerWeight : 0
+                                      const ceil2 = (n: number) => Math.ceil(n * 100) / 100
+
+                                      // EMS — use locked amount if published
+                                      const emsRequested = shares.ems_payment_requested
+                                      const lockedEms = s.ems_amount_eur != null ? parseFloat(s.ems_amount_eur) : null
+                                      const emsShare = emsRequested ? (lockedEms ?? (!isExcluded && totalWeight > 0 ? ceil2(parseFloat(box.ems_total_eur || 0) * joinerWeight / totalWeight) : 0)) : 0
+                                      const emsRate = joinerWeight > 0 ? emsShare / joinerWeight : 0
+
+                                      // Customs — use locked amount if published
+                                      const customsRequested = shares.customs_payment_requested
+                                      const lockedCustoms = s.customs_amount_eur != null ? parseFloat(s.customs_amount_eur) : null
+                                      const customsShare = customsRequested ? (lockedCustoms ?? (!isExcluded && totalWeight > 0 ? ceil2(parseFloat(box.customs_total_eur || 0) * joinerWeight / totalWeight) : 0)) : 0
+                                      const customsRate = joinerWeight > 0 ? customsShare / joinerWeight : 0
 
                                       const groups: Record<string, { shop: string; desc: string; members: string[]; qty: number; inclusions: number; weight_g: number }> = {}
                                       for (const it of s.items) {
@@ -409,23 +417,39 @@ export default function GomBoxesPage() {
                                       return (
                                         <div className="space-y-3">
                                           {Object.entries(groups).map(([key, g]) => {
-                                            const groupEmsShare = joinerItemRate * (g.weight_g || 0)
                                             const totalPcs = g.qty + g.inclusions
-                                            const ratePerPc = totalPcs > 0 ? groupEmsShare / totalPcs : 0
+                                            const groupEms = emsRate * (g.weight_g || 0)
+                                            const groupCustoms = customsRate * (g.weight_g || 0)
+                                            const emsPc = totalPcs > 0 ? groupEms / totalPcs : 0
+                                            const customsPc = totalPcs > 0 ? groupCustoms / totalPcs : 0
+                                            const pcLabel = g.inclusions > 0
+                                              ? `${g.qty} + ${g.inclusions} incl. = ${totalPcs} PCs`
+                                              : `${g.qty} PC${g.qty !== 1 ? 's' : ''}`
                                             return (
                                             <div key={key} className="space-y-1">
                                               <p className="text-xs font-semibold text-muted-foreground">{g.shop}</p>
-                                              <div className="flex items-center gap-2 flex-wrap">
-                                                <span className="text-sm font-medium">{g.desc}</span>
-                                                {g.members.map(m => (
-                                                  <span key={m} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-primary/10 text-primary border border-primary/20">{m}</span>
-                                                ))}
-                                                {g.members.length === 0 && g.qty > 1 && <span className="text-xs text-muted-foreground">×{g.qty}</span>}
-                                                {g.inclusions > 0
-                                                  ? <span className="text-xs text-sky-600 font-semibold">{g.qty} + {g.inclusions} incl. = {totalPcs} PCs × {formatEur(ratePerPc)}</span>
-                                                  : g.qty > 0 && ratePerPc > 0 && <span className="text-xs text-muted-foreground">{g.qty} × {formatEur(ratePerPc)}</span>
-                                                }
-                                                <span className="ml-auto font-mono text-xs font-semibold">{formatEur(groupEmsShare)}</span>
+                                              <div className="flex items-start gap-2 flex-wrap">
+                                                <div className="flex-1 min-w-0">
+                                                  <span className="text-sm font-medium">{g.desc}</span>
+                                                  {g.members.length > 0 && (
+                                                    <span className="ml-2">{g.members.map(m => (
+                                                      <span key={m} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-primary/10 text-primary border border-primary/20 mr-1">{m}</span>
+                                                    ))}</span>
+                                                  )}
+                                                  {g.members.length === 0 && g.qty > 1 && <span className="text-xs text-muted-foreground ml-1">×{g.qty}</span>}
+                                                </div>
+                                                <div className="flex gap-3 flex-shrink-0 text-xs font-semibold">
+                                                  {emsRequested && groupEms > 0 && (
+                                                    <span className="text-blue-600" title={`${pcLabel} × ${formatEur(emsPc)}`}>
+                                                      EMS {pcLabel} × {formatEur(emsPc)} = <span className="font-bold">{formatEur(groupEms)}</span>
+                                                    </span>
+                                                  )}
+                                                  {customsRequested && groupCustoms > 0 && (
+                                                    <span className="text-purple-600" title={`${pcLabel} × ${formatEur(customsPc)}`}>
+                                                      Customs {pcLabel} × {formatEur(customsPc)} = <span className="font-bold">{formatEur(groupCustoms)}</span>
+                                                    </span>
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
                                           )})}
