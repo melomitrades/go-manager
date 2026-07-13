@@ -150,10 +150,14 @@ export default function GomPcSorterPage() {
     fetchData()
   }
 
+  const [inclusionsLoading, setInclusionsLoading] = useState<string | null>(null)
+
   async function openInclusionsModal(session: any) {
-    const det = sessionDetails[session.id] || await fetch(`/api/pc-sorter/${session.id}`).then(r=>r.json())
+    setInclusionsLoading(session.id)
+    const det = await fetch(`/api/pc-sorter/${session.id}`).then(r=>r.json()).catch(() => null)
+    setInclusionsLoading(null)
+    if (!det) return
     setSessionDetails(p => ({ ...p, [session.id]: det }))
-    // Pre-fill from existing assignments
     const drafts: Record<string, Record<string, string>> = {}
     for (const a of det.assignments || []) {
       if (!drafts[a.joiner_id]) drafts[a.joiner_id] = {}
@@ -255,7 +259,7 @@ export default function GomPcSorterPage() {
                       {session.group?.name && <p className="text-xs text-muted-foreground mt-0.5">{session.group.name}</p>}
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <Button variant="ghost" size="sm" onClick={() => openInclusionsModal(session)}>Inclusions</Button>
+                        <Button variant="ghost" size="sm" onClick={() => openInclusionsModal(session)} disabled={inclusionsLoading === session.id}>{inclusionsLoading === session.id ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"/> : "Inclusions"}</Button>
                       <Button variant="ghost" size="sm" onClick={() => {
                         setEditingSession(session)
                         setEditForm({ title:session.title, group_id:session.group_id||'', form_open:session.form_open, deadline:session.deadline?.slice(0,16)||'', box_id:session.box_id||'' })
@@ -549,7 +553,12 @@ export default function GomPcSorterPage() {
                 </div>
               )}
               {joiners.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">No joiners with inclusions found. Make sure the session is linked to a box with orders that have inclusions_count set.</p>
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground text-center py-4">No joiners with inclusions found.</p>
+                  {(d as any)?._debug && (
+                    <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-40">{JSON.stringify((d as any)._debug, null, 2)}</pre>
+                  )}
+                </div>
               ) : (
                 <>
                   <div className="overflow-x-auto">

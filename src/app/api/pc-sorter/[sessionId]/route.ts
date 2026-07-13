@@ -92,7 +92,7 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     WHERE pa.session_id=$1
   `, [params.sessionId]).catch(() => [] as any[])
 
-  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result })
+  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result, _debug: { sessionOrderIds, whereClause, inclusionParams: inclusionParams.map(p => Array.isArray(p) ? `array[${p.length}]` : p) } })
 }
 
 export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {
