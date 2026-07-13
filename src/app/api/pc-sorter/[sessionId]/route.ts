@@ -108,7 +108,21 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     WHERE pa.session_id=$1
   `, [params.sessionId]).catch(() => [] as any[])
 
-  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result })
+  // Ownership: for each version in this session, find what member+version combos joiners already own
+  // from OTHER sessions with the same version name
+  const ownership = await query(`
+    SELECT DISTINCT pa.joiner_id, m.id as member_id, m.name as member_name,
+      pv.name as version_name, ps.title as session_title, ps.id as session_id
+    FROM pc_assignments pa
+    JOIN pc_photocards pc ON pc.id = pa.photocard_id
+    JOIN members m ON m.id = pc.member_id
+    JOIN pc_versions pv ON pv.id = pa.version_id
+    JOIN pc_sorting_sessions ps ON ps.id = pa.session_id
+    WHERE pa.session_id != $1
+      AND pv.name IN (SELECT name FROM pc_versions WHERE session_id = $1)
+  `, [params.sessionId]).catch(() => [] as any[])
+
+  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result, ownership })
 }
 
 export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {
@@ -148,73 +162,75 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     const allVersions = await query(`SELECT * FROM pc_versions WHERE session_id=$1`, [params.sessionId]).catch(() => [] as any[])
     const allPhotocards = await query(`SELECT * FROM pc_photocards WHERE version_id = ANY(SELECT id FROM pc_versions WHERE session_id=$1)`, [params.sessionId]).catch(() => [] as any[])
 
-    // Build priority map: joiner_id -> version_id -> slot_index -> [member_id ordered]
+    // Build owned set: joiner+version_name+member combos from other sessions with same version name
+    const ownedRows = await query(`
+      SELECT DISTINCT pa.joiner_id, m.id as member_id, pv.name as version_name
+      FROM pc_assignments pa
+      JOIN pc_photocards pc ON pc.id = pa.photocard_id
+      JOIN members m ON m.id = pc.member_id
+      JOIN pc_versions pv ON pv.id = pa.version_id
+      WHERE pa.session_id != $1
+        AND pv.name IN (SELECT name FROM pc_versions WHERE session_id = $1)
+    `, [params.sessionId]).catch(() => [] as any[])
+    const ownedSet = new Set((ownedRows as any[]).map((r: any) => `${r.joiner_id}|${r.version_name}|${r.member_id}`))
+
     const priorityMap: Record<string, any> = {}
     for (const f of allForms as any[]) {
       priorityMap[f.joiner_id] = f.form_data?.priorities || {}
     }
 
-    // For each version, for each slot, run a greedy assignment
     for (const ver of allVersions as any[]) {
       const slots: string[] = (() => { try { return JSON.parse(ver.slots || '["PC"]') } catch { return ['PC'] } })()
-      const vPhotocards = (allPhotocards as any[]).filter(p => p.version_id === ver.id)
-
-      // Track available stock per member for this version
+      const vPhotocards = (allPhotocards as any[]).filter((p: any) => p.version_id === ver.id)
+      const versionName: string = ver.name || ''
       const available: Record<string, number> = {}
       for (const pc of vPhotocards) available[pc.member_id] = pc.available || pc.total_pulled || 0
-
-      // Joiners who have inclusions in this version
-      const vAssignments = (allAssignments as any[]).filter(a => a.version_id === ver.id)
+      const vAssignments = (allAssignments as any[]).filter((a: any) => a.version_id === ver.id)
 
       for (let slotIdx = 0; slotIdx < slots.length; slotIdx++) {
-        // Collect all joiner slot-requests: each inclusion pack = 1 request for this slot
         const requests: { joiner_id: string; priorities: string[] }[] = []
         for (const a of vAssignments) {
-          const joinerId = a.joiner_id
           const count = a.inclusions_assigned || 0
-          const slotPriorities: string[] = priorityMap[joinerId]?.[ver.id]?.[slotIdx] || []
-          for (let i = 0; i < count; i++) {
-            requests.push({ joiner_id: joinerId, priorities: slotPriorities })
-          }
+          const slotPriorities: string[] = priorityMap[a.joiner_id]?.[ver.id]?.[slotIdx] || []
+          for (let i = 0; i < count; i++) requests.push({ joiner_id: a.joiner_id, priorities: slotPriorities })
         }
 
-        // Greedy: assign each request to their highest-priority available member
-        const results: { joiner_id: string; member_id: string; slot: string }[] = []
+        const results: { joiner_id: string; member_id: string }[] = []
         for (const req of requests) {
           let assigned: string | null = null
+          // 1. Try priorities skipping already-owned
           for (const memberId of req.priorities) {
-            if ((available[memberId] || 0) > 0) {
-              available[memberId]--
-              assigned = memberId
-              break
+            if (!ownedSet.has(`${req.joiner_id}|${versionName}|${memberId}`) && (available[memberId] || 0) > 0) {
+              available[memberId]--; assigned = memberId; break
             }
           }
-          // Fallback: any available member
+          // 2. Fallback: any non-owned available member
           if (!assigned) {
-            const fallback = Object.entries(available).find(([, v]) => v > 0)
-            if (fallback) { available[fallback[0]]--; assigned = fallback[0] }
+            for (const [memberId, qty] of Object.entries(available)) {
+              if (qty > 0 && !ownedSet.has(`${req.joiner_id}|${versionName}|${memberId}`)) {
+                available[memberId]--; assigned = memberId; break
+              }
+            }
           }
-          if (assigned) results.push({ joiner_id: req.joiner_id, member_id: assigned, slot: slots[slotIdx] })
+          // 3. Last resort: any available member
+          if (!assigned) {
+            const fb = Object.entries(available).find(([, v]) => v > 0)
+            if (fb) { available[fb[0]]--; assigned = fb[0] }
+          }
+          if (assigned) results.push({ joiner_id: req.joiner_id, member_id: assigned })
         }
 
-        // Save results
         for (const r of results) {
-          const pc = vPhotocards.find(p => p.member_id === r.member_id)
+          const pc = vPhotocards.find((p: any) => p.member_id === r.member_id)
           if (!pc) continue
-          await query(`
-            INSERT INTO pc_assignments (session_id, joiner_id, photocard_id, version_id)
-            VALUES ($1,$2,$3,$4)
-            ON CONFLICT DO NOTHING
-          `, [params.sessionId, r.joiner_id, pc.id, ver.id]).catch(()=>{})
+          await query(`INSERT INTO pc_assignments (session_id, joiner_id, photocard_id, version_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+            [params.sessionId, r.joiner_id, pc.id, ver.id]).catch(()=>{})
         }
-
-        // Update available stock
         for (const pc of vPhotocards) {
           await query('UPDATE pc_photocards SET available=$1 WHERE id=$2', [available[pc.member_id] ?? pc.available, pc.id]).catch(()=>{})
         }
       }
     }
-
     await query('UPDATE pc_sorting_sessions SET form_open=false WHERE id=$1', [params.sessionId])
     return NextResponse.json({ ok: true })
   }

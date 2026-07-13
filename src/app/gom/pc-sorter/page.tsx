@@ -151,6 +151,16 @@ export default function GomPcSorterPage() {
   }
 
   const [inclusionsLoading, setInclusionsLoading] = useState<string | null>(null)
+  const [ownershipModal, setOwnershipModal] = useState<{ session: any; data: any } | null>(null)
+  const [ownershipLoading, setOwnershipLoading] = useState<string | null>(null)
+
+  async function openOwnershipModal(session: any) {
+    setOwnershipLoading(session.id)
+    const det = await fetch(`/api/pc-sorter/${session.id}`).then(r=>r.json()).catch(() => null)
+    setOwnershipLoading(null)
+    if (!det) return
+    setOwnershipModal({ session, data: det })
+  }
 
   async function openInclusionsModal(session: any) {
     setInclusionsLoading(session.id)
@@ -286,6 +296,7 @@ export default function GomPcSorterPage() {
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                         <Button variant="ghost" size="sm" onClick={() => openInclusionsModal(session)} disabled={inclusionsLoading === session.id}>{inclusionsLoading === session.id ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"/> : "Inclusions"}</Button>
+                        <Button variant="ghost" size="sm" onClick={() => openOwnershipModal(session)} disabled={ownershipLoading === session.id}>{ownershipLoading === session.id ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"/> : "Ownership"}</Button>
                       <Button variant="ghost" size="sm" onClick={() => {
                         setEditingSession(session)
                         setEditForm({ title:session.title, group_id:session.group_id||'', form_open:session.form_open, deadline:session.deadline?.slice(0,16)||'', box_id:session.box_id||'' })
@@ -633,6 +644,81 @@ export default function GomPcSorterPage() {
                     <Button onClick={saveInclusions} disabled={saving}>{saving?'Saving…':'Save Inclusions'}</Button>
                   </div>
                 </>
+              )}
+            </div>
+          </Modal>
+        )
+      })()}
+
+      {/* Ownership Modal */}
+      {ownershipModal && (() => {
+        const { session, data } = ownershipModal
+        const ownership: any[] = data?.ownership || []
+        const versions: any[] = data?.versions || []
+        const photocards: any[] = data?.photocards || []
+
+        // Get all members across all versions in this session
+        const memberMap: Record<string, string> = {}
+        for (const pc of photocards) memberMap[pc.member_id] = pc.member_name
+
+        // Group ownership by joiner
+        const byJoiner: Record<string, { display_name: string; owned: { member_id: string; member_name: string; version_name: string; session_title: string }[] }> = {}
+        for (const o of ownership) {
+          if (!byJoiner[o.joiner_id]) byJoiner[o.joiner_id] = { display_name: o.display_name || o.username || o.joiner_id, owned: [] }
+          byJoiner[o.joiner_id].owned.push({ member_id: o.member_id, member_name: o.member_name, version_name: o.version_name, session_title: o.session_title })
+        }
+
+        // All members in this session
+        const allMembers = [...new Map(photocards.map((pc: any) => [pc.member_id, pc.member_name])).entries()]
+
+        return (
+          <Modal open={true} onClose={()=>setOwnershipModal(null)} title="PC Ownership" subtitle={`Already-owned member+version combos from past sessions — the sort will skip these for each joiner`} size="xl">
+            <div className="space-y-4">
+              {ownership.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">No ownership history found for these version names in past sessions.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th className="text-left text-xs font-bold text-muted-foreground uppercase tracking-wider px-3 py-2 border-b border-border">Joiner</th>
+                        {versions.map((v: any) => (
+                          <th key={v.id} className="text-left text-xs font-bold text-muted-foreground uppercase tracking-wider px-3 py-2 border-b border-border" colSpan={allMembers.length}>
+                            {v.name}
+                          </th>
+                        ))}
+                      </tr>
+                      <tr>
+                        <th className="px-3 py-1 border-b border-border"/>
+                        {versions.map((v: any) =>
+                          allMembers.map(([mid, mname]) => (
+                            <th key={`${v.id}-${mid}`} className="text-xs font-normal text-muted-foreground px-2 py-1 border-b border-border">{mname}</th>
+                          ))
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(byJoiner).map(([joinerId, j]) => (
+                        <tr key={joinerId} className="hover:bg-secondary/20">
+                          <td className="px-3 py-2 font-semibold whitespace-nowrap">{j.display_name}</td>
+                          {versions.map((v: any) =>
+                            allMembers.map(([mid]) => {
+                              const owns = j.owned.some(o => o.member_id === mid && o.version_name === v.name)
+                              const ownerOf = j.owned.find(o => o.member_id === mid && o.version_name === v.name)
+                              return (
+                                <td key={`${v.id}-${mid}`} className="px-2 py-2 text-center">
+                                  {owns
+                                    ? <span title={ownerOf?.session_title} className="text-emerald-600 font-bold text-base">✓</span>
+                                    : <span className="text-muted-foreground/30 text-base">·</span>}
+                                </td>
+                              )
+                            })
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </Modal>
