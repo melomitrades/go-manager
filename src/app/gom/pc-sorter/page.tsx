@@ -553,12 +553,7 @@ export default function GomPcSorterPage() {
                 </div>
               )}
               {joiners.length === 0 ? (
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground text-center py-4">No joiners with inclusions found.</p>
-                  {(d as any)?._debug && (
-                    <pre className="text-xs bg-secondary/50 rounded-xl p-3 overflow-auto max-h-40">{JSON.stringify((d as any)._debug, null, 2)}</pre>
-                  )}
-                </div>
+                <p className="text-sm text-muted-foreground text-center py-8">No joiners with inclusions found. Make sure orders are selected and have inclusions_count set.</p>
               ) : (
                 <>
                   <div className="overflow-x-auto">

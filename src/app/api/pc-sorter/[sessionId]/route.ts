@@ -52,29 +52,45 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     } catch { return [] }
   })()
 
-  const whereClause = sessionOrderIds.length > 0
-    ? `oi.order_id = ANY(ARRAY[${sessionOrderIds.map((_,i) => `$${i+2}::uuid`).join(',')}])`
-    : `oi.order_id IN (SELECT order_id FROM box_orders WHERE box_id = (SELECT box_id FROM pc_sorting_sessions WHERE id = $1))`
-  const inclusionParams: any[] = sessionOrderIds.length > 0
-    ? [params.sessionId, ...sessionOrderIds]
-    : [params.sessionId]
+  // Use same approach as boxes route — query per order to avoid ANY(uuid[]) driver issues
+  const orderIdsToQuery: string[] = sessionOrderIds.length > 0
+    ? sessionOrderIds
+    : await query(`SELECT order_id FROM box_orders WHERE box_id = (SELECT box_id FROM pc_sorting_sessions WHERE id = $1)`, [params.sessionId])
+        .then((rows: any[]) => rows.map(r => r.order_id))
+        .catch(() => [] as string[])
 
-  const inclusions = await query(`
-    SELECT
-      COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
-      p.display_name,
-      p.username,
-      SUM(COALESCE(oi.inclusions_count, 0)) AS total_inclusions,
-      SUM(COALESCE(oi.price_krw, 0) * COALESCE(oi.amount_claimed, 1)) as total_krw
-    FROM order_items oi
-    JOIN orders o ON o.id = oi.order_id
-    JOIN profiles p ON p.id = COALESCE(oi.joiner_id, o.personal_joiner_id)
-    WHERE ${whereClause}
-      AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
-      AND COALESCE(oi.inclusions_count, 0) > 0
-    GROUP BY COALESCE(oi.joiner_id, o.personal_joiner_id), p.display_name, p.username
-    ORDER BY total_inclusions DESC
-  `, inclusionParams).catch(() => [] as any[])
+  const joinerInclusionMap: Record<string, { display_name: string; username: string; total_inclusions: number; total_krw: number }> = {}
+
+  for (const oid of orderIdsToQuery) {
+    const items = await query(`
+      SELECT
+        COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
+        p.display_name, p.username,
+        COALESCE(oi.inclusions_count, 0) AS inclusions_count,
+        COALESCE(oi.price_krw, 0) * COALESCE(oi.amount_claimed, 1) AS krw
+      FROM order_items oi
+      LEFT JOIN orders o ON o.id = oi.order_id
+      LEFT JOIN profiles p ON p.id = COALESCE(oi.joiner_id, o.personal_joiner_id)
+      WHERE oi.order_id = $1
+        AND (oi.joiner_id IS NOT NULL OR (oi.joiner_id IS NULL AND o.personal_joiner_id IS NOT NULL AND o.type = 'personal'))
+        AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
+        AND COALESCE(oi.inclusions_count, 0) > 0
+    `, [oid]).catch(() => [] as any[])
+
+    for (const item of items as any[]) {
+      const jid = item.joiner_id
+      if (!joinerInclusionMap[jid]) {
+        joinerInclusionMap[jid] = { display_name: item.display_name, username: item.username, total_inclusions: 0, total_krw: 0 }
+      }
+      joinerInclusionMap[jid].total_inclusions += parseInt(item.inclusions_count) || 0
+      joinerInclusionMap[jid].total_krw += parseFloat(item.krw) || 0
+    }
+  }
+
+  const inclusions = Object.entries(joinerInclusionMap)
+    .map(([joiner_id, v]) => ({ joiner_id, ...v }))
+    .filter(j => j.total_inclusions > 0)
+    .sort((a, b) => b.total_inclusions - a.total_inclusions)
 
   const assignments = await query(`SELECT * FROM pc_inclusion_assignments WHERE session_id=$1`, [params.sessionId]).catch(() => [] as any[])
   const forms = await query(`
@@ -92,16 +108,7 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     WHERE pa.session_id=$1
   `, [params.sessionId]).catch(() => [] as any[])
 
-  // Debug: check what order_items exist for these orders
-  const debugItems = await query(`
-    SELECT oi.order_id, oi.joiner_id, o.personal_joiner_id, oi.inclusions_count, oi.item_type, oi.description, oi.amount_claimed
-    FROM order_items oi
-    JOIN orders o ON o.id = oi.order_id
-    WHERE ${whereClause}
-    LIMIT 20
-  `, inclusionParams).catch(() => [] as any[])
-
-  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result, _debug: { sessionOrderIds, whereClause, inclusionParams: inclusionParams.map((p: any) => Array.isArray(p) ? `array[${p.length}]` : p), debugItems } })
+  return NextResponse.json({ session: pcSession, versions, photocards, forms, inclusions, assignments, result })
 }
 
 export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {
