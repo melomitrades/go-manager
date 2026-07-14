@@ -24,13 +24,13 @@ const ADDY_MAP: Record<string, string> = { at_k_addy: 'KR', at_c_addy: 'CN', at_
 // Run migrations once per cold start only
 let migrationsDone = false
 async function ensureOrderColumns() {
-  if (migrationsDone) return
-  migrationsDone = true
-  // Backfill: items with 'inclu' in description that have inclusions_count=0 → set to amount_claimed
+  // Always run the inclu backfill — idempotent, fast once all rows are fixed
   query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
     WHERE inclusions_count = 0
       AND description IS NOT NULL
       AND LOWER(description) LIKE '%inclu%'`).catch(() => {})
+  if (migrationsDone) return
+  migrationsDone = true
   await Promise.all([
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ').catch(() => {}),
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS ordered_at TIMESTAMPTZ').catch(() => {}),
