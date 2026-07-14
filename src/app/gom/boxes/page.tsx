@@ -420,7 +420,8 @@ export default function GomBoxesPage() {
                                       // EMS — use locked amount if published
                                       const emsRequested = shares.ems_payment_requested
                                       const lockedEms = s.ems_amount_eur != null ? parseFloat(s.ems_amount_eur) : null
-                                      const emsShare = emsRequested ? (lockedEms ?? (!isExcluded && totalWeight > 0 ? ceil2(parseFloat(box.ems_total_eur || 0) * joinerWeight / totalWeight) : 0)) : 0
+                                      // Always compute EMS share for GOM (use locked if published, else live)
+                                      const emsShare = lockedEms ?? (!isExcluded && totalWeight > 0 ? ceil2(parseFloat(box.ems_total_eur || 0) * joinerWeight / totalWeight) : 0)
                                       const emsRate = joinerWeight > 0 ? emsShare / joinerWeight : 0
 
                                       // Customs — show as preview before asking, and as locked after
@@ -464,9 +465,9 @@ export default function GomBoxesPage() {
                                                   {g.members.length === 0 && g.qty > 1 && <span className="text-xs text-muted-foreground ml-1">×{g.qty}</span>}
                                                 </div>
                                                 <div className="flex gap-3 flex-shrink-0 text-xs font-semibold">
-                                                  {emsRequested && groupEms > 0 && (
-                                                    <span className="text-blue-600" title={`${pcLabel} × ${formatEur(emsPc)}`}>
-                                                      EMS {pcLabel} × {formatEur(emsPc)} = <span className="font-bold">{formatEur(groupEms)}</span>
+                                                  {emsShare > 0 && groupEms > 0 && (
+                                                    <span className={emsRequested ? 'text-blue-600' : 'text-blue-400 italic'} title={emsRequested ? undefined : 'Preview — not yet sent to joiners'}>
+                                                      EMS{!emsRequested && ' (preview)'} {pcLabel} × {formatEur(emsPc)} = <span className="font-bold">{formatEur(groupEms)}</span>
                                                     </span>
                                                   )}
                                                   {showCustomsBreakdown && groupCustoms > 0 && (

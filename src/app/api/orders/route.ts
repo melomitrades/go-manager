@@ -26,6 +26,11 @@ let migrationsDone = false
 async function ensureOrderColumns() {
   if (migrationsDone) return
   migrationsDone = true
+  // Backfill: items with 'inclu' in description that have inclusions_count=0 → set to amount_claimed
+  query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
+    WHERE inclusions_count = 0
+      AND description IS NOT NULL
+      AND LOWER(description) LIKE '%inclu%'`).catch(() => {})
   await Promise.all([
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ').catch(() => {}),
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS ordered_at TIMESTAMPTZ').catch(() => {}),
@@ -118,7 +123,7 @@ export async function POST(req: NextRequest) {
         `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [order.id, item.member_id || null, item.joiner_id || null, item.pricing_type, item.description || null,
-          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', item.inclusions_count || 0, item.entries_count || 0]
+          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0]
       )
     }
   }
@@ -196,7 +201,7 @@ export async function PATCH(req: NextRequest) {
       await query(
         `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, version_name)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', item.inclusions_count || 0, item.entries_count || 0, item.version_name || null]
+        [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.version_name || null]
       )
     }
   }
