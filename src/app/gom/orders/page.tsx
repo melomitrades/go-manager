@@ -417,8 +417,8 @@ export default function GomOrdersPage() {
           }
           return allOpts[0] || null
         })()
-        // Use stored item.description first; fall back to opt label only for new (empty) items
-        const itemDescription = item.description || opt?.label || null
+        // Use opt label (current price option name) when available — this ensures renames are saved
+        const itemDescription = opt?.label || item.description || null
         const priceKrw = opt?.price_krw && opt.price_krw !== '' ? Math.round(parseFloat(opt.price_krw)) : null
         const entriesPerItem = opt?.entries && opt.entries !== '' ? parseInt(opt.entries) : 0
         const versionName = form.is_multi_version ? (versionByOptId[item.pricing_option_id] || null) : null
