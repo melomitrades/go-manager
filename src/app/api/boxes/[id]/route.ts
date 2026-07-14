@@ -100,14 +100,16 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     if (!joinerMap[jid]) {
       joinerMap[jid] = { joiner_id: jid, display_name: item.display_name, username: item.username, weight_g: 0, item_count: 0, total_inclusions: 0, items: [] }
     }
+    // Skip late fees from EMS/customs weight calculation
+    const isLateFee = /late.?fee/i.test(item.description || '')
     const typeKey = item.item_type || 'photocard'
     const claimed = item.amount_claimed || 1
     const inclusions = typeKey === 'photocard' ? (parseInt(item.inclusions_count) || 0) : 0
     const effectiveCount = claimed + inclusions
-    const unitWeight = weightByItemType[typeKey] ?? weightByType[typeKey] ?? 0
+    const unitWeight = isLateFee ? 0 : (weightByItemType[typeKey] ?? weightByType[typeKey] ?? 0)
     const wg = unitWeight * effectiveCount
     joinerMap[jid].weight_g += wg
-    joinerMap[jid].item_count += claimed
+    joinerMap[jid].item_count += isLateFee ? 0 : claimed
     joinerMap[jid].total_inclusions += parseInt(item.inclusions_count) || 0
     joinerMap[jid].items.push({
       id: item.id, description: item.description, member_name: item.member_name,
