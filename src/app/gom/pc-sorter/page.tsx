@@ -4,7 +4,7 @@ import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, R
 import { Button, Card, CardContent, CardHeader, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { formatDate, formatDateTime } from '@/lib/utils'
 
-interface PcVersion { id: string; name: string; slots: string[]; members: { member_id: string; name: string; total_pulled: string }[] }
+interface PcVersion { id: string; name: string; slots: string[]; members: { member_id: string; name: string; total_pulled: string; pulls?: (string|number)[] }[] }
 
 export default function GomPcSorterPage() {
   const [sessions, setSessions] = useState<any[]>([])
@@ -96,11 +96,17 @@ export default function GomPcSorterPage() {
 
     const fullVersions = versions.map(v => ({
       name: v.name,
-      slots: v.slots.filter(s => s.trim()),
-      members: groupMembers.map(m => ({
-        member_id: m.id,
-        total_pulled: v.members.find((vm:any) => vm.member_id === m.id)?.total_pulled || '0',
-      }))
+      slots: v.slots.filter((s: string) => s.trim()),
+      members: groupMembers.map(m => {
+        const vm = v.members.find((vm:any) => vm.member_id === m.id)
+        const slotCount = v.slots.filter((s: string) => s.trim()).length
+        return {
+          member_id: m.id,
+          pulls: Array.isArray(vm?.pulls)
+            ? vm.pulls.map((p:any) => parseInt(p) || 0)
+            : Array(slotCount).fill(0),
+        }
+      })
     }))
 
     await fetch('/api/pc-sorter', {
@@ -473,15 +479,47 @@ export default function GomPcSorterPage() {
                       ))}
                     </div>
                   </div>
-                  {/* Pull counts per member */}
+                  {/* Pull counts per member per slot */}
                   <div>
-                    <p className="text-xs font-semibold text-muted-foreground mb-2">Cards pulled per member</p>
+                    <div className="flex items-center gap-2 mb-2">
+                      <p className="text-xs font-semibold text-muted-foreground flex-1">Cards pulled per member</p>
+                      {v.slots.filter((s:string)=>s.trim()).map((slot:string, si:number) => (
+                        <span key={si} className="text-xs font-bold text-primary w-20 text-center">{slot || `Slot ${si+1}`}</span>
+                      ))}
+                    </div>
                     {groups.find((g:any)=>g.id===form.group_id)?.members?.map((m: any) => (
-                      <div key={m.id} className="flex items-center gap-3 mb-1.5">
+                      <div key={m.id} className="flex items-center gap-2 mb-1.5">
                         <span className="text-sm flex-1">{m.name}</span>
-                        <div className="w-24"><Input type="number" min="0" placeholder="0"
-                          value={v.members.find((vm:any)=>vm.member_id===m.id)?.total_pulled||''}
-                          onChange={e=>{const idx=v.members.findIndex((vm:any)=>vm.member_id===m.id); if(idx>=0) updateMember(v.id,idx,'total_pulled',e.target.value); else setVersions(vs=>vs.map(x=>x.id===v.id?{...x,members:[...x.members,{member_id:m.id,name:m.name,total_pulled:e.target.value}]}:x))}}/></div>
+                        {v.slots.filter((s:string)=>s.trim()).map((_slot:string, si:number) => {
+                          const memberEntry = v.members.find((vm:any)=>vm.member_id===m.id)
+                          const pullVal = Array.isArray(memberEntry?.pulls) ? (memberEntry.pulls[si] ?? '') : ''
+                          return (
+                            <div key={si} className="w-20">
+                              <Input type="number" min="0" placeholder="0" value={pullVal}
+                                onChange={e => {
+                                  const val = e.target.value
+                                  setVersions(vs => vs.map(x => {
+                                    if (x.id !== v.id) return x
+                                    const idx = x.members.findIndex((vm:any) => vm.member_id === m.id)
+                                    const slots2 = x.slots.filter((s:string) => s.trim())
+                                    if (idx >= 0) {
+                                      const newMembers = x.members.map((vm:any, i:number) => {
+                                        if (i !== idx) return vm
+                                        const pulls = Array.isArray(vm.pulls) ? [...vm.pulls] : slots2.map(() => '')
+                                        while (pulls.length < slots2.length) pulls.push('')
+                                        pulls[si] = val
+                                        return { ...vm, pulls }
+                                      })
+                                      return { ...x, members: newMembers }
+                                    } else {
+                                      const pulls = slots2.map((_:any, i:number) => i === si ? val : '')
+                                      return { ...x, members: [...x.members, { member_id: m.id, name: m.name, total_pulled: '', pulls }] }
+                                    }
+                                  }))
+                                }}/>
+                            </div>
+                          )
+                        })}
                       </div>
                     )) || <p className="text-xs text-muted-foreground">Select a group to see members</p>}
                   </div>

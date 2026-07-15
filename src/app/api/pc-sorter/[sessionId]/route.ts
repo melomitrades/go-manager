@@ -8,6 +8,8 @@ async function ensureTables() {
     query(`ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS box_id UUID REFERENCES boxes(id) ON DELETE SET NULL`).catch(()=>{}),
     query(`ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_ids JSONB DEFAULT NULL`).catch(()=>{}),
     query(`ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS slots JSONB DEFAULT NULL`).catch(()=>{}),
+    query(`ALTER TABLE pc_photocards ADD COLUMN IF NOT EXISTS slot_index INTEGER DEFAULT 0`).catch(()=>{}),
+    query(`ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS slot_index INTEGER DEFAULT 0`).catch(()=>{}),
     query(`ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS order_ids TEXT DEFAULT ''`).catch(()=>{}),
     query(`CREATE TABLE IF NOT EXISTS pc_inclusion_assignments (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -188,6 +190,13 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
       const vAssignments = (allAssignments as any[]).filter((a: any) => a.version_id === ver.id)
 
       for (let slotIdx = 0; slotIdx < slots.length; slotIdx++) {
+        // Filter photocards for this specific slot
+        const slotPhotocards = vPhotocards.filter((p: any) => (p.slot_index ?? 0) === slotIdx)
+
+        // Per-slot available stock
+        const slotAvailable: Record<string, number> = {}
+        for (const pc of slotPhotocards) slotAvailable[pc.member_id] = pc.available || pc.total_pulled || 0
+
         const requests: { joiner_id: string; priorities: string[] }[] = []
         for (const a of vAssignments) {
           const count = a.inclusions_assigned || 0
@@ -200,34 +209,35 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
           let assigned: string | null = null
           // 1. Try priorities skipping already-owned
           for (const memberId of req.priorities) {
-            if (!ownedSet.has(`${req.joiner_id}|${versionName}|${memberId}`) && (available[memberId] || 0) > 0) {
-              available[memberId]--; assigned = memberId; break
+            if (!ownedSet.has(`${req.joiner_id}|${versionName}|${memberId}`) && (slotAvailable[memberId] || 0) > 0) {
+              slotAvailable[memberId]--; assigned = memberId; break
             }
           }
-          // 2. Fallback: any non-owned available member
+          // 2. Fallback: any non-owned available member in this slot
           if (!assigned) {
-            for (const [memberId, qty] of Object.entries(available)) {
+            for (const [memberId, qty] of Object.entries(slotAvailable)) {
               if (qty > 0 && !ownedSet.has(`${req.joiner_id}|${versionName}|${memberId}`)) {
-                available[memberId]--; assigned = memberId; break
+                slotAvailable[memberId]--; assigned = memberId; break
               }
             }
           }
-          // 3. Last resort: any available member
+          // 3. Last resort: any available member in this slot
           if (!assigned) {
-            const fb = Object.entries(available).find(([, v]) => v > 0)
-            if (fb) { available[fb[0]]--; assigned = fb[0] }
+            const fb = Object.entries(slotAvailable).find(([, v]) => v > 0)
+            if (fb) { slotAvailable[fb[0]]--; assigned = fb[0] }
           }
           if (assigned) results.push({ joiner_id: req.joiner_id, member_id: assigned })
         }
 
         for (const r of results) {
-          const pc = vPhotocards.find((p: any) => p.member_id === r.member_id)
+          const pc = slotPhotocards.find((p: any) => p.member_id === r.member_id)
           if (!pc) continue
-          await query(`INSERT INTO pc_assignments (session_id, joiner_id, photocard_id, version_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-            [params.sessionId, r.joiner_id, pc.id, ver.id]).catch(()=>{})
+          await query(`INSERT INTO pc_assignments (session_id, joiner_id, photocard_id, version_id, slot_index) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+            [params.sessionId, r.joiner_id, pc.id, ver.id, slotIdx]).catch(()=>{})
         }
-        for (const pc of vPhotocards) {
-          await query('UPDATE pc_photocards SET available=$1 WHERE id=$2', [available[pc.member_id] ?? pc.available, pc.id]).catch(()=>{})
+        // Update slot-specific available stock
+        for (const pc of slotPhotocards) {
+          await query('UPDATE pc_photocards SET available=$1 WHERE id=$2', [slotAvailable[pc.member_id] ?? pc.available, pc.id]).catch(()=>{})
         }
       }
     }

@@ -12,6 +12,7 @@ async function ensureTables() {
     query('ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS box_id UUID REFERENCES boxes(id) ON DELETE SET NULL').catch(()=>{}),
     query('ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_ids JSONB DEFAULT NULL').catch(()=>{}),
     query('ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS slots JSONB DEFAULT NULL').catch(()=>{}),
+    query('ALTER TABLE pc_photocards ADD COLUMN IF NOT EXISTS slot_index INTEGER DEFAULT 0').catch(()=>{}),
     query('ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS order_ids TEXT').catch(()=>{}),
     query('ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS inclusions_count INTEGER DEFAULT 0').catch(()=>{}),
   ])
@@ -49,18 +50,26 @@ export async function POST(req: NextRequest) {
   if (!pcSession) return NextResponse.json({ error: 'Failed' }, { status: 500 })
 
   for (const v of (versions||[])) {
-    // slots: array of slot label strings e.g. ["PC","Lenticular"]
+    const slots: string[] = v.slots?.filter((s: string) => s.trim()) || ['PC']
     const ver = await queryOne(
       'INSERT INTO pc_versions (session_id, name, slots) VALUES ($1,$2,$3) RETURNING *',
-      [(pcSession as any).id, v.name, v.slots ? JSON.stringify(v.slots) : JSON.stringify(['PC'])]
+      [(pcSession as any).id, v.name, JSON.stringify(slots)]
     )
     if (!ver) continue
+    // Save per-slot pull counts: m.pulls is array [countSlot0, countSlot1, ...]
     for (const m of (v.members||[])) {
-      if (!m.member_id || !m.total_pulled) continue
-      await query(
-        'INSERT INTO pc_photocards (version_id, member_id, total_pulled, available) VALUES ($1,$2,$3,$3)',
-        [(ver as any).id, m.member_id, parseInt(m.total_pulled)]
-      )
+      if (!m.member_id) continue
+      const pulls: number[] = Array.isArray(m.pulls)
+        ? m.pulls.map((p: any) => parseInt(p) || 0)
+        : slots.map(() => parseInt(m.total_pulled) || 0)
+      for (let si = 0; si < slots.length; si++) {
+        const pulled = pulls[si] || 0
+        if (pulled <= 0) continue
+        await query(
+          'INSERT INTO pc_photocards (version_id, member_id, slot_index, total_pulled, available) VALUES ($1,$2,$3,$4,$4)',
+          [(ver as any).id, m.member_id, si, pulled]
+        )
+      }
     }
   }
   return NextResponse.json(pcSession, { status: 201 })
