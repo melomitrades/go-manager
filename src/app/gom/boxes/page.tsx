@@ -42,7 +42,7 @@ export default function GomBoxesPage() {
     label: '',
     ems_total_eur: '', ems_total_krw: '',
     customs_total_eur: '', customs_total_krw: '',
-    ems_deadline: '', customs_deadline: '',
+    ems_deadline: '', customs_deadline: '', payment_info: '',
   })
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([])
   const [itemTypeRows, setItemTypeRows] = useState<ItemTypeRow[]>([
@@ -98,7 +98,7 @@ export default function GomBoxesPage() {
 
   function openNew() {
     setEditingBox(null)
-    setForm({ label: '', ems_total_eur: '', ems_total_krw: '', customs_total_eur: '', customs_total_krw: '', ems_deadline: '', customs_deadline: '' })
+    setForm({ label: '', ems_total_eur: '', ems_total_krw: '', customs_total_eur: '', customs_total_krw: '', ems_deadline: '', customs_deadline: '', payment_info: '' })
     setSelectedOrderIds([])
     setItemTypeRows([{ id: uid(), item_type: 'photocard', custom_label: '', weight_g: '' }])
     setModalOpen(true)
@@ -113,6 +113,7 @@ export default function GomBoxesPage() {
       customs_total_eur: String(box.customs_total_eur || ''),
       customs_total_krw: String(box.customs_total_krw || ''),
       ems_deadline: box.ems_deadline?.slice(0, 16) || '',
+      payment_info: box.payment_info || '',
       customs_deadline: box.customs_deadline?.slice(0, 16) || '',
     })
     setSelectedOrderIds((box.linked_orders || []).map((o: any) => o.order_id || o.id))
@@ -135,6 +136,7 @@ export default function GomBoxesPage() {
       customs_total_eur: parseFloat(form.customs_total_eur) || 0,
       customs_total_krw: parseFloat(form.customs_total_krw) || 0,
       ems_deadline: form.ems_deadline || null,
+      payment_info: form.payment_info || null,
       customs_deadline: form.customs_deadline || null,
       item_types: itemTypeRows
         .filter(r => r.weight_g)
@@ -199,6 +201,12 @@ export default function GomBoxesPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="font-display font-semibold">{box.label || 'Box'}</p>
+                          {box.payment_info && (
+                            <div className="mt-2 border border-primary/20 bg-primary/5 rounded-xl px-3 py-2">
+                              <p className="text-xs font-bold text-primary uppercase tracking-wide mb-0.5">💳 Payment Info</p>
+                              <p className="text-xs whitespace-pre-wrap text-muted-foreground">{box.payment_info}</p>
+                            </div>
+                          )}
                           {/* Linked orders */}
                           {(box.linked_orders || []).length > 0 && (
                             <div className="flex flex-wrap gap-1.5 mt-1.5">
@@ -605,6 +613,10 @@ export default function GomBoxesPage() {
               <FormField label="Amount (₩)"><Input type="number" placeholder="0" value={form.customs_total_krw} onChange={e => setForm(f => ({ ...f, customs_total_krw: e.target.value }))}/></FormField>
             </div>
             <FormField label="Customs Payment Deadline"><Input type="datetime-local" value={form.customs_deadline} onChange={e => setForm(f => ({ ...f, customs_deadline: e.target.value }))}/></FormField>
+            <FormField label="Payment Info">
+              <p className="text-xs text-muted-foreground mb-1.5">Shown to joiners in the Boxes tab (bank details, PayPal, etc.)</p>
+              <textarea className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/30" rows={3} value={form.payment_info} onChange={e=>setForm(f=>({...f,payment_info:e.target.value}))} placeholder="e.g. PayPal: gom@example.com"/>
+            </FormField>
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
