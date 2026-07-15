@@ -123,6 +123,13 @@ export default function JoinerBoxesPage() {
                       </CardHeader>
                     </button>
 
+                    {box.payment_info && (
+                      <div className="mx-4 mb-3 border border-primary/20 bg-primary/5 rounded-xl px-3 py-2.5">
+                        <p className="text-xs font-bold text-primary uppercase tracking-wide mb-1">💳 Payment Info</p>
+                        <p className="text-sm whitespace-pre-wrap">{box.payment_info}</p>
+                      </div>
+                    )}
+
                     {isOpen && (
                       <CardContent>
                         {!det && <div className="flex justify-center py-6"><div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"/></div>}
