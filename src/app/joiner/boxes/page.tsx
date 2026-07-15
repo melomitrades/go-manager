@@ -50,7 +50,8 @@ export default function JoinerBoxesPage() {
       }
       if (it.member_name && !groups[key].members.includes(it.member_name)) groups[key].members.push(it.member_name)
       groups[key].qty += it.amount_claimed || 1
-      groups[key].inclusions += it.inclusions_count || 0
+      // inclusions_count is per-row total, not per-member — only set from first row
+      if (groups[key].inclusions === 0) groups[key].inclusions = it.inclusions_count || 0
       groups[key].weight_g += it.weight_g || 0
     }
 
