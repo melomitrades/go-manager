@@ -335,33 +335,30 @@ export default function GomPcSorterPage() {
                         <Button variant="ghost" size="sm" onClick={() => openInclusionsModal(session)} disabled={inclusionsLoading === session.id}>{inclusionsLoading === session.id ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"/> : "Inclusions"}</Button>
                         <Button variant="ghost" size="sm" onClick={() => openOwnershipModal(session)} disabled={ownershipLoading === session.id}>{ownershipLoading === session.id ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"/> : "Ownership"}</Button>
                       <Button variant="ghost" size="sm" onClick={async () => {
-                        setEditingSession(session)
                         setEditForm({ title:session.title, group_id:session.group_id||'', form_open:session.form_open, deadline:session.deadline?.slice(0,16)||'', box_id:session.box_id||'' })
                         const savedIds = (() => { try { const o = session.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] } })()
                         setSelectedOrderIds(savedIds.length > 0 ? savedIds : (boxes.find((b:any)=>b.id===session.box_id)?.linked_orders||[]).map((o:any)=>o.order_id||o.id).filter(Boolean))
-                        setInclusionOrderIds(savedIds)
-                        // Load existing versions + photocards into versions state
+                        setVersions([])
+                        // Fetch versions first, then open modal
                         const det = await fetch(`/api/pc-sorter/${session.id}`).then(r=>r.json()).catch(()=>null)
                         if (det?.versions) {
                           const loadedVersions = det.versions.map((v: any) => {
                             const slotsParsed: string[] = (() => { try { return JSON.parse(v.slots || '["PC"]') } catch { return ['PC'] } })()
                             const vPhotocards: any[] = (det.photocards||[]).filter((p: any) => p.version_id === v.id)
-                            // Get unique members
-                            const memberIds = [...new Set(vPhotocards.map((p: any) => p.member_id))]
+                            const memberIds = [...new Set(vPhotocards.map((p: any) => p.member_id as string))]
                             const members = memberIds.map(mid => {
                               const memberPcs = vPhotocards.filter((p: any) => p.member_id === mid)
                               const pulls = slotsParsed.map((_: string, si: number) => {
                                 const pc = memberPcs.find((p: any) => (p.slot_index ?? 0) === si)
                                 return String(pc?.total_pulled || 0)
                               })
-                              return { member_id: mid as string, name: memberPcs[0]?.member_name || '', total_pulled: '', pulls }
+                              return { member_id: mid, name: memberPcs[0]?.member_name || '', total_pulled: '', pulls }
                             })
                             return { id: v.id, name: v.name || '', slots: slotsParsed, members }
                           })
                           setVersions(loadedVersions)
-                        } else {
-                          setVersions([])
                         }
+                        setEditingSession(session)
                       }}>Edit</Button>
                       <Button variant="ghost" size="icon" onClick={() => handleDelete(session.id)}><Trash2 size={13} className="text-destructive/50"/></Button>
                       <button onClick={() => toggleExpand(session.id)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary px-2 py-1.5 rounded-lg hover:bg-secondary">
@@ -590,7 +587,7 @@ export default function GomPcSorterPage() {
 
       {/* Edit Modal */}
       {editingSession && (() => {
-        const editBoxOrders = form.box_id
+        const editBoxOrders = editForm.box_id
           ? orders.filter((o:any) => (boxes.find((b:any)=>b.id===editForm.box_id)?.linked_orders||[]).map((lo:any)=>lo.order_id||lo.id).includes(o.id))
           : orders
         return (
