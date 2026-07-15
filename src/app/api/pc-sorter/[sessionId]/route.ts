@@ -168,6 +168,9 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     }
     return NextResponse.json({ ok: true })
   }
+
+  // GOM: assign inclusions per version per joiner
+  if (body.assignments) {
     for (const a of body.assignments) {
       await query(`
         INSERT INTO pc_inclusion_assignments (session_id, version_id, joiner_id, inclusions_assigned)
