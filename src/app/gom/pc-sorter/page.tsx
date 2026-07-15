@@ -132,6 +132,10 @@ export default function GomPcSorterPage() {
   async function handleEdit() {
     if (!editingSession) return
     setSaving(true)
+    const group = groups.find((g: any) => g.id === editForm.group_id)
+    const groupMembers: any[] = group?.members || []
+
+    // Save session metadata
     await fetch('/api/pc-sorter', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -142,10 +146,37 @@ export default function GomPcSorterPage() {
         form_open: editForm.form_open,
         deadline: editForm.deadline || null,
         box_id: editForm.box_id || null,
-          order_ids: inclusionOrderIds.length > 0 ? inclusionOrderIds : null,
+        order_ids: selectedOrderIds.length > 0 ? selectedOrderIds : null,
       }),
     })
+
+    // Save updated versions if any were loaded/edited
+    if (versions.length > 0) {
+      const fullVersions = versions.map(v => ({
+        id: v.id, // existing version id
+        name: v.name,
+        slots: v.slots.filter((s: string) => s.trim()),
+        members: groupMembers.map(m => {
+          const vm = v.members.find((vm:any) => vm.member_id === m.id)
+          const slotCount = v.slots.filter((s: string) => s.trim()).length
+          return {
+            member_id: m.id,
+            pulls: Array.isArray(vm?.pulls)
+              ? vm.pulls.map((p:any) => parseInt(p) || 0)
+              : Array(slotCount).fill(0),
+          }
+        })
+      }))
+      await fetch(`/api/pc-sorter/${editingSession.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ update_versions: true, versions: fullVersions }),
+      })
+    }
+
     setEditingSession(null)
+    setVersions([])
+    setSelectedOrderIds([])
     fetchData()
     setSaving(false)
   }
@@ -303,12 +334,34 @@ export default function GomPcSorterPage() {
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                         <Button variant="ghost" size="sm" onClick={() => openInclusionsModal(session)} disabled={inclusionsLoading === session.id}>{inclusionsLoading === session.id ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"/> : "Inclusions"}</Button>
                         <Button variant="ghost" size="sm" onClick={() => openOwnershipModal(session)} disabled={ownershipLoading === session.id}>{ownershipLoading === session.id ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"/> : "Ownership"}</Button>
-                      <Button variant="ghost" size="sm" onClick={() => {
+                      <Button variant="ghost" size="sm" onClick={async () => {
                         setEditingSession(session)
                         setEditForm({ title:session.title, group_id:session.group_id||'', form_open:session.form_open, deadline:session.deadline?.slice(0,16)||'', box_id:session.box_id||'' })
-                        // Restore saved order_ids for this session
                         const savedIds = (() => { try { const o = session.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] } })()
-                        setInclusionOrderIds(savedIds.length > 0 ? savedIds : (boxes.find((b:any)=>b.id===session.box_id)?.linked_orders||[]).map((o:any)=>o.order_id||o.id).filter(Boolean))
+                        setSelectedOrderIds(savedIds.length > 0 ? savedIds : (boxes.find((b:any)=>b.id===session.box_id)?.linked_orders||[]).map((o:any)=>o.order_id||o.id).filter(Boolean))
+                        setInclusionOrderIds(savedIds)
+                        // Load existing versions + photocards into versions state
+                        const det = await fetch(`/api/pc-sorter/${session.id}`).then(r=>r.json()).catch(()=>null)
+                        if (det?.versions) {
+                          const loadedVersions = det.versions.map((v: any) => {
+                            const slotsParsed: string[] = (() => { try { return JSON.parse(v.slots || '["PC"]') } catch { return ['PC'] } })()
+                            const vPhotocards: any[] = (det.photocards||[]).filter((p: any) => p.version_id === v.id)
+                            // Get unique members
+                            const memberIds = [...new Set(vPhotocards.map((p: any) => p.member_id))]
+                            const members = memberIds.map(mid => {
+                              const memberPcs = vPhotocards.filter((p: any) => p.member_id === mid)
+                              const pulls = slotsParsed.map((_: string, si: number) => {
+                                const pc = memberPcs.find((p: any) => (p.slot_index ?? 0) === si)
+                                return String(pc?.total_pulled || 0)
+                              })
+                              return { member_id: mid as string, name: memberPcs[0]?.member_name || '', total_pulled: '', pulls }
+                            })
+                            return { id: v.id, name: v.name || '', slots: slotsParsed, members }
+                          })
+                          setVersions(loadedVersions)
+                        } else {
+                          setVersions([])
+                        }
                       }}>Edit</Button>
                       <Button variant="ghost" size="icon" onClick={() => handleDelete(session.id)}><Trash2 size={13} className="text-destructive/50"/></Button>
                       <button onClick={() => toggleExpand(session.id)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary px-2 py-1.5 rounded-lg hover:bg-secondary">
@@ -537,14 +590,23 @@ export default function GomPcSorterPage() {
 
       {/* Edit Modal */}
       {editingSession && (() => {
-        const editBox = boxes.find((b: any) => b.id === editForm.box_id)
-        const editBoxOrderIds: string[] = (editBox?.linked_orders || []).map((o: any) => o.order_id || o.id).filter(Boolean)
+        const editBoxOrders = form.box_id
+          ? orders.filter((o:any) => (boxes.find((b:any)=>b.id===editForm.box_id)?.linked_orders||[]).map((lo:any)=>lo.order_id||lo.id).includes(o.id))
+          : orders
         return (
-        <Modal open={!!editingSession} onClose={()=>setEditingSession(null)} title="Edit Session" size="md">
-          <div className="space-y-4">
-            <FormField label="Title"><Input value={editForm.title} onChange={e=>setEditForm(f=>({...f,title:e.target.value}))}/></FormField>
-            <div className="grid grid-cols-2 gap-3">
-              <FormField label="Group"><Select options={groups.map((g:any)=>({value:g.id,label:g.name}))} placeholder="Select…" value={editForm.group_id} onChange={e=>setEditForm(f=>({...f,group_id:e.target.value}))}/></FormField>
+        <Modal open={!!editingSession} onClose={()=>{setEditingSession(null);setVersions([]);setSelectedOrderIds([])}} title="Edit Session" size="xl">
+          <div className="space-y-5">
+            {/* Title + Deadline */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+              <FormField label="Session Title" required>
+                <Input value={editForm.title} onChange={e=>setEditForm(f=>({...f,title:e.target.value}))}/>
+              </FormField>
+              <FormField label="Form Deadline">
+                <Input type="datetime-local" value={editForm.deadline} onChange={e=>setEditForm(f=>({...f,deadline:e.target.value}))}/>
+              </FormField>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               <FormField label="Box">
                 <Select options={boxes.map((b:any)=>({value:b.id,label:b.label||'Box'}))} placeholder="No box…" value={editForm.box_id}
                   onChange={e => {
@@ -552,33 +614,111 @@ export default function GomPcSorterPage() {
                     setEditForm(f=>({...f, box_id: newBoxId}))
                     const b = boxes.find((x:any) => x.id === newBoxId)
                     const ids = (b?.linked_orders || []).map((o:any) => o.order_id || o.id).filter(Boolean)
-                    if (ids.length > 0) setInclusionOrderIds(ids)
+                    setSelectedOrderIds(ids)
                   }}/>
               </FormField>
+              <FormField label="Group">
+                <Select options={groups.map((g:any)=>({value:g.id,label:g.name}))} placeholder="Select…" value={editForm.group_id} onChange={e=>setEditForm(f=>({...f,group_id:e.target.value}))}/>
+              </FormField>
             </div>
-            <FormField label="Deadline"><Input type="datetime-local" value={editForm.deadline} onChange={e=>setEditForm(f=>({...f,deadline:e.target.value}))}/></FormField>
 
-            {/* Order selection for inclusions */}
-            <FormField label="Orders for inclusions">
-              <p className="text-xs text-muted-foreground mb-2">Select orders whose inclusions count for this session.</p>
-              <div className="border border-border rounded-xl overflow-hidden max-h-40 overflow-y-auto divide-y divide-border/50">
-                {orders.length === 0 && <p className="text-sm text-muted-foreground p-3">No active orders.</p>}
-                {orders.map((o:any) => (
-                  <label key={o.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
-                    <input type="checkbox" checked={inclusionOrderIds.includes(o.id)}
-                      onChange={()=>setInclusionOrderIds(prev=>prev.includes(o.id)?prev.filter(x=>x!==o.id):[...prev,o.id])}
-                      className="accent-primary w-3.5 h-3.5"/>
-                    <span className="text-sm">{orderLabel(o)}</span>
-                  </label>
-                ))}
+            {/* Orders checklist */}
+            {editForm.box_id && (
+              <FormField label="Orders included in this session">
+                <div className="border border-border rounded-xl overflow-hidden max-h-48 overflow-y-auto divide-y divide-border/50">
+                  {editBoxOrders.length === 0 && <p className="text-sm text-muted-foreground p-3">No orders linked to this box.</p>}
+                  {editBoxOrders.map((o:any) => (
+                    <label key={o.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
+                      <input type="checkbox" checked={selectedOrderIds.includes(o.id)}
+                        onChange={()=>setSelectedOrderIds(prev=>prev.includes(o.id)?prev.filter(x=>x!==o.id):[...prev,o.id])}
+                        className="accent-primary w-3.5 h-3.5"/>
+                      <span className="text-sm">{orderLabel(o)}</span>
+                    </label>
+                  ))}
+                </div>
+                {selectedOrderIds.length > 0 && <p className="text-xs text-primary font-semibold mt-1">{selectedOrderIds.length} order{selectedOrderIds.length!==1?'s':''} selected</p>}
+              </FormField>
+            )}
+
+            {/* Versions — same UI as create */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Versions</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Edit slot types and pull counts per member.</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={addVersion}><Plus size={12}/> Add Version</Button>
               </div>
-              {editBoxOrderIds.length > 0 && inclusionOrderIds.length === 0 && (
-                <button onClick={() => setInclusionOrderIds(editBoxOrderIds)} className="text-xs text-primary underline mt-1">
-                  Pre-select from linked box ({editBoxOrderIds.length} order{editBoxOrderIds.length !== 1 ? 's' : ''})
-                </button>
-              )}
-              {inclusionOrderIds.length > 0 && <p className="text-xs text-primary font-semibold mt-1">{inclusionOrderIds.length} order{inclusionOrderIds.length!==1?'s':''} selected</p>}
-            </FormField>
+              {versions.length === 0 && <p className="text-sm text-muted-foreground text-center py-3">No versions — add one or they will be unchanged</p>}
+              {versions.map((v) => (
+                <div key={v.id} className="border border-border rounded-xl overflow-hidden">
+                  <div className="flex items-center gap-2 px-4 py-3 bg-secondary/30 border-b border-border">
+                    <Input placeholder="Version name (e.g. Ver. A)" value={v.name} onChange={e=>updateVersionName(v.id,e.target.value)} className="flex-1"/>
+                    <Button variant="ghost" size="icon" onClick={()=>removeVersion(v.id)}><Trash2 size={13} className="text-destructive/50"/></Button>
+                  </div>
+                  <div className="p-3 space-y-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-semibold text-muted-foreground">Slot types in this pack</p>
+                        <button onClick={()=>addSlot(v.id)} className="text-xs text-primary font-semibold hover:underline flex items-center gap-1"><Plus size={11}/> Add slot</button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {v.slots.map((slot, si) => (
+                          <div key={si} className="flex items-center gap-1">
+                            <input className="w-28 px-2 py-1 text-xs rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary/25"
+                              placeholder="e.g. PC, Lenticular" value={slot} onChange={e=>updateSlot(v.id, si, e.target.value)}/>
+                            {v.slots.length > 1 && <button onClick={()=>removeSlot(v.id,si)} className="text-destructive/50 hover:text-destructive"><Trash2 size={11}/></button>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <p className="text-xs font-semibold text-muted-foreground flex-1">Cards pulled per member</p>
+                        {v.slots.filter((s:string)=>s.trim()).map((slot:string, si:number) => (
+                          <span key={si} className="text-xs font-bold text-primary w-20 text-center">{slot || `Slot ${si+1}`}</span>
+                        ))}
+                      </div>
+                      {groups.find((g:any)=>g.id===editForm.group_id)?.members?.map((m: any) => (
+                        <div key={m.id} className="flex items-center gap-2 mb-1.5">
+                          <span className="text-sm flex-1">{m.name}</span>
+                          {v.slots.filter((s:string)=>s.trim()).map((_slot:string, si:number) => {
+                            const memberEntry = v.members.find((vm:any)=>vm.member_id===m.id)
+                            const pullVal = Array.isArray(memberEntry?.pulls) ? (memberEntry.pulls[si] ?? '') : ''
+                            return (
+                              <div key={si} className="w-20">
+                                <Input type="number" min="0" placeholder="0" value={pullVal}
+                                  onChange={e => {
+                                    const val = e.target.value
+                                    setVersions(vs => vs.map(x => {
+                                      if (x.id !== v.id) return x
+                                      const idx = x.members.findIndex((vm:any) => vm.member_id === m.id)
+                                      const slots2 = x.slots.filter((s:string) => s.trim())
+                                      if (idx >= 0) {
+                                        const newMembers = x.members.map((vm:any, i:number) => {
+                                          if (i !== idx) return vm
+                                          const pulls = Array.isArray(vm.pulls) ? [...vm.pulls] : slots2.map(() => '')
+                                          while (pulls.length < slots2.length) pulls.push('')
+                                          pulls[si] = val
+                                          return { ...vm, pulls }
+                                        })
+                                        return { ...x, members: newMembers }
+                                      } else {
+                                        const pulls = slots2.map((_:any, i:number) => i === si ? val : '')
+                                        return { ...x, members: [...x.members, { member_id: m.id, name: m.name, total_pulled: '', pulls }] }
+                                      }
+                                    }))
+                                  }}/>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )) || <p className="text-xs text-muted-foreground">Select a group to see members</p>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
 
             <div className="flex items-center gap-3">
               <button onClick={()=>setEditForm(f=>({...f,form_open:!f.form_open}))} className={`flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-xl border transition-all ${editForm.form_open?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-secondary text-muted-foreground border-border'}`}>
@@ -586,7 +726,7 @@ export default function GomPcSorterPage() {
               </button>
             </div>
             <div className="flex justify-end gap-3 pt-2">
-              <Button variant="outline" onClick={()=>setEditingSession(null)}>Cancel</Button>
+              <Button variant="outline" onClick={()=>{setEditingSession(null);setVersions([]);setSelectedOrderIds([])}}>Cancel</Button>
               <Button onClick={handleEdit} disabled={saving}>{saving?'Saving…':'Update'}</Button>
             </div>
           </div>

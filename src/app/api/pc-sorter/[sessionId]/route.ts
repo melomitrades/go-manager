@@ -145,8 +145,29 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     return NextResponse.json({ ok: true })
   }
 
-  // GOM: assign inclusions per version per joiner
-  if (body.assignments) {
+  // GOM: update versions slots and pull counts
+  if (body.update_versions && body.versions) {
+    for (const v of body.versions) {
+      const slots: string[] = v.slots || ['PC']
+      // Update version slots
+      await query('UPDATE pc_versions SET name=$1, slots=$2 WHERE id=$3',
+        [v.name, JSON.stringify(slots), v.id]).catch(()=>{})
+      // Delete old photocards and re-insert with updated pulls
+      await query('DELETE FROM pc_photocards WHERE version_id=$1', [v.id]).catch(()=>{})
+      for (const m of v.members || []) {
+        const pulls: number[] = Array.isArray(m.pulls) ? m.pulls.map((p: any) => parseInt(p) || 0) : slots.map(() => 0)
+        for (let si = 0; si < slots.length; si++) {
+          const pulled = pulls[si] || 0
+          if (pulled <= 0) continue
+          await query(
+            'INSERT INTO pc_photocards (version_id, member_id, slot_index, total_pulled, available) VALUES ($1,$2,$3,$4,$4)',
+            [v.id, m.member_id, si, pulled]
+          ).catch(()=>{})
+        }
+      }
+    }
+    return NextResponse.json({ ok: true })
+  }
     for (const a of body.assignments) {
       await query(`
         INSERT INTO pc_inclusion_assignments (session_id, version_id, joiner_id, inclusions_assigned)
