@@ -208,6 +208,17 @@ export default function GomPcSorterPage() {
     setSaving(false)
   }
 
+  async function resetInclusions(sessionId: string) {
+    if (!confirm('Clear every inclusion count for this session? This cannot be undone.')) return
+    setSaving(true)
+    await fetch(`/api/pc-sorter/${sessionId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_inclusions: true }),
+    })
+    await loadDetails(sessionId)
+    setSaving(false)
+  }
+
   async function saveInclusions(sessionId: string, packs: any[]) {
     setSaving(true)
     const rows: any[] = []
@@ -597,9 +608,16 @@ export default function GomPcSorterPage() {
               <div className="flex items-center justify-between p-3 bg-primary/5 border border-primary/15 rounded-xl">
                 <div>
                   <p className="text-sm font-semibold">Auto-fill / refresh from orders</p>
-                  <p className="text-xs text-muted-foreground">Sums inclusion counts from this session's selected orders only (plus any claim mentioning "album" in those orders) and splits across packs. Safe to re-run any time — it overwrites current values.</p>
+                  <p className="text-xs text-muted-foreground">Sums inclusion counts from this session's selected orders only (plus any claim mentioning "album" in those orders) and splits across packs. Fully replaces every current value, including clearing joiners who no longer qualify.</p>
                 </div>
                 <Button size="sm" onClick={() => autoFillInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>✨ Auto-fill</Button>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-destructive/5 border border-destructive/15 rounded-xl">
+                <div>
+                  <p className="text-sm font-semibold">Reset all inclusions</p>
+                  <p className="text-xs text-muted-foreground">Clears every joiner's inclusion count for this session back to zero — for starting over by hand instead of auto-filling.</p>
+                </div>
+                <Button size="sm" variant="destructive" onClick={() => resetInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>Reset</Button>
               </div>
               {joiners.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-8">No joiners found yet. Auto-fill from orders, or wait for priority forms to come in.</p>

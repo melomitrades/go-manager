@@ -174,15 +174,29 @@ export async function autoFillInclusions(sessionId: string) {
     packTotals[target.id] += 1
   }
 
+  // A true overwrite: clear every existing inclusion row for this session first, THEN insert
+  // the freshly computed ones. An upsert alone (INSERT ... ON CONFLICT DO UPDATE) can only ever
+  // touch joiners who still qualify — a joiner who qualified last time (or was set manually) but
+  // no longer does (an order got deselected, a claim's inclusions_count got zeroed out, etc.)
+  // would keep their stale number forever, which is what "the overwriting doesn't work" was about.
+  await query(`DELETE FROM pc_pack_inclusions WHERE session_id=$1`, [sessionId])
   for (const r of rows) {
     await query(`
       INSERT INTO pc_pack_inclusions (session_id, pack_id, joiner_id, inclusions_assigned)
       VALUES ($1,$2,$3,$4)
-      ON CONFLICT (pack_id, joiner_id) DO UPDATE SET inclusions_assigned = $4
     `, [sessionId, r.pack_id, r.joiner_id, r.inclusions_assigned])
   }
 
   return { assignments: rows }
+}
+
+// Wipe every inclusion assignment for a session back to nothing — a manual "start over" the
+// GOM can reach for regardless of what auto-fill would compute (e.g. before entering numbers
+// by hand, or to confirm a session really has zero inclusions left).
+export async function resetInclusions(sessionId: string) {
+  await ensurePcSorterSchema()
+  await query(`DELETE FROM pc_pack_inclusions WHERE session_id=$1`, [sessionId])
+  return { ok: true }
 }
 
 // ── Sort algorithm internals ─────────────────────────────────────────

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
-import { ensurePcSorterSchema, autoFillInclusions } from '@/lib/pcSorter'
+import { ensurePcSorterSchema, autoFillInclusions, resetInclusions } from '@/lib/pcSorter'
 
 export async function GET(req: NextRequest, { params }: { params: { sessionId: string } }) {
   const session = await getServerSession(authOptions)
@@ -186,6 +186,10 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
   }
   if (body.auto_fill_inclusions) {
     const result = await autoFillInclusions(sessionId)
+    return NextResponse.json(result)
+  }
+  if (body.reset_inclusions) {
+    const result = await resetInclusions(sessionId)
     return NextResponse.json(result)
   }
 

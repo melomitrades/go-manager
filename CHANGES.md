@@ -48,3 +48,10 @@ app self-migrates its schema at runtime — no manual SQL required.
   a joiner's inclusions if it has an explicit `inclusions_count`, OR if its description mentions "album" (using
   its claimed quantity) — so album claims that never got an inclusions_count filled in still feed the sort. A
   line that qualifies both ways is only counted once.
+- **Auto-fill now truly overwrites.** It used to only upsert, so a joiner who qualified on a previous run (or was
+  set by hand) but no longer does — an order got deselected, a claim's `inclusions_count` got zeroed out, etc. —
+  kept their stale number forever. It now clears every inclusion row for the session first, then inserts the
+  freshly computed ones, so a re-run always matches the current selected orders exactly.
+- **New "Reset all inclusions" button** in the Inclusions modal, next to Auto-fill. Wipes every joiner's inclusion
+  count for the session back to zero, independent of auto-fill — for starting over by hand, or just confirming a
+  session really has nothing assigned. Asks for confirmation before clearing.
