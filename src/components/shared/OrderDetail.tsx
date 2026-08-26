@@ -38,16 +38,40 @@ function groupItems(items: any[]): { label: string; qty: number; price_eur: numb
   return Object.values(groups)
 }
 
+function SortResultsList({ results }: { results: any[] }) {
+  if (!results || results.length === 0) return null
+  return (
+    <div className="px-4 py-2.5 bg-primary/5 border-t border-primary/10">
+      <p className="text-xs font-bold text-primary uppercase tracking-widest mb-1.5">🎴 Sorting results</p>
+      <div className="space-y-0.5">
+        {results.map((r: any) => (
+          <p key={r.id} className="text-xs">
+            <span className="text-muted-foreground">{r.pack_name} · {r.item_name}:</span>{' '}
+            <span className="font-semibold">{r.member_name}</span>
+            {r.is_repeat && <span className="text-amber-600 ml-1">(2nd)</span>}
+            {r.is_random && <span className="text-sky-600 ml-1">(random — no form submitted)</span>}
+          </p>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
+  const [sortResults, setSortResults] = useState<any[]>([])
 
   useEffect(() => {
-    if (!orderId) { setData(null); return }
+    if (!orderId) { setData(null); setSortResults([]); return }
     setLoading(true)
     fetch(`/api/orders/${orderId}?viewAs=${viewAs}`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false) })
+    fetch(`/api/pc-sorter/results?order_id=${orderId}`)
+      .then(r => r.json())
+      .then(d => setSortResults(Array.isArray(d) ? d : []))
+      .catch(() => setSortResults([]))
   }, [orderId])
 
   async function togglePaid(joinerId: string, current: boolean) {
@@ -627,6 +651,9 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                         </div>
                       ))}
 
+                      {/* Sorting results — below member claimed */}
+                      <SortResultsList results={sortResults.filter((r: any) => r.joiner_id === jg.joiner_id)} />
+
                       {/* Subtotal if more than one line */}
                       {grouped.length > 1 && (
                         <div className="flex items-center justify-between px-4 py-2 bg-secondary/20">
@@ -707,6 +734,9 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                             </div>
                           </div>
                         ))}
+
+                        {/* Sorting results — below member claimed */}
+                        <SortResultsList results={sortResults.filter((r: any) => r.joiner_id === jg.joiner_id)} />
 
                         {/* Total */}
                         <div className="flex items-center justify-between px-4 py-3 bg-primary/5 border-t border-primary/10">

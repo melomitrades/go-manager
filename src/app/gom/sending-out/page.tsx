@@ -28,41 +28,64 @@ const emptyForm = { order_id: '', joiner_id: '', shipping_type: '', courier: '',
 
 function JoinerItemsPanel({ joinerId, joinerName }: { joinerId: string | null; joinerName: string | null }) {
   const [items, setItems] = useState<any[]>([])
+  const [sortResults, setSortResults] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!joinerId) { setLoading(false); return }
-    fetch(`/api/sending-out?joiner_id=${joinerId}`).then(r => r.json()).then(d => {
-      setItems(Array.isArray(d) ? d : [])
+    Promise.all([
+      fetch(`/api/sending-out?joiner_id=${joinerId}`).then(r => r.json()).catch(() => []),
+      fetch(`/api/pc-sorter/results?joiner_id=${joinerId}`).then(r => r.json()).catch(() => []),
+    ]).then(([its, results]) => {
+      setItems(Array.isArray(its) ? its : [])
+      setSortResults(Array.isArray(results) ? results : [])
       setLoading(false)
-    }).catch(() => setLoading(false))
+    })
   }, [joinerId])
 
   if (!joinerId) return <p className="text-sm text-muted-foreground">No joiner linked to this entry.</p>
 
   return (
-    <div>
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-3">
-        {joinerName ? `${joinerName}'s` : 'Joiner'} items currently At GOM
-      </p>
-      {loading ? <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"/> :
-       items.length === 0 ? <p className="text-sm text-muted-foreground">No At GOM items for this joiner.</p> :
-       <div className="space-y-1.5">
-         {items.map((it: any, idx: number) => (
-           <div key={idx} className="flex items-center gap-3 bg-secondary/40 rounded-xl px-4 py-2.5 text-sm">
-             <div className="flex-1 min-w-0">
-               <p className="font-semibold">{it.description || it.item_type}</p>
-               <p className="text-xs text-muted-foreground">
-                 {it.shop_name}{it.round_number ? ` #${it.round_number}` : ''}
-                 {it.member_name ? ` · ${it.member_name}` : ''}
-               </p>
-             </div>
-             {it.amount_claimed > 1 && <span className="text-xs text-muted-foreground">×{it.amount_claimed}</span>}
-             {it.price_eur && <span className="font-mono text-xs">{it.price_eur}€</span>}
-           </div>
-         ))}
-       </div>
-      }
+    <div className="space-y-4">
+      <div>
+        <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-3">
+          {joinerName ? `${joinerName}'s` : 'Joiner'} items currently At GOM
+        </p>
+        {loading ? <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"/> :
+        items.length === 0 ? <p className="text-sm text-muted-foreground">No At GOM items for this joiner.</p> :
+        <div className="space-y-1.5">
+          {items.map((it: any, idx: number) => (
+            <div key={idx} className="flex items-center gap-3 bg-secondary/40 rounded-xl px-4 py-2.5 text-sm">
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold">{it.description || it.item_type}</p>
+                <p className="text-xs text-muted-foreground">
+                  {it.shop_name}{it.round_number ? ` #${it.round_number}` : ''}
+                  {it.member_name ? ` · ${it.member_name}` : ''}
+                </p>
+              </div>
+              {it.amount_claimed > 1 && <span className="text-xs text-muted-foreground">×{it.amount_claimed}</span>}
+              {it.price_eur && <span className="font-mono text-xs">{it.price_eur}€</span>}
+            </div>
+          ))}
+        </div>
+        }
+      </div>
+
+      {!loading && sortResults.length > 0 && (
+        <div>
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-3">🎴 Sorted PC items to pack</p>
+          <div className="space-y-1.5">
+            {sortResults.map((r: any) => (
+              <div key={r.id} className="flex items-center gap-3 bg-primary/5 border border-primary/10 rounded-xl px-4 py-2.5 text-sm">
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold">{r.member_name}</p>
+                  <p className="text-xs text-muted-foreground">{r.session_title} · {r.pack_name} · {r.item_name}{r.is_repeat ? ' (2nd copy)' : ''}{r.is_random ? ' (random — no form submitted)' : ''}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

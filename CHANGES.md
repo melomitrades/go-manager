@@ -1,0 +1,45 @@
+# PC Sorter redesign — what's in this zip
+
+Drop these files into your `go-manager` project at the same paths (they overwrite the
+old versions where a path already exists) and restart `npm run dev` / redeploy. The
+app self-migrates its schema at runtime — no manual SQL required.
+
+## Files
+
+**New:**
+- `src/lib/pcSorter.ts` — schema migration, inclusion auto-fill, and both sort algorithms
+- `src/app/api/pc-sorter/[sessionId]/sort/route.ts` — POST endpoint that runs a sort
+- `src/app/api/pc-sorter/results/route.ts` — GET endpoint used by OrderDetail + Sending Out
+- `supabase/migrations/002_pc_sorter_redesign.sql` — reference schema (not required to run by hand)
+
+**Rewritten:**
+- `src/app/api/pc-sorter/route.ts` — session list/create/edit (sessions now always start closed)
+- `src/app/api/pc-sorter/[sessionId]/route.ts` — packs/items/quantities/inclusions/priority-form endpoints
+- `src/app/gom/pc-sorter/page.tsx` — GOM UI: build packs of items, manage inclusions, run sort, view results
+- `src/app/joiner/pc-sorter/page.tsx` — joiner UI: rank members independently per item
+- `src/types/index.ts` — PC Sorter types section replaced (PCPack/PCItem/PCItemQuantity/etc.)
+
+**Edited in place (small additions only):**
+- `src/components/shared/OrderDetail.tsx` — adds a "Sorting results" block under each joiner's claimed items
+- `src/app/gom/sending-out/page.tsx` — adds a "Sorted PC items to pack" block to the joiner panel
+
+## Behavior notes worth knowing
+
+- **Old tables** (`pc_versions`, `pc_photocards`, `pc_joiner_needs`, `pc_inclusion_assignments`) are left in
+  place but unused — nothing reads/writes them anymore. Safe to drop later if you want, not required.
+- **Sessions now start closed.** Creating a session no longer makes it visible to joiners — you build packs/items/
+  quantities first, then click "Open form."
+- **Ownership matches by name.** Cross-session "already has this item" tracking matches pack name + item name
+  across different sessions — keep names consistent (e.g. always "Ver. A" / "Photocard") if you want it to link up.
+- **Editing quantities resets `available` to the new total.** If you edit an item's pull counts after a sort has
+  already run and consumed stock, `available` resets to the new `total_pulled` — re-run the sort if you do this.
+- **A joiner who never submitted the priority form at all still gets served, at random.** After every joiner who
+  DID submit a form has been processed by whichever sort method you picked, any leftover stock for that item is
+  handed out at random to joiners who have inclusions assigned but no submitted form — still skipping members they
+  already own until every option is exhausted (same rule as everyone else). These show up in the results with a
+  🔀 badge (GOM view) or "(random — no form submitted)" note (joiner/Sending Out views), so it's clear which
+  assignments weren't priority-driven. If a joiner submitted a form but simply left one item unranked, that item is
+  their own choice to skip — the random fallback only kicks in for joiners with zero submission for the whole session.
+- **Fair sort** processes priority levels in rounds; ties at the same level go to whoever submitted earliest.
+  **Timestamp sort** just serves joiners strictly in submission order. Both skip members a joiner already owns
+  (this session or past sessions with matching pack+item names) until every option is exhausted, then allow repeats.

@@ -1,106 +1,193 @@
-let pcMigDone = false
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
+import { ensurePcSorterSchema, autoFillInclusions } from '@/lib/pcSorter'
 
-async function ensureTables() {
-  if (pcMigDone) return
-  pcMigDone = true
-  await Promise.all([
-    query('ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ').catch(()=>{}),
-    query('ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS box_id UUID REFERENCES boxes(id) ON DELETE SET NULL').catch(()=>{}),
-    query('ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_ids JSONB DEFAULT NULL').catch(()=>{}),
-    query('ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS slots JSONB DEFAULT NULL').catch(()=>{}),
-    query('ALTER TABLE pc_photocards ADD COLUMN IF NOT EXISTS slot_index INTEGER DEFAULT 0').catch(()=>{}),
-    query('ALTER TABLE pc_versions ADD COLUMN IF NOT EXISTS order_ids TEXT').catch(()=>{}),
-    query('ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS inclusions_count INTEGER DEFAULT 0').catch(()=>{}),
-  ])
-}
-
-export async function GET() {
+export async function GET(req: NextRequest, { params }: { params: { sessionId: string } }) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  await ensureTables()
+  const user = session.user as any
+  await ensurePcSorterSchema()
+  const sessionId = params.sessionId
 
-  await query(`UPDATE pc_sorting_sessions SET form_open=false WHERE deadline IS NOT NULL AND deadline < now() AND form_open=true`).catch(()=>{})
-
-  const sessions = await query(`
-    SELECT ps.*, row_to_json(g) as "group", row_to_json(b) as box
+  const sessionRow = await queryOne(`
+    SELECT ps.*, row_to_json(b) as box
     FROM pc_sorting_sessions ps
-    LEFT JOIN groups g ON g.id = ps.group_id
     LEFT JOIN boxes b ON b.id = ps.box_id
-    ORDER BY ps.created_at DESC
-  `)
-  return NextResponse.json(sessions)
-}
+    WHERE ps.id = $1
+  `, [sessionId])
+  if (!sessionRow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const user = session.user as any
-  if (!['gom','admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  await ensureTables()
+  const packs = await query(`SELECT * FROM pc_packs WHERE session_id=$1 ORDER BY sort_order, created_at`, [sessionId])
+  const items = await query(`
+    SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at
+  `, [sessionId])
+  const quantities = await query(`
+    SELECT q.*, m.name as member_name
+    FROM pc_item_quantities q
+    LEFT JOIN members m ON m.id = q.member_id
+    WHERE q.item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
+  `, [sessionId])
 
-  const { title, group_id, versions, deadline, box_id, order_ids } = await req.json()
-  const pcSession = await queryOne(
-    'INSERT INTO pc_sorting_sessions (title, group_id, created_by, deadline, box_id, order_ids) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-    [title, group_id||null, user.id, deadline||null, box_id||null, order_ids ? JSON.stringify(order_ids) : null]
-  )
-  if (!pcSession) return NextResponse.json({ error: 'Failed' }, { status: 500 })
+  let inclusions = await query(`
+    SELECT i.*, p.display_name, p.username
+    FROM pc_pack_inclusions i
+    LEFT JOIN profiles p ON p.id = i.joiner_id
+    WHERE i.session_id=$1
+  `, [sessionId])
 
-  for (const v of (versions||[])) {
-    const slots: string[] = v.slots?.filter((s: string) => s.trim()) || ['PC']
-    const ver = await queryOne(
-      'INSERT INTO pc_versions (session_id, name, slots) VALUES ($1,$2,$3) RETURNING *',
-      [(pcSession as any).id, v.name, JSON.stringify(slots)]
-    )
-    if (!ver) continue
-    // Save per-slot pull counts: m.pulls is array [countSlot0, countSlot1, ...]
-    for (const m of (v.members||[])) {
-      if (!m.member_id) continue
-      const pulls: number[] = Array.isArray(m.pulls)
-        ? m.pulls.map((p: any) => parseInt(p) || 0)
-        : slots.map(() => parseInt(m.total_pulled) || 0)
-      for (let si = 0; si < slots.length; si++) {
-        const pulled = pulls[si] || 0
-        if (pulled <= 0) continue
-        await query(
-          'INSERT INTO pc_photocards (version_id, member_id, slot_index, total_pulled, available) VALUES ($1,$2,$3,$4,$4)',
-          [(ver as any).id, m.member_id, si, pulled]
-        )
-      }
-    }
+  let forms = await query(`
+    SELECT f.*, p.display_name, p.username
+    FROM pc_priority_forms f
+    JOIN profiles p ON p.id = f.joiner_id
+    WHERE f.session_id=$1
+    ORDER BY f.submitted_at ASC
+  `, [sessionId])
+
+  let entries = await query(`
+    SELECT e.* FROM pc_priority_entries e
+    WHERE e.form_id = ANY(SELECT id FROM pc_priority_forms WHERE session_id=$1)
+  `, [sessionId])
+
+  let assignments = await query(`
+    SELECT a.*, pk.name as pack_name, it.name as item_name, m.name as member_name, p.display_name, p.username
+    FROM pc_assignments a
+    LEFT JOIN pc_packs pk ON pk.id = a.pack_id
+    LEFT JOIN pc_items it ON it.id = a.item_id
+    LEFT JOIN members m ON m.id = a.member_id
+    LEFT JOIN profiles p ON p.id = a.joiner_id
+    WHERE a.session_id=$1
+    ORDER BY a.created_at ASC
+  `, [sessionId])
+
+  let ownership = await query(`
+    SELECT DISTINCT a.joiner_id, a.member_id, m.name as member_name, pk.name as pack_name, it.name as item_name,
+           p.display_name, p.username, s.title as session_title, s.id as session_id
+    FROM pc_assignments a
+    JOIN pc_packs pk ON pk.id = a.pack_id
+    JOIN pc_items it ON it.id = a.item_id
+    JOIN pc_sorting_sessions s ON s.id = a.session_id
+    LEFT JOIN members m ON m.id = a.member_id
+    LEFT JOIN profiles p ON p.id = a.joiner_id
+    WHERE a.session_id != $1
+      AND pk.name IN (SELECT name FROM pc_packs WHERE session_id=$1)
+  `, [sessionId]).catch(() => [] as any[])
+
+  // Joiners only ever see their own priority forms / entries / inclusions / assignments —
+  // never other joiners' picks or results.
+  if (user.role === 'joiner') {
+    const myFormIds = new Set((forms as any[]).filter(f => f.joiner_id === user.id).map(f => f.id))
+    entries = (entries as any[]).filter(e => myFormIds.has(e.form_id))
+    forms = (forms as any[]).filter(f => f.joiner_id === user.id)
+    inclusions = (inclusions as any[]).filter(i => i.joiner_id === user.id)
+    assignments = (assignments as any[]).filter(a => a.joiner_id === user.id)
+    ownership = []
   }
-  return NextResponse.json(pcSession, { status: 201 })
+
+  return NextResponse.json({ session: sessionRow, packs, items, quantities, inclusions, forms, entries, assignments, ownership })
 }
 
-export async function PATCH(req: NextRequest) {
+export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const user = session.user as any
-  if (!['gom','admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  await ensureTables()
+  await ensurePcSorterSchema()
+  const sessionId = params.sessionId
+  const body = await req.json()
 
-  const { id, title, form_open, group_id, deadline, box_id, order_ids } = await req.json()
-  const s = await queryOne(
-    `UPDATE pc_sorting_sessions SET
-       title=COALESCE($1,title), form_open=COALESCE($2,form_open),
-       group_id=COALESCE($3,group_id), deadline=$4, box_id=COALESCE($5,box_id),
-       order_ids=COALESCE($6,order_ids), updated_at=now()
-     WHERE id=$7 RETURNING *`,
-    [title||null, form_open??null, group_id||null, deadline||null, box_id||null,
-     order_ids ? JSON.stringify(order_ids) : null, id]
-  )
-  return NextResponse.json(s)
-}
+  // ── Joiner: submit priority form (independent ranking per item) ──
+  if (body.priorities !== undefined) {
+    const sessionRow = await queryOne<any>(`SELECT * FROM pc_sorting_sessions WHERE id=$1`, [sessionId])
+    if (!sessionRow) return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+    if (!sessionRow.form_open) return NextResponse.json({ error: 'This form is closed' }, { status: 403 })
+    if (sessionRow.deadline && new Date(sessionRow.deadline) < new Date()) {
+      return NextResponse.json({ error: 'The deadline for this form has passed' }, { status: 403 })
+    }
 
-export async function DELETE(req: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const user = session.user as any
-  if (!['gom','admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  const { id } = await req.json()
-  await query('DELETE FROM pc_sorting_sessions WHERE id=$1', [id])
-  return NextResponse.json({ ok: true })
+    const form = await queryOne<any>(`
+      INSERT INTO pc_priority_forms (session_id, joiner_id, submitted_at, form_data)
+      VALUES ($1,$2, now(), '{}')
+      ON CONFLICT (session_id, joiner_id) DO UPDATE SET submitted_at = now()
+      RETURNING *
+    `, [sessionId, user.id])
+    if (!form) return NextResponse.json({ error: 'Failed to save form' }, { status: 500 })
+
+    await query(`DELETE FROM pc_priority_entries WHERE form_id=$1`, [form.id])
+    for (const p of (body.priorities || [])) {
+      if (!p.item_id || !p.member_id || !p.priority) continue
+      await query(
+        `INSERT INTO pc_priority_entries (form_id, item_id, member_id, priority) VALUES ($1,$2,$3,$4)`,
+        [form.id, p.item_id, p.member_id, parseInt(p.priority)]
+      )
+    }
+    return NextResponse.json({ ok: true })
+  }
+
+  // ── Everything else is GOM/admin only ──
+  if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  if (body.add_pack) {
+    const p = await queryOne(
+      `INSERT INTO pc_packs (session_id, name, sort_order)
+       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_packs WHERE session_id=$1),0)) RETURNING *`,
+      [sessionId, body.add_pack.name]
+    )
+    return NextResponse.json(p, { status: 201 })
+  }
+  if (body.rename_pack) {
+    await query(`UPDATE pc_packs SET name=$1 WHERE id=$2 AND session_id=$3`, [body.rename_pack.name, body.rename_pack.pack_id, sessionId])
+    return NextResponse.json({ ok: true })
+  }
+  if (body.delete_pack) {
+    await query(`DELETE FROM pc_packs WHERE id=$1 AND session_id=$2`, [body.delete_pack.pack_id, sessionId])
+    return NextResponse.json({ ok: true })
+  }
+
+  if (body.add_item) {
+    const it = await queryOne(
+      `INSERT INTO pc_items (pack_id, name, sort_order)
+       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_items WHERE pack_id=$1),0)) RETURNING *`,
+      [body.add_item.pack_id, body.add_item.name]
+    )
+    return NextResponse.json(it, { status: 201 })
+  }
+  if (body.rename_item) {
+    await query(`UPDATE pc_items SET name=$1 WHERE id=$2`, [body.rename_item.name, body.rename_item.item_id])
+    return NextResponse.json({ ok: true })
+  }
+  if (body.delete_item) {
+    await query(`DELETE FROM pc_items WHERE id=$1`, [body.delete_item.item_id])
+    return NextResponse.json({ ok: true })
+  }
+
+  if (body.update_quantities) {
+    const { item_id, quantities } = body.update_quantities
+    for (const q of (quantities || [])) {
+      const total = parseInt(q.total_pulled) || 0
+      await query(`
+        INSERT INTO pc_item_quantities (item_id, member_id, total_pulled, available)
+        VALUES ($1,$2,$3,$3)
+        ON CONFLICT (item_id, member_id) DO UPDATE SET total_pulled=$3, available=$3
+      `, [item_id, q.member_id, total])
+    }
+    return NextResponse.json({ ok: true })
+  }
+
+  if (body.inclusions) {
+    for (const a of body.inclusions) {
+      await query(`
+        INSERT INTO pc_pack_inclusions (session_id, pack_id, joiner_id, inclusions_assigned)
+        VALUES ($1,$2,$3,$4)
+        ON CONFLICT (pack_id, joiner_id) DO UPDATE SET inclusions_assigned=$4
+      `, [sessionId, a.pack_id, a.joiner_id, parseInt(a.inclusions_assigned) || 0])
+    }
+    return NextResponse.json({ ok: true })
+  }
+  if (body.auto_fill_inclusions) {
+    const result = await autoFillInclusions(sessionId)
+    return NextResponse.json(result)
+  }
+
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
 }

@@ -224,45 +224,68 @@ export interface SendingOut {
 }
 
 // ── PC Sorter ─────────────────────────────────────────────
+// A session can hold multiple "packs" (e.g. Ver. A / Ver. B). Each pack holds one or more
+// "items" (photocard, postcard, lenticular...) — one inclusion for a pack = one of every
+// item in it. Joiners rank members fully independently per item.
+export type SortMethod = 'timestamp' | 'fair'
+
 export interface PCSortingSession {
   id: string
   group_id: string | null
+  box_id: string | null
+  order_ids: string[] | null
   title: string
   form_open: boolean
+  deadline: string | null
+  sort_method: SortMethod | null
+  sort_run_at: string | null
   created_by: string | null
   created_at: string
   updated_at: string
   group?: Group
-  versions?: PCVersion[]
+  box?: Box
+  packs?: PCPack[]
 }
 
-export interface PCVersion {
+export interface PCPack {
   id: string
   session_id: string
   name: string
+  sort_order: number
   created_at: string
-  photocards?: PCPhotocard[]
+  items?: PCItem[]
 }
 
-export interface PCPhotocard {
+export interface PCItem {
   id: string
-  version_id: string
+  pack_id: string
+  name: string
+  sort_order: number
+  created_at: string
+  quantities?: PCItemQuantity[]
+}
+
+export interface PCItemQuantity {
+  id: string
+  item_id: string
   member_id: string | null
   total_pulled: number
   available: number
   created_at: string
   member?: Member
+  member_name?: string
 }
 
-export interface PCJoinerNeed {
+export interface PCPackInclusion {
   id: string
   session_id: string
+  pack_id: string
   joiner_id: string
-  version_id: string
-  amount_needed: number
+  inclusions_assigned: number
   created_at: string
   joiner?: Profile
-  version?: PCVersion
+  display_name?: string
+  username?: string
 }
 
 export interface PCPriorityForm {
@@ -270,28 +293,39 @@ export interface PCPriorityForm {
   session_id: string
   joiner_id: string
   submitted_at: string
-  form_data: PCFormData
   joiner?: Profile
+  display_name?: string
+  username?: string
+  entries?: PCPriorityEntry[]
 }
 
-export interface PCFormData {
-  priorities: {
-    version_id: string
-    member_id: string
-    priority: number
-  }[]
-  timestamp: string
+export interface PCPriorityEntry {
+  id: string
+  form_id: string
+  item_id: string
+  member_id: string
+  priority: number
 }
 
 export interface PCAssignment {
   id: string
   session_id: string
+  pack_id: string
+  item_id: string
   joiner_id: string
-  photocard_id: string
-  sort_method: 'timestamp' | 'fair'
+  member_id: string
+  round: number
+  is_repeat: boolean
+  is_random: boolean
+  sort_method: SortMethod
   created_at: string
   joiner?: Profile
-  photocard?: PCPhotocard
+  member?: Member
+  pack_name?: string
+  item_name?: string
+  display_name?: string
+  username?: string
+  session_title?: string
 }
 
 // ── Notifications ─────────────────────────────────────────
