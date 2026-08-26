@@ -476,8 +476,8 @@ export default function GomPcSorterPage() {
                                     {rows.map((r: any, i: number) => (
                                       <span key={r.id}>
                                         {r.pack_name} {r.item_name} → <span className="text-foreground font-medium">{r.member_name}</span>
-                                        {r.is_repeat && <Repeat size={10} className="inline ml-0.5 text-amber-500" title="Repeat — every other option was already owned" />}
-                                        {r.is_random && <Shuffle size={10} className="inline ml-0.5 text-sky-500" title="Random — no priority form was submitted" />}
+                                        {r.is_repeat && <span title="Repeat — every other option was already owned"><Repeat size={10} className="inline ml-0.5 text-amber-500" /></span>}
+                                        {r.is_random && <span title="Random — no priority form was submitted"><Shuffle size={10} className="inline ml-0.5 text-sky-500" /></span>}
                                         {i < rows.length - 1 ? ',' : ''}
                                       </span>
                                     ))}
