@@ -102,7 +102,13 @@ export async function ensurePcSorterSchema() {
   }
 }
 
-// ── Auto-fill / refresh pack inclusions from linked orders ──────────
+// ── Auto-fill / refresh pack inclusions from the session's SELECTED orders ──────────
+// Deliberately scoped to session_row.order_ids only — NOT every order linked to the box.
+// A session only counts the orders the GOM explicitly checked off for it. Within those
+// orders, an inclusion comes from either: (a) a line with inclusions_count explicitly set,
+// or (b) a line whose description mentions "album" — those are album claims and should
+// feed the sort even if nobody bothered to fill in an inclusions_count for them. A line
+// that qualifies both ways is only counted once (inclusions_count wins).
 export async function autoFillInclusions(sessionId: string) {
   await ensurePcSorterSchema()
   const sessionRow = await queryOne<any>(`SELECT * FROM pc_sorting_sessions WHERE id=$1`, [sessionId])
@@ -119,24 +125,27 @@ export async function autoFillInclusions(sessionId: string) {
     } catch { return [] }
   })()
 
-  const orderIdsToQuery: string[] = orderIds.length > 0
-    ? orderIds
-    : await query<any>(`SELECT order_id FROM box_orders WHERE box_id=$1`, [sessionRow.box_id])
-        .then(rows => rows.map(r => r.order_id))
-        .catch(() => [] as string[])
+  // No orders selected for this session → nothing to auto-fill from. No fallback to the
+  // whole box: only the orders the GOM explicitly picked for this session count.
+  if (orderIds.length === 0) return { assignments: [] as any[] }
 
   const joinerTotals: Record<string, number> = {}
-  for (const oid of orderIdsToQuery) {
+  for (const oid of orderIds) {
     const items = await query<any>(`
-      SELECT COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id, COALESCE(oi.inclusions_count, 0) AS inclusions_count
+      SELECT COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
+             CASE
+               WHEN COALESCE(oi.inclusions_count, 0) > 0 THEN oi.inclusions_count
+               WHEN oi.description ILIKE '%album%' THEN COALESCE(oi.amount_claimed, 1)
+               ELSE 0
+             END AS effective_inclusions
       FROM order_items oi
       LEFT JOIN orders o ON o.id = oi.order_id
       WHERE oi.order_id = $1
         AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
-        AND COALESCE(oi.inclusions_count, 0) > 0
+        AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
     `, [oid]).catch(() => [] as any[])
     for (const it of items) {
-      joinerTotals[it.joiner_id] = (joinerTotals[it.joiner_id] || 0) + (parseInt(it.inclusions_count) || 0)
+      joinerTotals[it.joiner_id] = (joinerTotals[it.joiner_id] || 0) + (parseInt(it.effective_inclusions) || 0)
     }
   }
 

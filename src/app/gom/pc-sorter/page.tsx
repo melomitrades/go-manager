@@ -597,7 +597,7 @@ export default function GomPcSorterPage() {
               <div className="flex items-center justify-between p-3 bg-primary/5 border border-primary/15 rounded-xl">
                 <div>
                   <p className="text-sm font-semibold">Auto-fill / refresh from orders</p>
-                  <p className="text-xs text-muted-foreground">Sums inclusion counts from the session's linked orders and splits across packs. Safe to re-run any time — it overwrites current values.</p>
+                  <p className="text-xs text-muted-foreground">Sums inclusion counts from this session's selected orders only (plus any claim mentioning "album" in those orders) and splits across packs. Safe to re-run any time — it overwrites current values.</p>
                 </div>
                 <Button size="sm" onClick={() => autoFillInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>✨ Auto-fill</Button>
               </div>

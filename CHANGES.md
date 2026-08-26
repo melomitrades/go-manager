@@ -43,3 +43,8 @@ app self-migrates its schema at runtime — no manual SQL required.
 - **Fair sort** processes priority levels in rounds; ties at the same level go to whoever submitted earliest.
   **Timestamp sort** just serves joiners strictly in submission order. Both skip members a joiner already owns
   (this session or past sessions with matching pack+item names) until every option is exhausted, then allow repeats.
+- **Auto-fill only counts the session's selected orders — never the whole box.** If a session has no orders
+  selected, auto-fill has nothing to work from and does nothing. Within the selected orders, a line counts toward
+  a joiner's inclusions if it has an explicit `inclusions_count`, OR if its description mentions "album" (using
+  its claimed quantity) — so album claims that never got an inclusions_count filled in still feed the sort. A
+  line that qualifies both ways is only counted once.
