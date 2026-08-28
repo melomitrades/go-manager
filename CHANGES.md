@@ -55,3 +55,10 @@ app self-migrates its schema at runtime — no manual SQL required.
 - **New "Reset all inclusions" button** in the Inclusions modal, next to Auto-fill. Wipes every joiner's inclusion
   count for the session back to zero, independent of auto-fill — for starting over by hand, or just confirming a
   session really has nothing assigned. Asks for confirmation before clearing.
+- **GOM: "Awaiting submission" list.** Each session now shows an amber block listing every joiner who has
+  inclusions assigned (so they're expected to rank) but hasn't submitted a priority form yet, each with their
+  total inclusions due. The "Priority forms" header also now reads "X of Y submitted" once there's a known
+  expected total. A joiner with zero inclusions assigned is never counted as "expected" — nothing to chase there.
+- **Joiners now see their own inclusion count.** Each session card shows a badge with how many total inclusions
+  they have to get sorted this session, and each pack heading shows how many of that specific pack are due to
+  them — so joiners know how many items they should expect out of the sort before they even rank anything.

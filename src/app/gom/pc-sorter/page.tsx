@@ -262,6 +262,22 @@ export default function GomPcSorterPage() {
     return list
   }
 
+  // Joiners who have inclusions assigned (so they're expected to rank) but haven't submitted a form yet
+  const pendingJoiners = (d: any) => {
+    const submittedIds = new Set((d?.forms || []).map((f: any) => f.joiner_id))
+    const seen = new Set<string>()
+    const list: any[] = []
+    for (const i of d?.inclusions || []) {
+      if (submittedIds.has(i.joiner_id) || seen.has(i.joiner_id)) continue
+      seen.add(i.joiner_id)
+      list.push(i)
+    }
+    return list
+  }
+
+  const totalInclusionsFor = (d: any, joinerId: string) =>
+    (d?.inclusions || []).filter((i: any) => i.joiner_id === joinerId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+
   return (
     <div className="flex flex-col h-full">
       <PageHeader
@@ -398,10 +414,30 @@ export default function GomPcSorterPage() {
                           </div>
                         )}
 
+                        {/* Awaiting submission */}
+                        {packs.length > 0 && (() => {
+                          const pending = pendingJoiners(d)
+                          if (pending.length === 0) return null
+                          return (
+                            <div className="p-3 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl">
+                              <p className="text-xs font-bold text-amber-700 dark:text-amber-400 uppercase tracking-widest mb-2">
+                                ⏳ Awaiting submission ({pending.length})
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {pending.map((j: any) => (
+                                  <span key={j.joiner_id} className="text-xs px-2.5 py-1 rounded-full bg-background border border-amber-200 dark:border-amber-800 font-medium">
+                                    {j.display_name || j.username} <span className="text-muted-foreground font-normal">· {totalInclusionsFor(d, j.joiner_id)} due</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        })()}
+
                         {/* Priority forms */}
                         <div>
                           <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">
-                            Priority forms ({(d.forms || []).length} submitted)
+                            Priority forms ({(d.forms || []).length}{pendingJoiners(d).length > 0 ? ` of ${(d.forms || []).length + pendingJoiners(d).length}` : ''} submitted)
                             <button onClick={() => loadDetails(s.id)} className="ml-2 text-primary font-normal normal-case tracking-normal">↺ Refresh</button>
                           </p>
                           {(d.forms || []).length === 0 ? (

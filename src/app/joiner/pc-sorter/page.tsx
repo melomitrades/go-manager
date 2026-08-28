@@ -92,6 +92,9 @@ export default function JoinerPCSorterPage() {
           const packs: any[] = det.packs || []
           const itemOrders = order[session.id] || {}
           const deadlinePassed = session.deadline && new Date(session.deadline) < new Date()
+          const myInclusions: any[] = det.inclusions || []
+          const myTotalInclusions = myInclusions.reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+          const inclusionsForPack = (packId: string) => myInclusions.filter(i => i.pack_id === packId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
 
           return (
             <Card key={session.id}>
@@ -104,11 +107,16 @@ export default function JoinerPCSorterPage() {
                       {session.deadline && <> · Closes {formatDate(session.deadline)}</>}
                     </p>
                   </div>
-                  {isSubmitted && (
-                    <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 gap-1">
-                      <Check size={11} /> Submitted
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <Badge className={myTotalInclusions > 0 ? 'bg-primary/10 text-primary border border-primary/20 gap-1' : 'bg-secondary text-muted-foreground border border-border gap-1'}>
+                      🎫 {myTotalInclusions} inclusion{myTotalInclusions !== 1 ? 's' : ''} to sort
                     </Badge>
-                  )}
+                    {isSubmitted && (
+                      <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 gap-1">
+                        <Check size={11} /> Submitted
+                      </Badge>
+                    )}
+                  </div>
                 </div>
               </CardHeader>
 
@@ -127,7 +135,10 @@ export default function JoinerPCSorterPage() {
                     if (!items.length) return null
                     return (
                       <div key={pack.id} className="space-y-3">
-                        <p className="text-xs font-bold text-primary uppercase tracking-widest">{pack.name}</p>
+                        <p className="text-xs font-bold text-primary uppercase tracking-widest">
+                          {pack.name}
+                          <span className="ml-2 text-muted-foreground normal-case font-normal tracking-normal">· {inclusionsForPack(pack.id)} due to you</span>
+                        </p>
                         {items.map((item: any) => {
                           const members = itemOrders[item.id] || []
                           if (members.length === 0) return null
