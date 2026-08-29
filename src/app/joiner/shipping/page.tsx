@@ -32,7 +32,7 @@ export default function JoinerShippingPage() {
 
   const fetchData = useCallback(async () => {
     const [d, openRes, dlRes] = await Promise.all([
-      fetch('/api/sending-out').then(r => r.json()),
+      fetch('/api/sending-out?viewAs=joiner').then(r => r.json()),
       fetch('/api/settings?key=sending_form_open').then(r => r.json()).catch(() => ({ value: 'true' })),
       fetch('/api/settings?key=sending_form_deadline').then(r => r.json()).catch(() => ({ value: '' })),
     ])

@@ -16,16 +16,20 @@ export default function JoinerPCSorterPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/pc-sorter')
+    // ?viewAs=joiner is always sent, for every account — same convention as the Orders page.
+    // For a real joiner it changes nothing (the API already scopes them to themselves). For a
+    // gom/admin it means "show MY OWN participation as a joiner", so this page looks and works
+    // identically no matter who's logged in — never a dashboard of everyone else's data.
+    fetch('/api/pc-sorter?viewAs=joiner')
       .then(r => r.json())
       .then(async d => {
-        const open = Array.isArray(d) ? d : [] // server already filters to form_open (or already-sorted) sessions for joiners
+        const open = Array.isArray(d) ? d : [] // server already filters to form_open (or already-sorted) sessions
         setSessions(open)
         const detailMap: Record<string, any> = {}
         const initialOrder: Record<string, Record<string, RankedMember[]>> = {}
 
         for (const s of open) {
-          const det = await fetch(`/api/pc-sorter/${s.id}`).then(r => r.json())
+          const det = await fetch(`/api/pc-sorter/${s.id}?viewAs=joiner`).then(r => r.json())
           detailMap[s.id] = det
           initialOrder[s.id] = {}
           for (const item of (det.items || [])) {
@@ -96,8 +100,8 @@ export default function JoinerPCSorterPage() {
           const myTotalInclusions = myInclusions.reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
           const inclusionsForPack = (packId: string) => myInclusions.filter(i => i.pack_id === packId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
           const isSorted = !!session.sort_run_at
-          // Only show the ranking form while it's actually open to them and they haven't
-          // already submitted — once submitted, priorities are locked (no self-service edits).
+          // Only show the ranking form while it's actually open and not yet submitted — once
+          // submitted, priorities are locked (no self-service edits).
           const canSubmit = session.form_open && !isSubmitted && !deadlinePassed
           const myAssignments: any[] = det.assignments || []
 

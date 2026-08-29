@@ -91,7 +91,7 @@ export default function JoinerDeadlinesPage() {
       }
 
       // PC sorter sessions with deadlines
-      const sessions = await fetch('/api/pc-sorter').then(r => r.json()).catch(() => [])
+      const sessions = await fetch('/api/pc-sorter?viewAs=joiner').then(r => r.json()).catch(() => [])
       for (const s of (Array.isArray(sessions) ? sessions : [])) {
         if (s.deadline) {
           deadlines.push({

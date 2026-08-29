@@ -4,7 +4,7 @@ import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensurePcSorterSchema } from '@/lib/pcSorter'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   await ensurePcSorterSchema()
@@ -21,11 +21,17 @@ export async function GET() {
     ORDER BY ps.created_at DESC
   `)
 
+  // The joiner-facing Sorting page always sends ?viewAs=joiner, for every account — a gom/admin
+  // hitting it this way is shown their OWN participation as a joiner (same as the orders page's
+  // viewAs convention), not a filtered-down GOM dashboard. A real joiner is always scoped to
+  // themselves regardless of this param; it only changes anything for gom/admin.
+  const viewAsJoiner = new URL(req.url).searchParams.get('viewAs') === 'joiner'
+
   // Joiners see a session once its form is open (to submit), and keep seeing it after a sort
   // has run (to view their results) even though the GOM closes the form when running the
-  // sort. A session that's closed and has never been sorted still isn't visible at all —
-  // it isn't ready for joiners yet.
-  if (user.role === 'joiner') {
+  // sort. A session that's closed and has never been sorted still isn't visible at all — it
+  // isn't ready for joiners yet. Same rule applies to a gom/admin viewing their own joiner side.
+  if (user.role === 'joiner' || (['gom', 'admin'].includes(user.role) && viewAsJoiner)) {
     return NextResponse.json((sessions as any[]).filter(s => s.form_open || s.sort_run_at))
   }
   return NextResponse.json(sessions)

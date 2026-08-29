@@ -48,8 +48,13 @@ export async function GET(req: NextRequest) {
     LEFT JOIN profiles p ON p.id = so.joiner_id
     WHERE 1=1
   `
+  // Same convention as pc-sorter/orders: the joiner-facing Shipping page always sends
+  // ?viewAs=joiner, for every account, so a gom/admin viewing their own Shipping page sees only
+  // their own submission — not everyone's — same as a real joiner always does regardless of
+  // this param.
+  const viewAsJoiner = new URL(req.url).searchParams.get('viewAs') === 'joiner'
   const params: any[] = []
-  if (user.role === 'joiner') { sql += ` AND so.joiner_id = $1`; params.push(user.id) }
+  if (user.role === 'joiner' || (['gom', 'admin'].includes(user.role) && viewAsJoiner)) { sql += ` AND so.joiner_id = $1`; params.push(user.id) }
   sql += ' ORDER BY so.joiner_submitted DESC, so.created_at DESC'
   return NextResponse.json(await query(sql, params))
 }

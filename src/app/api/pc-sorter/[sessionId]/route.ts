@@ -74,9 +74,16 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
       AND pk.name IN (SELECT name FROM pc_packs WHERE session_id=$1)
   `, [sessionId]).catch(() => [] as any[])
 
-  // Joiners only ever see their own priority forms / entries / inclusions / assignments —
-  // never other joiners' picks or results.
-  if (user.role === 'joiner') {
+  // The joiner-facing Sorting page always sends ?viewAs=joiner, for every account. For a real
+  // joiner this changes nothing (they're always scoped to themselves regardless). For a
+  // gom/admin it means "show MY OWN participation as a joiner, the same as any other joiner
+  // sees theirs" — scoped to their own id, never an arbitrary other joiner's.
+  const viewAsJoiner = new URL(req.url).searchParams.get('viewAs') === 'joiner'
+  const scopeToSelf = user.role === 'joiner' || (['gom', 'admin'].includes(user.role) && viewAsJoiner)
+
+  // Joiners (real, or a gom/admin viewing their own joiner side) only ever see their own
+  // priority forms / entries / inclusions / assignments — never other joiners' picks or results.
+  if (scopeToSelf) {
     const myFormIds = new Set((forms as any[]).filter(f => f.joiner_id === user.id).map(f => f.id))
     entries = (entries as any[]).filter(e => myFormIds.has(e.form_id))
     forms = (forms as any[]).filter(f => f.joiner_id === user.id)

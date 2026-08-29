@@ -117,3 +117,29 @@ app self-migrates its schema at runtime — no manual SQL required.
   accounts back to `/joiner` for the same reason. A real joiner account was never affected by this — the API
   filtering itself was always correct for them — this only ever showed unfiltered data to an already-privileged
   account looking at the wrong page.
+- **GOMs can preview the joiner side again — properly scoped this time.** The redirect from the previous fix
+  was too blunt: it blocked GOM/admin accounts from `/joiner/*` entirely, which broke the legitimate need to
+  check what a joiner sees. `joiner/layout.tsx` no longer redirects them away. Instead, the Sorting page now
+  shows a "Preview as joiner" picker for gom/admin accounts (a dropdown of every joiner) — nothing loads until
+  one is chosen. Both `/api/pc-sorter` and `/api/pc-sorter/[sessionId]` accept a `viewAsJoiner=<id>` param that a
+  gom/admin can pass to see the exact same data an actual joiner with that id would see — scoped with the
+  identical filtering logic, just keyed off the chosen id instead of `user.id`. A real joiner account can't use
+  this param to see anyone else's data; it's only ever honored for gom/admin. Preview mode is read-only —
+  ranking and submitting are disabled — so a GOM can't accidentally submit priorities on a joiner's behalf.
+- **Replaced the "Preview as joiner" picker with the same convention Orders already uses — no picker, a GOM just
+  sees their own side.** The picker from the previous fix was more than what was actually wanted: it let a
+  gom/admin browse any joiner's data read-only, when what's actually needed is for a gom/admin's OWN joiner
+  activity (their own claims, their own sorting priorities/results) to show up exactly like a real joiner's,
+  fully interactive — no selection step, no read-only mode, indistinguishable from any other joiner's page. This
+  is exactly the pattern `/api/orders` already used (`?viewAs=joiner` scopes the response to the caller's own
+  id, for every role), so pc-sorter and sending-out now match it instead of inventing a separate mechanism:
+  `/api/pc-sorter` and `/api/pc-sorter/[sessionId]` dropped the arbitrary `viewAsJoiner=<id>` param for a plain
+  `viewAs=joiner` boolean, always scoped to `user.id` (never an arbitrary chosen joiner — a gom/admin can only
+  ever see their own participation this way, same as a real joiner). `joiner/pc-sorter/page.tsx` is back to
+  behaving like a normal joiner page — no picker, no preview banner, ranking and submitting both fully enabled —
+  just with `?viewAs=joiner` on its two fetches. While auditing for the same bug class elsewhere, found and
+  fixed the identical gap in `/api/sending-out` (used by the Shipping page) and an unscoped `pc-sorter` fetch in
+  the Deadlines page, both of which would have shown a gom/admin ALL joiners' shipping submissions / deadlines
+  instead of their own — both now send `?viewAs=joiner` too, for the same reason. `joiner/layout.tsx` still lets
+  gom/admin accounts through without a redirect (that part of the earlier fix was correct and stays); the
+  comment there now describes this convention instead of the removed picker.
