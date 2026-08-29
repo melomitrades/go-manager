@@ -10,7 +10,10 @@ export default function GomLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (status === 'unauthenticated') router.push('/login')
-  }, [status])
+    // Keep joiner accounts off GOM pages — send them back to their own dashboard rather than
+    // showing a GOM shell that's really only correctly scoped for gom/admin roles.
+    if (status === 'authenticated' && (session?.user as any)?.role === 'joiner') router.push('/joiner')
+  }, [status, session])
 
   if (status === 'loading' || !session) return (
     <div className="min-h-screen flex items-center justify-center">

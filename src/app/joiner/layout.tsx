@@ -11,7 +11,18 @@ export default function JoinerLayout({ children }: { children: React.ReactNode }
 
   useEffect(() => {
     if (status === 'unauthenticated') router.push('/login')
-  }, [status])
+    // Only real joiners belong on joiner pages. Without this, a GOM/admin account that
+    // navigates here directly (e.g. to preview what a joiner sees) never trips the
+    // role==='joiner' checks in the pc-sorter API, so those endpoints return everything
+    // unfiltered — every joiner's priorities and results, not just "your own" — which is
+    // exactly what looks like a data leak even though it's really just the wrong account
+    // looking at a page that was never scoped for it. Send other roles to their own dashboard.
+    if (status === 'authenticated') {
+      const role = (session?.user as any)?.role
+      if (role === 'gom') router.push('/gom')
+      else if (role === 'admin') router.push('/admin')
+    }
+  }, [status, session])
   if (status === 'loading' || !session) return (
     <div className="min-h-screen flex items-center justify-center">
       <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />

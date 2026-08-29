@@ -107,3 +107,13 @@ app self-migrates its schema at runtime — no manual SQL required.
   sorted — including for joiners who never submitted at all and got random-filled. Reopening a form after a sort
   still works exactly as before, but only for joiners who haven't submitted yet; anyone who already has a
   submission on file stays locked out of editing even while the form is reopened.
+- **Joiner pages now redirect away non-joiner accounts (and vice versa).** Neither `/joiner/*` nor `/gom/*` had
+  any role guard — any authenticated account could load either simply by navigating there directly (only
+  `/admin` was ever guarded). The pc-sorter APIs filter "your own data only" strictly for `role === 'joiner'`,
+  so a GOM/admin account browsing `/joiner/pc-sorter` to preview it never tripped that check and got everything
+  completely unfiltered — every joiner's priorities and results on one screen, which is what "shows all joiners'
+  pulls instead of just the joiner's specific pull" was. `joiner/layout.tsx` now sends `gom`/`admin` accounts to
+  their own dashboard instead of rendering the joiner shell for them, and `gom/layout.tsx` sends `joiner`
+  accounts back to `/joiner` for the same reason. A real joiner account was never affected by this — the API
+  filtering itself was always correct for them — this only ever showed unfiltered data to an already-privileged
+  account looking at the wrong page.
