@@ -105,6 +105,14 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
       return NextResponse.json({ error: 'The deadline for this form has passed' }, { status: 403 })
     }
 
+    // One submission per joiner per session, period — no self-service edits. If the GOM
+    // reopens the form after a sort, that's for joiners who never submitted at all to get a
+    // chance; it never reopens editing for someone who already has a form on file.
+    const existingForm = await queryOne<any>(`SELECT id FROM pc_priority_forms WHERE session_id=$1 AND joiner_id=$2`, [sessionId, user.id])
+    if (existingForm) {
+      return NextResponse.json({ error: "You've already submitted your priorities for this session — they can't be changed." }, { status: 403 })
+    }
+
     const form = await queryOne<any>(`
       INSERT INTO pc_priority_forms (session_id, joiner_id, submitted_at, form_data)
       VALUES ($1,$2, now(), '{}')

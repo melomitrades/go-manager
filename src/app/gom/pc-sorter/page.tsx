@@ -341,7 +341,7 @@ export default function GomPcSorterPage() {
                         variant={s.form_open ? 'outline' : 'default'}
                         size="sm"
                         onClick={() => toggleFormOpen(s)}
-                        title={s.sort_run_at ? 'Sort already ran — reopening lets joiners resubmit before you sort again' : ''}
+                        title={s.sort_run_at ? "Sort already ran — reopening only lets joiners who haven't submitted yet do so before you sort again. Joiners who already submitted stay locked in; they can't edit." : ''}
                       >
                         {s.form_open ? <><ToggleRight size={14} /> Close form</> : <><ToggleLeft size={14} /> Open form</>}
                       </Button>

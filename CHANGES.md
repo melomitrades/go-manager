@@ -95,3 +95,15 @@ app self-migrates its schema at runtime — no manual SQL required.
   Inclusions" (Inclusions summary + Awaiting submission + Priority forms combined), and "Results" (Run sort +
   Results combined) — each showing its count in the tab label. Opens on Results by default once a sort has run
   for that session, otherwise Packs & Items, since that's usually what you're there to check.
+- **Joiners can no longer edit their submitted rankings, and now see their own results.** Two separate bugs:
+  (1) the joiner page had an "Edit my ranking" link that let a joiner reopen and resubmit their priorities at
+  any time, even after the GOM had already sorted — removed, and the priorities endpoint now rejects a second
+  submission server-side too ("You've already submitted your priorities for this session — they can't be
+  changed."), so it can't be done via a raw request either. (2) `/api/pc-sorter` was only ever showing joiners
+  sessions whose form was currently open — but running the sort always closes the form, so the session (and
+  every result in it) simply vanished from a joiner's Sorting page the moment the GOM sorted. It now also shows
+  sessions that have already been sorted, and the joiner page renders a proper read-only results view (grouped
+  by pack, with the same repeat/random notes as everywhere else) instead of the ranking form once a session is
+  sorted — including for joiners who never submitted at all and got random-filled. Reopening a form after a sort
+  still works exactly as before, but only for joiners who haven't submitted yet; anyone who already has a
+  submission on file stays locked out of editing even while the form is reopened.

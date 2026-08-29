@@ -21,10 +21,12 @@ export async function GET() {
     ORDER BY ps.created_at DESC
   `)
 
-  // Joiners only ever see sessions whose form is currently open — a session isn't visible
-  // to them at all until the GOM explicitly opens it.
+  // Joiners see a session once its form is open (to submit), and keep seeing it after a sort
+  // has run (to view their results) even though the GOM closes the form when running the
+  // sort. A session that's closed and has never been sorted still isn't visible at all —
+  // it isn't ready for joiners yet.
   if (user.role === 'joiner') {
-    return NextResponse.json((sessions as any[]).filter(s => s.form_open))
+    return NextResponse.json((sessions as any[]).filter(s => s.form_open || s.sort_run_at))
   }
   return NextResponse.json(sessions)
 }

@@ -19,7 +19,7 @@ export default function JoinerPCSorterPage() {
     fetch('/api/pc-sorter')
       .then(r => r.json())
       .then(async d => {
-        const open = Array.isArray(d) ? d : [] // server already filters to form_open sessions for joiners
+        const open = Array.isArray(d) ? d : [] // server already filters to form_open (or already-sorted) sessions for joiners
         setSessions(open)
         const detailMap: Record<string, any> = {}
         const initialOrder: Record<string, Record<string, RankedMember[]>> = {}
@@ -95,6 +95,11 @@ export default function JoinerPCSorterPage() {
           const myInclusions: any[] = det.inclusions || []
           const myTotalInclusions = myInclusions.reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
           const inclusionsForPack = (packId: string) => myInclusions.filter(i => i.pack_id === packId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+          const isSorted = !!session.sort_run_at
+          // Only show the ranking form while it's actually open to them and they haven't
+          // already submitted — once submitted, priorities are locked (no self-service edits).
+          const canSubmit = session.form_open && !isSubmitted && !deadlinePassed
+          const myAssignments: any[] = det.assignments || []
 
           return (
             <Card key={session.id}>
@@ -116,19 +121,63 @@ export default function JoinerPCSorterPage() {
                         <Check size={11} /> Submitted
                       </Badge>
                     )}
+                    {isSorted && (
+                      <Badge className="bg-primary/10 text-primary border border-primary/20 gap-1">
+                        🎴 Sorted
+                      </Badge>
+                    )}
                   </div>
                 </div>
               </CardHeader>
 
-              {isSubmitted ? (
+              {isSorted ? (
+                <CardContent>
+                  {myAssignments.length === 0 ? (
+                    <div className="flex items-center gap-2.5 bg-secondary/30 border border-border rounded-xl px-4 py-3 text-muted-foreground">
+                      <p className="text-sm">The sort has run for this session, but nothing was assigned to you.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2.5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl px-4 py-3 text-emerald-700 dark:text-emerald-300 mb-4">
+                        <Check size={15} />
+                        <p className="text-sm font-medium">The sort has run — here's what you got.</p>
+                      </div>
+                      <div className="space-y-3">
+                        {packs.map((pack: any) => {
+                          const packRows = myAssignments.filter((a: any) => a.pack_id === pack.id)
+                          if (!packRows.length) return null
+                          return (
+                            <div key={pack.id} className="border border-border rounded-2xl overflow-hidden">
+                              <div className="px-4 py-2.5 bg-secondary/40 border-b border-border">
+                                <p className="text-sm font-semibold">{pack.name}</p>
+                              </div>
+                              <div className="divide-y divide-border/40">
+                                {packRows.map((r: any) => (
+                                  <div key={r.id} className="flex items-center justify-between px-4 py-2.5">
+                                    <p className="text-sm">{r.item_name}</p>
+                                    <p className="text-sm font-semibold">
+                                      {r.member_name}
+                                      {r.is_repeat && <span className="text-amber-600 ml-1.5 text-xs font-normal">(2nd)</span>}
+                                      {r.is_random && <span className="text-sky-600 ml-1.5 text-xs font-normal">(random)</span>}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              ) : isSubmitted ? (
                 <CardContent>
                   <div className="flex items-center gap-2.5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl px-4 py-3 text-emerald-700 dark:text-emerald-300">
                     <Check size={15} />
-                    <p className="text-sm font-medium">Your priorities have been submitted. Your GOM will run the sort when ready. Resubmitting below will overwrite your previous ranking.</p>
+                    <p className="text-sm font-medium">Your priorities have been submitted and can't be changed. Your GOM will run the sort when ready — your results will show here once they do.</p>
                   </div>
-                  <button onClick={() => setSubmitted(prev => { const n = new Set(prev); n.delete(session.id); return n })} className="text-xs text-primary font-semibold hover:underline mt-2">Edit my ranking</button>
                 </CardContent>
-              ) : (
+              ) : canSubmit ? (
                 <CardContent className="space-y-5">
                   {packs.map((pack: any) => {
                     const items: any[] = (det.items || []).filter((i: any) => i.pack_id === pack.id)
@@ -187,6 +236,10 @@ export default function JoinerPCSorterPage() {
                   <Button onClick={() => submitForm(session.id)} disabled={saving === session.id || deadlinePassed} className="w-full">
                     {deadlinePassed ? 'Deadline passed' : saving === session.id ? 'Submitting…' : <><Check size={14} /> Submit My Preferences</>}
                   </Button>
+                </CardContent>
+              ) : (
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">This form is currently closed.</p>
                 </CardContent>
               )}
             </Card>
