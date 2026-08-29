@@ -62,3 +62,18 @@ app self-migrates its schema at runtime — no manual SQL required.
 - **Joiners now see their own inclusion count.** Each session card shows a badge with how many total inclusions
   they have to get sorted this session, and each pack heading shows how many of that specific pack are due to
   them — so joiners know how many items they should expect out of the sort before they even rank anything.
+- **GOM Results list redesigned.** The old view was one flat comma-separated line of text per joiner. It's now a
+  card grid — one card per joiner with initials, their item count, and their assignments grouped by pack as
+  chips (item → member), still carrying the repeat/random icons. A summary line above the grid gives total items
+  assigned, joiner count, and random/repeat totals at a glance.
+- **"Inclusions assigned" vs "items sorted" — not a bug, but the old label was misleading, now fixed.** The sort
+  algorithm was never double-counting: one inclusion = one of EVERY item in its pack, so a pack with 2 items
+  turns 1 inclusion into 2 assigned items on purpose (that's the spec, unchanged). What actually caused the
+  confusing "31 vs 41" was the "Inclusions assigned" card, which showed the number of joiner-pack ROWS
+  (`pc_pack_inclusions` entries) rather than the sum of their `inclusions_assigned` values — those aren't the
+  same number the moment any joiner has more than 1 inclusion on a row. It now shows the real total inclusion
+  units, plus (when a pack has more than one item) the item count that total will expand into once sorted. The
+  "Run sort" block and the Results summary both now show this same "expected" number (inclusions × items per
+  pack) next to the actual assigned/unfulfilled counts, and flag in amber if they no longer match — which only
+  happens if inclusions or items were edited after the last sort ran, not from any miscounting in the sort
+  itself. Re-running the sort always reconciles it.

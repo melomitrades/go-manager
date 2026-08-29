@@ -278,6 +278,27 @@ export default function GomPcSorterPage() {
   const totalInclusionsFor = (d: any, joinerId: string) =>
     (d?.inclusions || []).filter((i: any) => i.joiner_id === joinerId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
 
+  // Sum of every inclusion row's count — the real number of "inclusions assigned",
+  // as opposed to the number of joiner-pack ROWS (a joiner can have more than 1 inclusion
+  // on a single row, so those aren't the same thing).
+  const totalInclusionUnits = (d: any) =>
+    (d?.inclusions || []).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+
+  // What the sort SHOULD produce once it runs: one inclusion = one of EVERY item in its pack,
+  // so each pack's inclusion units multiply by that pack's own item count — this is the number
+  // to compare "assigned" against, not the raw inclusion count, which is expected to be lower
+  // whenever a pack has more than one item. Mirrors totalDemand in runPcSort() server-side.
+  const expectedAssignedTotal = (d: any) => {
+    const packs: any[] = d?.packs || []
+    const items: any[] = d?.items || []
+    const inclusions: any[] = d?.inclusions || []
+    return packs.reduce((sum: number, p: any) => {
+      const itemsInPack = items.filter((i: any) => i.pack_id === p.id).length
+      const packUnits = inclusions.filter((i: any) => i.pack_id === p.id).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+      return sum + itemsInPack * packUnits
+    }, 0)
+  }
+
   return (
     <div className="flex flex-col h-full">
       <PageHeader
@@ -404,15 +425,23 @@ export default function GomPcSorterPage() {
                         </div>
 
                         {/* Inclusions */}
-                        {packs.length > 0 && (
-                          <div className="flex items-center justify-between p-3 bg-secondary/30 rounded-xl">
-                            <div>
-                              <p className="text-sm font-semibold">Inclusions assigned</p>
-                              <p className="text-xs text-muted-foreground">{(d.inclusions || []).length} joiner-pack entries set</p>
+                        {packs.length > 0 && (() => {
+                          const totalUnits = totalInclusionUnits(d)
+                          const uniqueJoiners = new Set((d.inclusions || []).map((i: any) => i.joiner_id)).size
+                          const expected = expectedAssignedTotal(d)
+                          return (
+                            <div className="flex items-center justify-between p-3 bg-secondary/30 rounded-xl">
+                              <div>
+                                <p className="text-sm font-semibold">Inclusions assigned</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {totalUnits} total inclusion{totalUnits !== 1 ? 's' : ''} across {uniqueJoiners} joiner{uniqueJoiners !== 1 ? 's' : ''}
+                                  {expected !== totalUnits && <> · {expected} item{expected !== 1 ? 's' : ''} once sorted (packs have more than one item)</>}
+                                </p>
+                              </div>
+                              <Button size="sm" variant="outline" onClick={() => setInclusionsModal(s.id)}>Manage inclusions</Button>
                             </div>
-                            <Button size="sm" variant="outline" onClick={() => setInclusionsModal(s.id)}>Manage inclusions</Button>
-                          </div>
-                        )}
+                          )
+                        })()}
 
                         {/* Awaiting submission */}
                         {packs.length > 0 && (() => {
@@ -482,58 +511,109 @@ export default function GomPcSorterPage() {
                         </div>
 
                         {/* Run sort */}
-                        {packs.length > 0 && (
-                          <div className="p-3 border border-primary/20 bg-primary/5 rounded-xl">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="text-sm font-semibold">Run sort</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {s.sort_run_at ? `Last run ${formatDateTime(s.sort_run_at)} · ${s.sort_method}` : 'Not run yet'}
-                                </p>
+                        {packs.length > 0 && (() => {
+                          const expected = expectedAssignedTotal(d)
+                          const staleVsCurrent = lastSort && typeof lastSort.totalDemand === 'number' && lastSort.totalDemand !== expected
+                          return (
+                            <div className="p-3 border border-primary/20 bg-primary/5 rounded-xl">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-sm font-semibold">Run sort</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {s.sort_run_at ? `Last run ${formatDateTime(s.sort_run_at)} · ${s.sort_method}` : 'Not run yet'}
+                                    {expected > 0 && <> · {expected} item{expected !== 1 ? 's' : ''} expected from current inclusions</>}
+                                  </p>
+                                </div>
+                                <Button size="sm" onClick={() => setSortModal(s.id)}><Check size={12} /> Run sort</Button>
                               </div>
-                              <Button size="sm" onClick={() => setSortModal(s.id)}><Check size={12} /> Run sort</Button>
+                              {lastSort && (
+                                <p className="text-xs mt-2 text-muted-foreground">
+                                  Assigned {lastSort.assigned} · Unfulfilled {lastSort.unfulfilled}
+                                  {typeof lastSort.totalDemand === 'number' && <> (of {lastSort.totalDemand} expected at sort time)</>}
+                                  {staleVsCurrent && (
+                                    <span className="block text-amber-600 dark:text-amber-400 font-medium mt-1">
+                                      ⚠ Inclusions or items changed since this sort ran — {expected} expected now vs {lastSort.totalDemand} then. Re-run to match.
+                                    </span>
+                                  )}
+                                </p>
+                              )}
                             </div>
-                            {lastSort && (
-                              <p className="text-xs mt-2 text-muted-foreground">
-                                Assigned {lastSort.assigned} · Unfulfilled {lastSort.unfulfilled}
-                              </p>
-                            )}
-                          </div>
-                        )}
+                          )
+                        })()}
 
                         {/* Results */}
-                        {(d.assignments || []).length > 0 && (
-                          <div>
-                            <div className="flex items-center justify-between mb-2">
-                              <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Results</p>
-                              <button onClick={() => setOwnershipModal(s.id)} className="text-xs text-primary font-semibold hover:underline">View ownership</button>
-                            </div>
-                            <div className="space-y-1">
-                              {Object.entries(
-                                (d.assignments as any[]).reduce((acc: Record<string, any[]>, a: any) => {
-                                  const key = a.display_name || a.username || a.joiner_id
-                                  if (!acc[key]) acc[key] = []
-                                  acc[key].push(a)
-                                  return acc
-                                }, {})
-                              ).map(([joinerName, rows]: [string, any]) => (
-                                <div key={joinerName} className="flex items-start gap-2 text-sm px-1">
-                                  <span className="font-semibold flex-shrink-0">{joinerName}:</span>
-                                  <span className="text-muted-foreground flex-wrap flex gap-x-1.5">
-                                    {rows.map((r: any, i: number) => (
-                                      <span key={r.id}>
-                                        {r.pack_name} {r.item_name} → <span className="text-foreground font-medium">{r.member_name}</span>
-                                        {r.is_repeat && <span title="Repeat — every other option was already owned"><Repeat size={10} className="inline ml-0.5 text-amber-500" /></span>}
-                                        {r.is_random && <span title="Random — no priority form was submitted"><Shuffle size={10} className="inline ml-0.5 text-sky-500" /></span>}
-                                        {i < rows.length - 1 ? ',' : ''}
-                                      </span>
-                                    ))}
-                                  </span>
+                        {(d.assignments || []).length > 0 && (() => {
+                          const allAssignments = d.assignments as any[]
+                          const rowsByJoiner = allAssignments.reduce((acc: Record<string, any[]>, a: any) => {
+                            const key = a.joiner_id || a.display_name || a.username
+                            if (!acc[key]) acc[key] = []
+                            acc[key].push(a)
+                            return acc
+                          }, {} as Record<string, any[]>)
+                          const joinerCount = Object.keys(rowsByJoiner).length
+                          const totalRandom = allAssignments.filter((a: any) => a.is_random).length
+                          const totalRepeat = allAssignments.filter((a: any) => a.is_repeat).length
+                          const expected = expectedAssignedTotal(d)
+
+                          return (
+                            <div>
+                              <div className="flex items-center justify-between mb-2 gap-3">
+                                <div>
+                                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Results</p>
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    {allAssignments.length}{expected > 0 && expected !== allAssignments.length ? ` of ${expected} expected` : ''} item{allAssignments.length !== 1 ? 's' : ''} assigned to {joinerCount} joiner{joinerCount !== 1 ? 's' : ''}
+                                    {totalRandom > 0 && <> · <Shuffle size={10} className="inline text-sky-500" /> {totalRandom} random</>}
+                                    {totalRepeat > 0 && <> · <Repeat size={10} className="inline text-amber-500" /> {totalRepeat} repeat</>}
+                                  </p>
+                                  {expected > allAssignments.length && (
+                                    <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mt-0.5">
+                                      {expected - allAssignments.length} short of current inclusions — either stock ran out at sort time, or inclusions/items changed since. Re-run the sort to refresh.
+                                    </p>
+                                  )}
                                 </div>
-                              ))}
+                                <button onClick={() => setOwnershipModal(s.id)} className="text-xs text-primary font-semibold hover:underline flex-shrink-0">View ownership</button>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                {Object.entries(rowsByJoiner).map(([joinerId, rows]: [string, any]) => {
+                                  const name: string = rows[0].display_name || rows[0].username || String(joinerId)
+                                  const byPack = (rows as any[]).reduce((acc: Record<string, any[]>, r: any) => {
+                                    if (!acc[r.pack_name]) acc[r.pack_name] = []
+                                    acc[r.pack_name].push(r)
+                                    return acc
+                                  }, {} as Record<string, any[]>)
+                                  return (
+                                    <div key={joinerId} className="border border-border rounded-xl overflow-hidden">
+                                      <div className="flex items-center gap-2 px-3 py-2 bg-secondary/30 border-b border-border">
+                                        <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                          <span className="text-primary text-[10px] font-bold">{name.slice(0, 2).toUpperCase()}</span>
+                                        </div>
+                                        <p className="text-sm font-semibold truncate">{name}</p>
+                                        <span className="ml-auto text-xs text-muted-foreground flex-shrink-0">{rows.length} item{rows.length !== 1 ? 's' : ''}</span>
+                                      </div>
+                                      <div className="px-3 py-2 space-y-1.5">
+                                        {Object.entries(byPack).map(([packName, packRows]: [string, any]) => (
+                                          <div key={packName}>
+                                            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-0.5">{packName}</p>
+                                            <div className="flex flex-wrap gap-1">
+                                              {(packRows as any[]).map((r: any) => (
+                                                <span key={r.id} className="inline-flex items-center gap-1 text-xs pl-2 pr-2 py-1 rounded-full bg-secondary/50 border border-border">
+                                                  <span className="text-muted-foreground">{r.item_name}</span>
+                                                  <span className="text-foreground font-semibold">{r.member_name}</span>
+                                                  {r.is_repeat && <span title="Repeat — every other option was already owned"><Repeat size={10} className="text-amber-500" /></span>}
+                                                  {r.is_random && <span title="Random — no priority form was submitted"><Shuffle size={10} className="text-sky-500" /></span>}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )
+                        })()}
                       </>
                     )}
                   </CardContent>
