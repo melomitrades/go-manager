@@ -25,6 +25,7 @@ export default function GomPcSorterPage() {
   const [editOrderIds, setEditOrderIds] = useState<string[]>([])
 
   const [expandedSession, setExpandedSession] = useState<string | null>(null)
+  const [detailTab, setDetailTab] = useState<Record<string, 'packs' | 'forms' | 'results'>>({})
   const [sessionDetails, setSessionDetails] = useState<Record<string, any>>({})
   const [newPackName, setNewPackName] = useState<Record<string, string>>({})
   const [newItemName, setNewItemName] = useState<Record<string, string>>({})
@@ -315,6 +316,9 @@ export default function GomPcSorterPage() {
             const d = sessionDetails[s.id]
             const packs: any[] = d?.packs || []
             const lastSort = lastSortResult[s.id]
+            // Default to Results once a sort has run (that's what a GOM opens the card to check),
+            // otherwise Packs & Items (that's what's still being set up).
+            const activeTab = detailTab[s.id] || (s.sort_run_at ? 'results' : 'packs')
 
             return (
               <Card key={s.id}>
@@ -361,7 +365,24 @@ export default function GomPcSorterPage() {
                       <div className="flex justify-center py-8"><div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>
                     ) : (
                       <>
-                        {/* Packs & Items */}
+                        {/* Tabs — keeps the card from turning into one long scroll of six stacked sections */}
+                        <div className="flex items-center gap-1 border-b border-border">
+                          {([
+                            { key: 'packs' as const, label: 'Packs & Items', count: packs.length },
+                            { key: 'forms' as const, label: 'Forms & Inclusions', count: (d.forms || []).length },
+                            { key: 'results' as const, label: 'Results', count: (d.assignments || []).length },
+                          ]).map(tab => (
+                            <button
+                              key={tab.key}
+                              onClick={() => setDetailTab(p => ({ ...p, [s.id]: tab.key }))}
+                              className={`px-3 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors ${activeTab === tab.key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+                            >
+                              {tab.label}{tab.count > 0 ? ` (${tab.count})` : ''}
+                            </button>
+                          ))}
+                        </div>
+
+                        {activeTab === 'packs' && (
                         <div>
                           <div className="flex items-center justify-between mb-2">
                             <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Packs & items</p>
@@ -423,7 +444,10 @@ export default function GomPcSorterPage() {
                             </div>
                           )}
                         </div>
+                        )}
 
+                        {activeTab === 'forms' && (
+                        <div className="space-y-5">
                         {/* Inclusions */}
                         {packs.length > 0 && (() => {
                           const totalUnits = totalInclusionUnits(d)
@@ -509,7 +533,11 @@ export default function GomPcSorterPage() {
                             </div>
                           )}
                         </div>
+                        </div>
+                        )}
 
+                        {activeTab === 'results' && (
+                        <div className="space-y-5">
                         {/* Run sort */}
                         {packs.length > 0 && (() => {
                           const expected = expectedAssignedTotal(d)
@@ -614,6 +642,8 @@ export default function GomPcSorterPage() {
                             </div>
                           )
                         })()}
+                        </div>
+                        )}
                       </>
                     )}
                   </CardContent>

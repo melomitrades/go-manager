@@ -89,3 +89,9 @@ app self-migrates its schema at runtime — no manual SQL required.
   simply: adjust inclusions (or Auto-fill / Reset all inclusions, neither of which touch forms either) → click
   Run Sort again. It always recomputes from scratch using the forms already on file — joiners never have to
   resubmit their rankings just because the GOM reran the sort.
+- **Expanded session card is now tabbed instead of one long scroll.** Clicking "Details" used to stack six
+  sections vertically (Packs & Items, Inclusions, Awaiting submission, Priority forms, Run sort, Results), which
+  got very tall for any session with more than a couple joiners. It's now three tabs: "Packs & Items", "Forms &
+  Inclusions" (Inclusions summary + Awaiting submission + Priority forms combined), and "Results" (Run sort +
+  Results combined) — each showing its count in the tab label. Opens on Results by default once a sort has run
+  for that session, otherwise Packs & Items, since that's usually what you're there to check.
