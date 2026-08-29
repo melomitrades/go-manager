@@ -731,7 +731,7 @@ export default function GomPcSorterPage() {
               <div className="flex items-center justify-between p-3 bg-destructive/5 border border-destructive/15 rounded-xl">
                 <div>
                   <p className="text-sm font-semibold">Reset all inclusions</p>
-                  <p className="text-xs text-muted-foreground">Clears every joiner's inclusion count for this session back to zero — for starting over by hand instead of auto-filling.</p>
+                  <p className="text-xs text-muted-foreground">Clears every joiner's inclusion count for this session back to zero — for starting over by hand instead of auto-filling. Never touches priority forms or past sort results — joiners' submitted rankings stay exactly as they are.</p>
                 </div>
                 <Button size="sm" variant="destructive" onClick={() => resetInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>Reset</Button>
               </div>
@@ -776,7 +776,7 @@ export default function GomPcSorterPage() {
 
       {/* Run Sort Modal */}
       {sortModal && (
-        <Modal open={true} onClose={() => !sortRunning && setSortModal(null)} title="Run Sort" subtitle="This closes the form and assigns items — it can't be undone by re-running without resetting quantities." size="sm">
+        <Modal open={true} onClose={() => !sortRunning && setSortModal(null)} title="Run Sort" subtitle="Closes the form and assigns items. Safe to re-run any time — it always redoes the assignments fresh from the current inclusions and stock, using the priority forms already on file. Joiners are never asked to resubmit just because you reran it." size="sm">
           <div className="space-y-4">
             <div className="space-y-2">
               <button onClick={() => setSortMethod('timestamp')} className={`w-full flex items-start gap-3 p-3 rounded-xl border text-left transition-all ${sortMethod === 'timestamp' ? 'border-primary bg-primary/5' : 'border-border'}`}>

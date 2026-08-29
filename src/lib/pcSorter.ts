@@ -347,6 +347,21 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
   if (!packs.length) return { assigned: 0, unfulfilled: 0 }
 
   const items = await query<any>(`SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at`, [sessionId])
+
+  // Every run starts from a clean slate: clear this session's previous assignments and put
+  // every item's available stock back to its full pulled total. Without this, a second run
+  // would (a) treat "need" as ADDITIONAL on top of what joiners already got — inclusions_assigned
+  // is always the full amount due, never a remaining balance — silently over-assigning on repeat
+  // runs, and (b) compute against whatever stock was left over from the previous run instead of
+  // the true total. This never touches pc_priority_forms / pc_priority_entries — re-running only
+  // redoes the assignment step from the CURRENT inclusion counts using the forms already on file;
+  // joiners never need to resubmit anything just because the GOM reran the sort.
+  await query(`DELETE FROM pc_assignments WHERE session_id=$1`, [sessionId])
+  await query(`
+    UPDATE pc_item_quantities SET available = total_pulled
+    WHERE item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
+  `, [sessionId])
+
   const quantities = await query<any>(`
     SELECT * FROM pc_item_quantities
     WHERE item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))

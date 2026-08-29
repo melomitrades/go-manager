@@ -77,3 +77,15 @@ app self-migrates its schema at runtime — no manual SQL required.
   pack) next to the actual assigned/unfulfilled counts, and flag in amber if they no longer match — which only
   happens if inclusions or items were edited after the last sort ran, not from any miscounting in the sort
   itself. Re-running the sort always reconciles it.
+- **Re-running the sort is now safe, and redoes assignments cleanly from current inclusions — without ever
+  touching priority forms.** Previously, running the sort a second time for the same session would ADD to the
+  previous results instead of replacing them: `inclusions_assigned` is always the full amount a joiner is due
+  (not a remaining balance), so a second run asked for the full amount again on top of what they'd already been
+  given, against whatever stock was left over from the first run — silently over-assigning and leaving stale
+  results mixed in with new ones. `runPcSort()` now clears this session's previous `pc_assignments` and restores
+  every item's `available` stock back to its full pulled total before computing, every single time it runs. It
+  never deletes or modifies `pc_priority_forms` / `pc_priority_entries` — those are only ever touched when a
+  joiner submits their own form. So the flow for "change some inclusion numbers and redo the assignments" is
+  simply: adjust inclusions (or Auto-fill / Reset all inclusions, neither of which touch forms either) → click
+  Run Sort again. It always recomputes from scratch using the forms already on file — joiners never have to
+  resubmit their rankings just because the GOM reran the sort.
