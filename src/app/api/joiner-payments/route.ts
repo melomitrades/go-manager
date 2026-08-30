@@ -6,7 +6,13 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 
+// Previously every CREATE TABLE here ran unconditionally on every request, and only the middle
+// ALTER block was actually gated by jpMigDone — this endpoint is polled/hit constantly (payments
+// page, GOM validation view), so that was 4 needless round trips per request. Gate the whole
+// sequence behind the flag; internal statement order is unchanged.
 async function ensureTables() {
+  if (jpMigDone) return
+  jpMigDone = true
   await query(`CREATE TABLE IF NOT EXISTS order_joiner_paid (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
@@ -16,7 +22,7 @@ async function ensureTables() {
     proof_url TEXT,
     UNIQUE(order_id, joiner_id)
   )`).catch(() => {})
-  if (!jpMigDone) { jpMigDone = true; await Promise.all([
+  await Promise.all([
     query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_url TEXT').catch(()=>{}),
     query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS full_name TEXT').catch(()=>{}),
     query('ALTER TABLE order_joiner_paid ADD COLUMN IF NOT EXISTS proof_submitted BOOLEAN DEFAULT false').catch(()=>{}),
@@ -28,7 +34,7 @@ async function ensureTables() {
     query('ALTER TABLE box_joiner_shares ADD COLUMN IF NOT EXISTS customs_proof_submitted_at TIMESTAMPTZ').catch(()=>{}),
   ]).then(() => {
     query('UPDATE order_joiner_paid SET proof_submitted=true WHERE proof_url IS NOT NULL AND (proof_submitted IS NULL OR proof_submitted=false)').catch(()=>{})
-  }) }
+  })
   await query(`CREATE TABLE IF NOT EXISTS box_joiner_shares (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     box_id UUID REFERENCES boxes(id) ON DELETE CASCADE,
@@ -176,21 +182,39 @@ export async function GET(req: NextRequest) {
 
   // 2. EMS and Customs shares from boxes
   try {
-    const boxes = await query('SELECT * FROM boxes ORDER BY created_at DESC') as any[]
+    // Previously: SELECT * FROM boxes (every box ever created), then for EACH one an unconditional
+    // per-box items query just to check "is this joiner even in this box" and bail. That scales
+    // with the total number of boxes ever created, not with the boxes this joiner actually has a
+    // stake in. Pre-filter in SQL instead: only boxes with a payment actually requested AND at
+    // least one item belonging to this joiner — same two conditions the loop checked before, just
+    // moved into the WHERE clause via EXISTS.
+    const boxes = await query(`
+      SELECT b.* FROM boxes b
+      WHERE (b.ems_payment_requested OR b.customs_payment_requested)
+        AND EXISTS (
+          SELECT 1 FROM box_orders bo JOIN order_items oi ON oi.order_id = bo.order_id
+          WHERE bo.box_id = b.id AND oi.joiner_id = $1
+        )
+      ORDER BY b.created_at DESC
+    `, [userId]).catch(() => [] as any[]) as any[]
 
-    for (const box of boxes) {
-      if (!box.ems_payment_requested && !box.customs_payment_requested) continue
+    // Each remaining box's three lookups (items, item types, this joiner's share row) are
+    // independent of every other box's, so run every box concurrently instead of one at a time.
+    const perBox = await Promise.all(boxes.map(async (box) => {
+      const [allItems, itemTypes, share] = await Promise.all([
+        query(`
+          SELECT oi.joiner_id, COALESCE(oi.item_type, 'photocard') as item_type, oi.amount_claimed
+          FROM order_items oi
+          JOIN box_orders bo ON bo.order_id = oi.order_id
+          WHERE bo.box_id = $1 AND oi.joiner_id IS NOT NULL
+        `, [box.id]).catch(() => [] as any[]) as Promise<any[]>,
+        query('SELECT item_type, custom_label, weight_g FROM box_item_types WHERE box_id=$1', [box.id]).catch(() => [] as any[]) as Promise<any[]>,
+        queryOne(
+          'SELECT ems_paid, customs_paid, ems_amount_eur, customs_amount_eur, proof_url, proof_submitted, customs_proof_url, customs_proof_submitted FROM box_joiner_shares WHERE box_id=$1 AND joiner_id=$2',
+          [box.id, userId]
+        ).catch(() => null) as Promise<any>,
+      ])
 
-      const allItems = await query(`
-        SELECT oi.joiner_id, COALESCE(oi.item_type, 'photocard') as item_type, oi.amount_claimed
-        FROM order_items oi
-        JOIN box_orders bo ON bo.order_id = oi.order_id
-        WHERE bo.box_id = $1 AND oi.joiner_id IS NOT NULL
-      `, [box.id]).catch(() => [] as any[]) as any[]
-
-      if (!allItems.some((r: any) => r.joiner_id === userId)) continue
-
-      const itemTypes = await query('SELECT item_type, custom_label, weight_g FROM box_item_types WHERE box_id=$1', [box.id]).catch(() => [] as any[]) as any[]
       const weightByType: Record<string, number> = {}
       for (const it of itemTypes) {
         const key = it.item_type === 'custom' ? (it.custom_label || 'custom') : it.item_type
@@ -206,28 +230,27 @@ export async function GET(req: NextRequest) {
 
       const uniqueJoiners = new Set(allItems.map((r: any) => r.joiner_id)).size
       const fraction = totalWeight > 0 ? (myWeight / totalWeight) : (uniqueJoiners > 0 ? 1 / uniqueJoiners : 0)
-      if (fraction === 0) continue
-
-      const share = await queryOne(
-        'SELECT ems_paid, customs_paid, ems_amount_eur, customs_amount_eur, proof_url, proof_submitted, customs_proof_url, customs_proof_submitted FROM box_joiner_shares WHERE box_id=$1 AND joiner_id=$2',
-        [box.id, userId]
-      ).catch(() => null) as any
+      if (fraction === 0) return [] as any[]
 
       const boxLabel = box.label || 'Box'
-      const ceil2 = (n: number) => Math.ceil(n * 100) / 100
+      const out: any[] = []
 
       // Use the saved published amount only — this is locked when GOM clicks "Ask EMS/Customs"
       // Never recompute from weights here (that causes amount drift when orders change)
       if (box.ems_payment_requested && share?.ems_amount_eur != null) {
         const emsAmt = parseFloat(share.ems_amount_eur)
-        if (emsAmt > 0.01) items.push({ id: `ems-${box.id}`, type: 'ems', label: `${boxLabel} — EMS`, amount_eur: emsAmt, deadline: box.ems_deadline, payment_info: box.payment_info || null, paid: share?.ems_paid || false, proof_url: share?.proof_url || null, proof_submitted: share?.proof_submitted || false, box_id: box.id })
+        if (emsAmt > 0.01) out.push({ id: `ems-${box.id}`, type: 'ems', label: `${boxLabel} — EMS`, amount_eur: emsAmt, deadline: box.ems_deadline, payment_info: box.payment_info || null, paid: share?.ems_paid || false, proof_url: share?.proof_url || null, proof_submitted: share?.proof_submitted || false, box_id: box.id })
       }
 
       if (box.customs_payment_requested && share?.customs_amount_eur != null) {
         const customsAmt = parseFloat(share.customs_amount_eur)
-        if (customsAmt > 0.01) items.push({ id: `customs-${box.id}`, type: 'customs', label: `${boxLabel} — Customs`, amount_eur: customsAmt, deadline: box.customs_deadline, payment_info: box.payment_info || null, paid: share?.customs_paid || false, proof_url: share?.customs_proof_url || null, proof_submitted: share?.customs_proof_submitted || false, box_id: box.id })
+        if (customsAmt > 0.01) out.push({ id: `customs-${box.id}`, type: 'customs', label: `${boxLabel} — Customs`, amount_eur: customsAmt, deadline: box.customs_deadline, payment_info: box.payment_info || null, paid: share?.customs_paid || false, proof_url: share?.customs_proof_url || null, proof_submitted: share?.customs_proof_submitted || false, box_id: box.id })
       }
-    }
+
+      return out
+    }))
+
+    for (const arr of perBox) items.push(...arr)
   } catch (e) { console.error('box shares error', e) }
 
   return NextResponse.json(items)

@@ -3,7 +3,12 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query } from '@/lib/db'
 
+// This table is polled every ~30s by every signed-in joiner (NotificationBell) — gate the
+// CREATE TABLE behind a once-per-cold-start flag instead of re-running it on every poll.
+let migDone = false
 async function ensureTable() {
+  if (migDone) return
+  migDone = true
   await query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

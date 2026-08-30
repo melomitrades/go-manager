@@ -28,16 +28,21 @@ export default function JoinerPCSorterPage() {
         const detailMap: Record<string, any> = {}
         const initialOrder: Record<string, Record<string, RankedMember[]>> = {}
 
-        for (const s of open) {
-          const det = await fetch(`/api/pc-sorter/${s.id}?viewAs=joiner`).then(r => r.json())
+        // Each session's detail fetch is independent of every other session's — fetch them all
+        // concurrently instead of one sequential round trip per session.
+        const dets = await Promise.all(open.map((s: any) => fetch(`/api/pc-sorter/${s.id}?viewAs=joiner`).then(r => r.json())))
+        const submittedIds: string[] = []
+        open.forEach((s: any, i: number) => {
+          const det = dets[i]
           detailMap[s.id] = det
           initialOrder[s.id] = {}
           for (const item of (det.items || [])) {
             const qs = (det.quantities || []).filter((q: any) => q.item_id === item.id && (q.total_pulled || 0) > 0)
             initialOrder[s.id][item.id] = qs.map((q: any) => ({ member_id: q.member_id, name: q.member_name || '?' }))
           }
-          if ((det.forms || []).length > 0) setSubmitted(prev => new Set(prev).add(s.id))
-        }
+          if ((det.forms || []).length > 0) submittedIds.push(s.id)
+        })
+        if (submittedIds.length > 0) setSubmitted(prev => new Set([...prev, ...submittedIds]))
         setDetails(detailMap)
         setOrder(initialOrder)
         setLoading(false)

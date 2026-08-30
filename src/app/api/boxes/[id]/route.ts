@@ -49,10 +49,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const user = session.user as any
   await ensureTables()
 
-  const box = await queryOne('SELECT * FROM boxes WHERE id=$1', [params.id])
+  // box, boxItemTypes, and linkedOrderRows are three independent reads keyed only on params.id —
+  // none of them depends on another's result, so fetch them concurrently instead of one after
+  // another.
+  const [box, boxItemTypes, linkedOrderRows] = await Promise.all([
+    queryOne('SELECT * FROM boxes WHERE id=$1', [params.id]),
+    query('SELECT * FROM box_item_types WHERE box_id=$1', [params.id]).catch(() => [] as any[]) as Promise<any[]>,
+    query('SELECT order_id FROM box_orders WHERE box_id=$1', [params.id]).catch(() => [] as any[]) as Promise<any[]>,
+  ])
   if (!box) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-  const boxItemTypes = await query('SELECT * FROM box_item_types WHERE box_id=$1', [params.id]).catch(() => [] as any[]) as any[]
 
   // weightByType keyed by item_type (e.g. 'photocard', 'album'), also by custom_label
   const weightByType: Record<string, number> = {}
@@ -63,13 +68,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     if (!weightByItemType[it.item_type]) weightByItemType[it.item_type] = parseFloat(it.weight_g || 0)
   }
 
-  const linkedOrderRows = await query('SELECT order_id FROM box_orders WHERE box_id=$1', [params.id]).catch(() => [] as any[]) as any[]
   let orderIds: string[] = linkedOrderRows.map((r: any) => r.order_id)
   if (orderIds.length === 0 && (box as any).order_id) orderIds.push((box as any).order_id)
 
-  let allItems: any[] = []
-  for (const oid of orderIds) {
-    const items = await query(`
+  // Previously one sequential query per linked order (N+1). All orders' items in a single
+  // ANY(...) query instead — same filtering, same columns, one round trip regardless of how
+  // many orders are in the box.
+  const allItems: any[] = orderIds.length === 0 ? [] : await query(`
       SELECT oi.*,
         COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
         p.id as pid, p.display_name, p.username,
@@ -83,12 +88,10 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       LEFT JOIN members m ON m.id = oi.member_id
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
-      WHERE oi.order_id = $1
+      WHERE oi.order_id = ANY($1::uuid[])
         AND (oi.joiner_id IS NOT NULL OR (oi.joiner_id IS NULL AND o.personal_joiner_id IS NOT NULL AND o.type = 'personal'))
         AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
-    `, [oid]).catch(() => [] as any[])
-    allItems = allItems.concat(items as any[])
-  }
+    `, [orderIds]).catch(() => [] as any[])
 
   const joinerMap: Record<string, {
     joiner_id: string; display_name: string; username: string

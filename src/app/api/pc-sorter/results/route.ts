@@ -20,13 +20,14 @@ export async function GET(req: NextRequest) {
 
   const rows = await query(`
     SELECT a.id, a.session_id, a.joiner_id, a.round, a.is_repeat, a.is_random, a.sort_method, a.created_at,
-           pk.name as pack_name, it.name as item_name, m.name as member_name,
+           pk.name as pack_name, it.name as item_name, COALESCE(m.name, u.name) as member_name,
            s.title as session_title, p.display_name, p.username
     FROM pc_assignments a
     JOIN pc_sorting_sessions s ON s.id = a.session_id
     LEFT JOIN pc_packs pk ON pk.id = a.pack_id
     LEFT JOIN pc_items it ON it.id = a.item_id
     LEFT JOIN members m ON m.id = a.member_id
+    LEFT JOIN pc_item_units u ON u.id = a.member_id
     LEFT JOIN profiles p ON p.id = a.joiner_id
     WHERE ($1::uuid IS NULL OR a.joiner_id = $1)
       AND ($2::text IS NULL OR (s.order_ids IS NOT NULL AND s.order_ids::jsonb @> to_jsonb($2::text)))

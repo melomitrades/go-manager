@@ -25,8 +25,16 @@ export function DeadlineNotifications() {
       const found: DeadlineAlert[] = []
       const now = new Date()
 
+      // Independent fetches — run them together instead of one after the other. This runs on
+      // every joiner page load (it's mounted in the joiner layout), so the two sequential
+      // round trips it used to make were pure added latency for something that's often not
+      // even going to show anything.
+      const [orders, boxes] = await Promise.all([
+        fetch('/api/orders?viewAs=joiner').then(r => r.json()).catch(() => []),
+        fetch('/api/boxes').then(r => r.json()).catch(() => []),
+      ])
+
       try {
-        const orders = await fetch('/api/orders?viewAs=joiner').then(r => r.json()).catch(() => [])
         for (const o of (Array.isArray(orders) ? orders : [])) {
           if (!o.deadline) continue
           const d = new Date(o.deadline)
@@ -43,7 +51,6 @@ export function DeadlineNotifications() {
       } catch {}
 
       try {
-        const boxes = await fetch('/api/boxes').then(r => r.json()).catch(() => [])
         for (const b of (Array.isArray(boxes) ? boxes : [])) {
           for (const [key, label] of [['ems_deadline', 'EMS Payment'], ['customs_deadline', 'Customs Payment']] as const) {
             if (!b[key]) continue

@@ -133,9 +133,20 @@ export default function GomOrdersPage() {
     setModalOpen(true)
   }
 
-  function openEdit(order: Order) {
+  async function openEdit(order: Order) {
     setEditingOrder(order)
     setOrderType(order.type)
+    // The orders list no longer sends preview_image_url (it's stripped server-side to keep the
+    // list payload small — see /api/orders). If this order actually has one, has_preview_image
+    // tells us so, and we fetch the single order to get the real base64 value only when the edit
+    // form is actually opened, instead of every order in the list carrying its full image.
+    let previewImageUrl = (order as any).preview_image_url || ''
+    if (!previewImageUrl && (order as any).has_preview_image) {
+      try {
+        const fresh = await fetch(`/api/orders/${order.id}`).then(r => r.json())
+        previewImageUrl = fresh?.order?.preview_image_url || ''
+      } catch {}
+    }
     setForm({
       shop_id: order.shop_id || '',
       group_id: order.type === 'personal' ? ((order as any).personal_joiner_id || '') : (order.group_id || ''),
@@ -145,7 +156,7 @@ export default function GomOrdersPage() {
       notes: order.notes || '',
       deadline: order.deadline?.slice(0, 16) || '',
       ordered_at: order.ordered_at?.slice(0, 16) || '',
-      preview_image_url: (order as any).preview_image_url || '',
+      preview_image_url: previewImageUrl,
       hide_leftovers: (order as any).hide_leftovers || false,
       is_vce_fansign: !!(order as any).is_vce_fansign,
       is_multi_version: !!(order as any).is_multi_version,

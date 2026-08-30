@@ -269,13 +269,33 @@ export interface PCItem {
   pack_id: string
   name: string
   sort_order: number
+  // When true, this item's sortable options are PCItemUnit combos (several real members
+  // packaged as one option, e.g. "Mai + Jungeun") instead of one option per real group member.
+  // Set once at creation — there's no way to flip it afterward.
+  is_unit: boolean
   created_at: string
   quantities?: PCItemQuantity[]
+  units?: PCItemUnit[]
+}
+
+// A combo of several real members packaged as one sortable option for a single unit-tagged
+// item (e.g. "Mai + Jungeun" for a unit photocard). Scoped to that one item, not the group's
+// member roster — it never appears anywhere outside PC Sorter. Wherever a PCItemQuantity /
+// PCPriorityEntry / PCAssignment's member_id shows up for a unit item, it's actually one of
+// these ids, not a real members.id.
+export interface PCItemUnit {
+  id: string
+  item_id: string
+  name: string
+  member_ids: string[]
+  sort_order: number
+  created_at: string
 }
 
 export interface PCItemQuantity {
   id: string
   item_id: string
+  // A real members.id, OR — when the parent item is_unit — a PCItemUnit id.
   member_id: string | null
   total_pulled: number
   available: number

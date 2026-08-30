@@ -103,7 +103,12 @@ export default function GomPcSorterPage() {
   const [sessionDetails, setSessionDetails] = useState<Record<string, any>>({})
   const [newPackName, setNewPackName] = useState<Record<string, string>>({})
   const [newItemName, setNewItemName] = useState<Record<string, string>>({})
-  const [qtyDrafts, setQtyDrafts] = useState<Record<string, Record<string, string>>>({}) // item_id -> member_id -> value
+  const [newItemIsUnit, setNewItemIsUnit] = useState<Record<string, boolean>>({}) // pack_id -> checkbox state
+  const [qtyDrafts, setQtyDrafts] = useState<Record<string, Record<string, string>>>({}) // item_id -> member_id (or unit id) -> value
+  // Draft state for building a new unit combo ("Mai + Jungeun") on a unit-tagged item, before
+  // it's saved as a PCItemUnit. item_id -> selected real member ids / an overridden combo name.
+  const [unitDraftMembers, setUnitDraftMembers] = useState<Record<string, string[]>>({})
+  const [unitDraftName, setUnitDraftName] = useState<Record<string, string | undefined>>({})
 
   const [inclusionsModal, setInclusionsModal] = useState<string | null>(null)
   const [inclusionDrafts, setInclusionDrafts] = useState<Record<string, Record<string, string>>>({}) // joiner_id -> pack_id -> value
@@ -255,9 +260,10 @@ export default function GomPcSorterPage() {
     if (!name) return
     await fetch(`/api/pc-sorter/${sessionId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ add_item: { pack_id: packId, name } }),
+      body: JSON.stringify({ add_item: { pack_id: packId, name, is_unit: !!newItemIsUnit[packId] } }),
     })
     setNewItemName(p => ({ ...p, [packId]: '' }))
+    setNewItemIsUnit(p => ({ ...p, [packId]: false }))
     await loadDetails(sessionId)
   }
 
@@ -266,6 +272,38 @@ export default function GomPcSorterPage() {
     await fetch(`/api/pc-sorter/${sessionId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ delete_item: { item_id: itemId } }),
+    })
+    await loadDetails(sessionId)
+  }
+
+  function toggleUnitDraftMember(itemId: string, memberId: string) {
+    setUnitDraftMembers(prev => {
+      const current = prev[itemId] || []
+      const next = current.includes(memberId) ? current.filter(x => x !== memberId) : [...current, memberId]
+      return { ...prev, [itemId]: next }
+    })
+  }
+
+  async function addUnit(sessionId: string, itemId: string, groupMembers: any[]) {
+    const memberIds = unitDraftMembers[itemId] || []
+    if (memberIds.length === 0) return
+    const auto = memberIds.map(id => groupMembers.find((m: any) => m.id === id)?.name).filter(Boolean).join(' + ')
+    const name = (unitDraftName[itemId] ?? auto).trim()
+    if (!name) return
+    await fetch(`/api/pc-sorter/${sessionId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add_unit: { item_id: itemId, name, member_ids: memberIds } }),
+    })
+    setUnitDraftMembers(p => ({ ...p, [itemId]: [] }))
+    setUnitDraftName(p => ({ ...p, [itemId]: undefined }))
+    await loadDetails(sessionId)
+  }
+
+  async function deleteUnit(sessionId: string, unitId: string) {
+    if (!confirm('Delete this unit combo? Its quantity and any priority rankings for it will be removed too.')) return
+    await fetch(`/api/pc-sorter/${sessionId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delete_unit: { unit_id: unitId } }),
     })
     await loadDetails(sessionId)
   }
@@ -574,20 +612,92 @@ export default function GomPcSorterPage() {
                                     </div>
                                     <div className="p-3 space-y-3">
                                       {!isLocked && (
-                                        <div className="flex items-center gap-1.5">
-                                          <Input placeholder="New item (e.g. Photocard)" value={newItemName[pack.id] || ''} onChange={e => setNewItemName(p => ({ ...p, [pack.id]: e.target.value }))} className="text-xs py-1.5 flex-1" />
-                                          <Button size="sm" variant="outline" onClick={() => addItem(s.id, pack.id)}><Plus size={11} /> Add item</Button>
+                                        <div className="space-y-1.5">
+                                          <div className="flex items-center gap-1.5">
+                                            <Input placeholder="New item (e.g. Photocard)" value={newItemName[pack.id] || ''} onChange={e => setNewItemName(p => ({ ...p, [pack.id]: e.target.value }))} className="text-xs py-1.5 flex-1" />
+                                            <Button size="sm" variant="outline" onClick={() => addItem(s.id, pack.id)}><Plus size={11} /> Add item</Button>
+                                          </div>
+                                          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer pl-0.5">
+                                            <input type="checkbox" checked={!!newItemIsUnit[pack.id]} onChange={e => setNewItemIsUnit(p => ({ ...p, [pack.id]: e.target.checked }))} className="w-3 h-3 accent-primary" />
+                                            Unit item — combine several members into one sorting option (e.g. "Mai + Jungeun") instead of a row per member
+                                          </label>
                                         </div>
                                       )}
                                       {items.length === 0 ? (
                                         <p className="text-xs text-muted-foreground">No items in this pack yet.</p>
-                                      ) : items.map((item: any) => (
+                                      ) : items.map((item: any) => {
+                                        const itemUnits: any[] = (d.units || []).filter((u: any) => u.item_id === item.id)
+                                        const draftMembers = unitDraftMembers[item.id] || []
+                                        const autoUnitName = draftMembers.map((id: string) => groupMembers.find((m: any) => m.id === id)?.name).filter(Boolean).join(' + ')
+                                        return (
                                         <div key={item.id} className="border border-border/60 rounded-lg p-2.5">
                                           <div className="flex items-center justify-between mb-2">
-                                            <p className="text-xs font-bold text-primary">{item.name}</p>
+                                            <p className="text-xs font-bold text-primary flex items-center gap-1.5">
+                                              {item.name}
+                                              {item.is_unit && <span className="text-[10px] font-semibold text-violet-700 bg-violet-50 border border-violet-200 rounded-full px-1.5 py-0.5">👥 Unit</span>}
+                                            </p>
                                             {!isLocked && <button onClick={() => deleteItem(s.id, item.id)} className="text-destructive/40 hover:text-destructive"><Trash2 size={11} /></button>}
                                           </div>
-                                          {groupMembers.length === 0 ? (
+                                          {item.is_unit ? (
+                                            <div className="space-y-1.5">
+                                              {itemUnits.length === 0 && (
+                                                <p className="text-xs text-muted-foreground">No unit combos yet — build one below (e.g. check "Mai" + "Jungeun").</p>
+                                              )}
+                                              {itemUnits.map((u: any) => {
+                                                const q = (d.quantities || []).find((x: any) => x.item_id === item.id && x.member_id === u.id)
+                                                const remaining = q ? (parseInt(q.available) || 0) : null
+                                                const total = parseInt(qtyDrafts[item.id]?.[u.id] || '0') || 0
+                                                const showRemaining = !!s.sort_run_at && remaining !== null
+                                                return (
+                                                  <div key={u.id} className="flex items-center gap-2">
+                                                    <span className="text-xs flex-1">👥 {u.name}</span>
+                                                    {showRemaining && (
+                                                      <span
+                                                        title="Left unassigned after the last sort — the box on the right is still the original total pulled (used to redo the sort or add more)"
+                                                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${
+                                                          remaining === 0 ? 'bg-secondary text-muted-foreground border-border'
+                                                          : remaining < total ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                                          : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                                        }`}
+                                                      >
+                                                        {remaining} left
+                                                      </span>
+                                                    )}
+                                                    <Input type="number" min="0" placeholder="0" value={qtyDrafts[item.id]?.[u.id] ?? ''}
+                                                      onChange={e => setQtyDrafts(p => ({ ...p, [item.id]: { ...(p[item.id] || {}), [u.id]: e.target.value } }))}
+                                                      disabled={isLocked}
+                                                      className="w-20 text-xs py-1 disabled:opacity-50" />
+                                                    {!isLocked && <button onClick={() => deleteUnit(s.id, u.id)} className="text-destructive/40 hover:text-destructive"><Trash2 size={11} /></button>}
+                                                  </div>
+                                                )
+                                              })}
+                                              {!isLocked && groupMembers.length > 0 && (
+                                                <div className="border border-dashed border-border rounded-lg p-2 space-y-1.5">
+                                                  <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">New unit combo</p>
+                                                  <div className="flex flex-wrap gap-1">
+                                                    {groupMembers.map((m: any) => {
+                                                      const checked = draftMembers.includes(m.id)
+                                                      return (
+                                                        <label key={m.id} className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-full border cursor-pointer transition-colors ${checked ? 'bg-primary/10 border-primary/40 text-primary font-semibold' : 'border-border text-muted-foreground hover:border-primary/30'}`}>
+                                                          <input type="checkbox" checked={checked} onChange={() => toggleUnitDraftMember(item.id, m.id)} className="w-3 h-3 accent-primary" />
+                                                          {m.name}
+                                                        </label>
+                                                      )
+                                                    })}
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5">
+                                                    <Input placeholder={autoUnitName || 'Combo name'} value={unitDraftName[item.id] ?? autoUnitName} onChange={e => setUnitDraftName(p => ({ ...p, [item.id]: e.target.value }))} className="text-xs py-1 flex-1" />
+                                                    <Button size="sm" variant="outline" onClick={() => addUnit(s.id, item.id, groupMembers)} disabled={draftMembers.length === 0}>+ Add</Button>
+                                                  </div>
+                                                </div>
+                                              )}
+                                              {!isLocked && itemUnits.length > 0 && (
+                                                <div className="flex justify-end pt-1">
+                                                  <Button size="sm" variant="outline" onClick={() => saveQuantities(s.id, item.id, itemUnits)}>Save quantities</Button>
+                                                </div>
+                                              )}
+                                            </div>
+                                          ) : groupMembers.length === 0 ? (
                                             <p className="text-xs text-muted-foreground">Select a group for this session to set quantities.</p>
                                           ) : (
                                             <div className="space-y-1">
@@ -626,7 +736,8 @@ export default function GomPcSorterPage() {
                                             </div>
                                           )}
                                         </div>
-                                      ))}
+                                        )
+                                      })}
                                     </div>
                                   </div>
                                 )

@@ -224,3 +224,33 @@ app self-migrates its schema at runtime — no manual SQL required.
   verification this whole project has been single-file `tsc` checks plus manual auditing, which is exactly what
   missed this one — pasting a Vercel build log here whenever a deploy goes red is the fastest way to catch
   anything that slips through, and is genuinely useful, not just a fallback.
+- **New: "unit" items in Packs & Items, for photocards that feature several members at once (e.g. a "Mai +
+  Jungeun" unit photocard).** Previously every item's sortable options were exactly the group's real members —
+  no way to combine several of them into one option, so a unit photocard had to be entered as separate solo rows
+  even though it only actually comes as the combo. When adding a new item, a "Unit item — combine several
+  members into one sorting option" checkbox tags it as a unit item permanently (like an item's name, this can't
+  be flipped after creation — delete and re-add if you got it wrong). A unit item shows a "👥 Unit" badge and,
+  instead of one quantity row per real member, gives you a "New unit combo" builder: tick which real members
+  are in the combo, optionally override the auto-generated name (defaults to "Member A + Member B"), and add it
+  — it becomes its own row with its own quantity box, exactly like a solo member row. Joiners then rank "Mai +
+  Jungeun" as a single option on their priority form, and it's assigned as a single option by the sort, same as
+  any solo item — no other change to how ranking, the sort itself, or results/ownership displays work, since a
+  unit combo behaves exactly like a member everywhere else in PC Sorter. Unit combos are scoped to the one item
+  they're built on — they never appear in the group's member list used elsewhere in the app (Orders, Boxes,
+  Shipping, Settings), and owning solo cards of Mai and Jungeun individually is never treated as already owning
+  their unit combo (or vice versa) — those stay completely independent, same as any two different items.
+- **Unit combos are told apart (for "already owns this" purposes) by name, not by which members are in them —
+  so two different unit photocards featuring the same members stay independent.** A unit combo's cross-session
+  repeat-avoidance (the same rule that keeps a joiner from being handed the same solo member's card twice, until
+  every option is exhausted) needs a way to recognize "this is the same combo being sold again" even though
+  every session creates a brand-new row for it. The first version of this keyed that off which real members were
+  in the combo — which meant two GENUINELY DIFFERENT unit photocards that happen to feature the same two members
+  (e.g. two different "Mai + Jungeun" designs across two boxes) would have been wrongly treated as the same
+  item, both within one sort and across sessions, and the sort could have skipped a joiner past the second one
+  as if they already owned it. Fixed to match by the combo's NAME instead — the exact same rule packs and items
+  already use for their own cross-session ownership. So: to sell two different unit PCs that happen to share the
+  same members, just give the two unit combos different names (they can still be built from the identical
+  member checkboxes) — e.g. "Mai + Jungeun (Photocard)" and "Mai + Jungeun (Postcard)", or even just "MJ Unit 1"
+  / "MJ Unit 2". They'll be ranked, assigned, and repeat-tracked as fully separate items. Conversely, naming a
+  unit combo the exact same thing in a later session is what lets a repeat sale of the SAME product carry over
+  ownership tracking the way solo members already do.

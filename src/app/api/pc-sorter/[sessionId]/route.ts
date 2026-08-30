@@ -19,60 +19,73 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
   `, [sessionId])
   if (!sessionRow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const packs = await query(`SELECT * FROM pc_packs WHERE session_id=$1 ORDER BY sort_order, created_at`, [sessionId])
-  const items = await query(`
-    SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at
-  `, [sessionId])
-  const quantities = await query(`
-    SELECT q.*, m.name as member_name
-    FROM pc_item_quantities q
-    LEFT JOIN members m ON m.id = q.member_id
-    WHERE q.item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
-  `, [sessionId])
-
-  let inclusions = await query(`
-    SELECT i.*, p.display_name, p.username
-    FROM pc_pack_inclusions i
-    LEFT JOIN profiles p ON p.id = i.joiner_id
-    WHERE i.session_id=$1
-  `, [sessionId])
-
-  let forms = await query(`
-    SELECT f.*, p.display_name, p.username
-    FROM pc_priority_forms f
-    JOIN profiles p ON p.id = f.joiner_id
-    WHERE f.session_id=$1
-    ORDER BY f.submitted_at ASC
-  `, [sessionId])
-
-  let entries = await query(`
-    SELECT e.* FROM pc_priority_entries e
-    WHERE e.form_id = ANY(SELECT id FROM pc_priority_forms WHERE session_id=$1)
-  `, [sessionId])
-
-  let assignments = await query(`
-    SELECT a.*, pk.name as pack_name, it.name as item_name, m.name as member_name, p.display_name, p.username
-    FROM pc_assignments a
-    LEFT JOIN pc_packs pk ON pk.id = a.pack_id
-    LEFT JOIN pc_items it ON it.id = a.item_id
-    LEFT JOIN members m ON m.id = a.member_id
-    LEFT JOIN profiles p ON p.id = a.joiner_id
-    WHERE a.session_id=$1
-    ORDER BY a.created_at ASC
-  `, [sessionId])
-
-  let ownership = await query(`
-    SELECT DISTINCT a.joiner_id, a.member_id, m.name as member_name, pk.name as pack_name, it.name as item_name,
-           p.display_name, p.username, s.title as session_title, s.id as session_id
-    FROM pc_assignments a
-    JOIN pc_packs pk ON pk.id = a.pack_id
-    JOIN pc_items it ON it.id = a.item_id
-    JOIN pc_sorting_sessions s ON s.id = a.session_id
-    LEFT JOIN members m ON m.id = a.member_id
-    LEFT JOIN profiles p ON p.id = a.joiner_id
-    WHERE a.session_id != $1
-      AND pk.name IN (SELECT name FROM pc_packs WHERE session_id=$1)
-  `, [sessionId]).catch(() => [] as any[])
+  // These 9 reads are all independent SELECTs keyed by sessionId (or by ids derived purely from
+  // sessionId) — none of them depends on another's result, so run them concurrently instead of
+  // as 9 sequential round trips. `let` because forms/entries/inclusions/assignments/ownership get
+  // filtered in place below when scoping the response to a single joiner.
+  let [packs, items, units, quantities, inclusions, forms, entries, assignments, ownership] = await Promise.all([
+    query(`SELECT * FROM pc_packs WHERE session_id=$1 ORDER BY sort_order, created_at`, [sessionId]),
+    query(`
+      SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at
+    `, [sessionId]),
+    // A unit-tagged item's sortable options are pc_item_units rows (several real members combined
+    // into one, e.g. "Mai + Jungeun") instead of one row per real group member — fetched here so
+    // the GOM UI can render/manage them, and joined into quantities/assignments/ownership below so
+    // their combined name resolves the same way a real member's name would.
+    query(`
+      SELECT * FROM pc_item_units
+      WHERE item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
+      ORDER BY sort_order, created_at
+    `, [sessionId]),
+    query(`
+      SELECT q.*, COALESCE(m.name, u.name) as member_name
+      FROM pc_item_quantities q
+      LEFT JOIN members m ON m.id = q.member_id
+      LEFT JOIN pc_item_units u ON u.id = q.member_id
+      WHERE q.item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
+    `, [sessionId]),
+    query(`
+      SELECT i.*, p.display_name, p.username
+      FROM pc_pack_inclusions i
+      LEFT JOIN profiles p ON p.id = i.joiner_id
+      WHERE i.session_id=$1
+    `, [sessionId]),
+    query(`
+      SELECT f.*, p.display_name, p.username
+      FROM pc_priority_forms f
+      JOIN profiles p ON p.id = f.joiner_id
+      WHERE f.session_id=$1
+      ORDER BY f.submitted_at ASC
+    `, [sessionId]),
+    query(`
+      SELECT e.* FROM pc_priority_entries e
+      WHERE e.form_id = ANY(SELECT id FROM pc_priority_forms WHERE session_id=$1)
+    `, [sessionId]),
+    query(`
+      SELECT a.*, pk.name as pack_name, it.name as item_name, COALESCE(m.name, u.name) as member_name, p.display_name, p.username
+      FROM pc_assignments a
+      LEFT JOIN pc_packs pk ON pk.id = a.pack_id
+      LEFT JOIN pc_items it ON it.id = a.item_id
+      LEFT JOIN members m ON m.id = a.member_id
+      LEFT JOIN pc_item_units u ON u.id = a.member_id
+      LEFT JOIN profiles p ON p.id = a.joiner_id
+      WHERE a.session_id=$1
+      ORDER BY a.created_at ASC
+    `, [sessionId]),
+    query(`
+      SELECT DISTINCT a.joiner_id, a.member_id, COALESCE(m.name, u.name) as member_name, pk.name as pack_name, it.name as item_name,
+             p.display_name, p.username, s.title as session_title, s.id as session_id
+      FROM pc_assignments a
+      JOIN pc_packs pk ON pk.id = a.pack_id
+      JOIN pc_items it ON it.id = a.item_id
+      JOIN pc_sorting_sessions s ON s.id = a.session_id
+      LEFT JOIN members m ON m.id = a.member_id
+      LEFT JOIN pc_item_units u ON u.id = a.member_id
+      LEFT JOIN profiles p ON p.id = a.joiner_id
+      WHERE a.session_id != $1
+        AND pk.name IN (SELECT name FROM pc_packs WHERE session_id=$1)
+    `, [sessionId]).catch(() => [] as any[]),
+  ])
 
   // The joiner-facing Sorting page always sends ?viewAs=joiner, for every account. For a real
   // joiner this changes nothing (they're always scoped to themselves regardless). For a
@@ -92,7 +105,7 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     ownership = []
   }
 
-  return NextResponse.json({ session: sessionRow, packs, items, quantities, inclusions, forms, entries, assignments, ownership })
+  return NextResponse.json({ session: sessionRow, packs, items, units, quantities, inclusions, forms, entries, assignments, ownership })
 }
 
 export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {
@@ -165,7 +178,7 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
   // Every other GOM action below mutates packs/items/quantities/inclusions/the sort — all
   // blocked once the session is locked. (lock_sort/unlock_sort themselves are handled above,
   // before this check, so unlocking always works regardless of current state.)
-  const mutatingKeys = ['add_pack', 'rename_pack', 'delete_pack', 'add_item', 'rename_item', 'delete_item', 'update_quantities', 'inclusions', 'auto_fill_inclusions', 'reset_inclusions']
+  const mutatingKeys = ['add_pack', 'rename_pack', 'delete_pack', 'add_item', 'rename_item', 'delete_item', 'add_unit', 'delete_unit', 'update_quantities', 'inclusions', 'auto_fill_inclusions', 'reset_inclusions']
   if (mutatingKeys.some(k => body[k] !== undefined)) {
     const sessionRow = await queryOne<any>(`SELECT locked_at FROM pc_sorting_sessions WHERE id=$1`, [sessionId])
     if (sessionRow?.locked_at) return NextResponse.json({ error: 'This session is locked — unlock it first to make changes.' }, { status: 403 })
@@ -190,9 +203,9 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
 
   if (body.add_item) {
     const it = await queryOne(
-      `INSERT INTO pc_items (pack_id, name, sort_order)
-       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_items WHERE pack_id=$1),0)) RETURNING *`,
-      [body.add_item.pack_id, body.add_item.name]
+      `INSERT INTO pc_items (pack_id, name, sort_order, is_unit)
+       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_items WHERE pack_id=$1),0), $3) RETURNING *`,
+      [body.add_item.pack_id, body.add_item.name, !!body.add_item.is_unit]
     )
     return NextResponse.json(it, { status: 201 })
   }
@@ -202,6 +215,30 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
   }
   if (body.delete_item) {
     await query(`DELETE FROM pc_items WHERE id=$1`, [body.delete_item.item_id])
+    return NextResponse.json({ ok: true })
+  }
+
+  // ── Unit combos (e.g. "Mai + Jungeun") for a unit-tagged item — scoped to that one item, not
+  // the group's member roster. No rename endpoint, same as items/packs themselves not being
+  // renamable from this UI: delete and re-add to change one.
+  if (body.add_unit) {
+    const { item_id, name, member_ids } = body.add_unit
+    if (!item_id || !name || !Array.isArray(member_ids) || member_ids.length === 0) {
+      return NextResponse.json({ error: 'A unit combo needs a name and at least one member' }, { status: 400 })
+    }
+    const u = await queryOne(
+      `INSERT INTO pc_item_units (item_id, name, member_ids, sort_order)
+       VALUES ($1,$2,$3, COALESCE((SELECT MAX(sort_order)+1 FROM pc_item_units WHERE item_id=$1),0))
+       RETURNING *`,
+      [item_id, name, JSON.stringify(member_ids)]
+    )
+    return NextResponse.json(u, { status: 201 })
+  }
+  if (body.delete_unit) {
+    // No FK cascade on pc_item_quantities.member_id any more (it can point at either a real
+    // member or a unit) — clean up this unit's quantity row by hand before dropping it.
+    await query(`DELETE FROM pc_item_quantities WHERE member_id=$1`, [body.delete_unit.unit_id])
+    await query(`DELETE FROM pc_item_units WHERE id=$1`, [body.delete_unit.unit_id])
     return NextResponse.json({ ok: true })
   }
 

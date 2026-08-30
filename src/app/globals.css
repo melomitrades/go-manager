@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Nunito:wght@300;400;500;600;700;800&display=swap');
+/* Playfair Display + Nunito are self-hosted via next/font/google in src/app/layout.tsx —
+   this @import used to pull the exact same families from fonts.googleapis.com a second
+   time as a render-blocking request on every page load. */
 
 @layer base {
   :root {
@@ -62,7 +64,7 @@
 @layer base {
   * { @apply border-border; box-sizing: border-box; }
   body { @apply bg-background text-foreground; font-family: 'Nunito', sans-serif; }
-  .font-display { font-family: 'Playfair Display', Georgia, serif; }
+  .font-display { font-family: var(--font-display), 'Playfair Display', Georgia, serif; }
 }
 
 /* Scrollbar */

@@ -19,11 +19,25 @@ import { query, queryOne } from './db'
 //    what the spec calls "start a new round of item".
 // ============================================================
 
+// Runs every statement in a phase concurrently (each still logs its own failure instead of
+// swallowing it blind), and returns once the whole phase has settled. ensurePcSorterSchema below
+// calls this once per dependency layer — sequential between phases (so a later phase never runs
+// against a table an earlier phase hasn't created yet), concurrent within a phase (so independent
+// statements aren't paying for a round trip each).
+async function runMigrationPhase(stmts: string[]) {
+  await Promise.all(stmts.map(sql =>
+    query(sql).catch(err => console.error('[pc-sorter migration failed]', sql.slice(0, 70).replace(/\s+/g, ' '), '—', err?.message))
+  ))
+}
+
 let pcSorterMigDone = false
 export async function ensurePcSorterSchema() {
   if (pcSorterMigDone) return
   pcSorterMigDone = true
-  const stmts = [
+
+  // Phase 1: only touches tables that already exist independent of this migration (pc_sorting_sessions,
+  // boxes, pc_priority_forms, pc_assignments) — nothing here depends on anything else in this function.
+  await runMigrationPhase([
     // Sessions: keep existing columns, add the new ones this redesign needs
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ`,
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS box_id UUID REFERENCES boxes(id) ON DELETE SET NULL`,
@@ -47,6 +61,22 @@ export async function ensurePcSorterSchema() {
       created_at TIMESTAMPTZ DEFAULT now()
     )`,
 
+    // pc_priority_forms already exists (id, session_id, joiner_id, submitted_at, form_data).
+    // We now need exactly one form per (session, joiner) — enforce it.
+    `CREATE UNIQUE INDEX IF NOT EXISTS pc_priority_forms_session_joiner_uidx ON pc_priority_forms(session_id, joiner_id)`,
+
+    // pc_assignments already exists (id, session_id, joiner_id, photocard_id, sort_method, created_at).
+    // Add the columns the new algorithm actually needs.
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS pack_id UUID`,
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS item_id UUID`,
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS member_id UUID`,
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS round INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_repeat BOOLEAN NOT NULL DEFAULT false`,
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_random BOOLEAN NOT NULL DEFAULT false`,
+  ])
+
+  // Phase 2: depends on pc_packs (and pc_sorting_sessions) from phase 1.
+  await runMigrationPhase([
     // Items within a pack (photocard, postcard, lenticular, ...)
     `CREATE TABLE IF NOT EXISTS pc_items (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -54,17 +84,6 @@ export async function ensurePcSorterSchema() {
       name TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ DEFAULT now()
-    )`,
-
-    // Quantity pulled per member per item
-    `CREATE TABLE IF NOT EXISTS pc_item_quantities (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      item_id UUID REFERENCES pc_items(id) ON DELETE CASCADE,
-      member_id UUID REFERENCES members(id) ON DELETE SET NULL,
-      total_pulled INTEGER NOT NULL DEFAULT 0,
-      available INTEGER NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ DEFAULT now(),
-      UNIQUE(item_id, member_id)
     )`,
 
     // How many full packs (inclusions) each joiner is due, per pack
@@ -77,10 +96,38 @@ export async function ensurePcSorterSchema() {
       created_at TIMESTAMPTZ DEFAULT now(),
       UNIQUE(pack_id, joiner_id)
     )`,
+  ])
 
-    // pc_priority_forms already exists (id, session_id, joiner_id, submitted_at, form_data).
-    // We now need exactly one form per (session, joiner) — enforce it.
-    `CREATE UNIQUE INDEX IF NOT EXISTS pc_priority_forms_session_joiner_uidx ON pc_priority_forms(session_id, joiner_id)`,
+  // Phase 3: depends on pc_items (and pc_priority_forms) from earlier phases.
+  await runMigrationPhase([
+    // Marks an item as a "unit" item (e.g. a unit photocard featuring several members at
+    // once) — its sortable options come from pc_item_units below instead of one row per real
+    // group member. Set once at creation; there's no UI to flip it after the fact, same as an
+    // item's name.
+    `ALTER TABLE pc_items ADD COLUMN IF NOT EXISTS is_unit BOOLEAN NOT NULL DEFAULT false`,
+
+    // A "unit" combo — several real members packaged as one sortable option (e.g. "Mai +
+    // Jungeun") for a single unit-tagged item. Scoped to that one item, not the group's member
+    // roster, so it never shows up anywhere outside PC Sorter (Orders, Boxes, Shipping, etc.).
+    `CREATE TABLE IF NOT EXISTS pc_item_units (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      item_id UUID REFERENCES pc_items(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      member_ids JSONB NOT NULL DEFAULT '[]',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT now()
+    )`,
+
+    // Quantity pulled per member (or, for a unit item, per unit combo) per item
+    `CREATE TABLE IF NOT EXISTS pc_item_quantities (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      item_id UUID REFERENCES pc_items(id) ON DELETE CASCADE,
+      member_id UUID,
+      total_pulled INTEGER NOT NULL DEFAULT 0,
+      available INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE(item_id, member_id)
+    )`,
 
     // Individual ranked entries — one row per (form, item, member). This replaces the old
     // flat JSON blob and is what fixes the "priorities never actually get read" bug.
@@ -88,25 +135,21 @@ export async function ensurePcSorterSchema() {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       form_id UUID REFERENCES pc_priority_forms(id) ON DELETE CASCADE,
       item_id UUID REFERENCES pc_items(id) ON DELETE CASCADE,
-      member_id UUID REFERENCES members(id) ON DELETE CASCADE,
+      member_id UUID,
       priority INTEGER NOT NULL,
       UNIQUE(form_id, item_id, member_id)
     )`,
+  ])
 
-    // pc_assignments already exists (id, session_id, joiner_id, photocard_id, sort_method, created_at).
-    // Add the columns the new algorithm actually needs.
-    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS pack_id UUID`,
-    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS item_id UUID`,
-    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS member_id UUID`,
-    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS round INTEGER NOT NULL DEFAULT 1`,
-    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_repeat BOOLEAN NOT NULL DEFAULT false`,
-    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_random BOOLEAN NOT NULL DEFAULT false`,
-  ]
-  for (const sql of stmts) {
-    // Unlike the old ensureTables() blocks, we log failures instead of swallowing them
-    // completely blind — a migration failure here should be visible in server logs.
-    await query(sql).catch(err => console.error('[pc-sorter migration failed]', sql.slice(0, 70).replace(/\s+/g, ' '), '—', err?.message))
-  }
+  // Phase 4: drops FK constraints added by the CREATE TABLEs in phase 3, once those tables exist.
+  // member_id on pc_item_quantities / pc_priority_entries now sometimes holds a pc_item_units.id
+  // instead of a real members.id, once an item is tagged as a unit item — drop the FK
+  // constraints from when this column only ever pointed at real members, so those rows can be
+  // saved. Harmless no-ops on a fresh install and on any run after the first time this drops them.
+  await runMigrationPhase([
+    `ALTER TABLE pc_item_quantities DROP CONSTRAINT IF EXISTS pc_item_quantities_member_id_fkey`,
+    `ALTER TABLE pc_priority_entries DROP CONSTRAINT IF EXISTS pc_priority_entries_member_id_fkey`,
+  ])
 }
 
 // ── Auto-fill / refresh pack inclusions from the session's SELECTED orders ──────────
@@ -149,25 +192,40 @@ export async function autoFillInclusions(sessionId: string) {
     } catch { return {} }
   })()
 
+  // Previously one sequential query per selected order (N+1 — a session with a dozen orders
+  // linked meant a dozen awaited round trips before the sort screen could even open the
+  // Inclusions modal). Fetch every selected order's candidate items in one query instead, then
+  // apply the same per-order version-narrowing filter in JS. The per-order dedup set below is
+  // deliberately re-created for EACH order (matching the original loop) rather than shared across
+  // all of them — claim_group_id and the description/price/version fallback key are only ever
+  // meant to disambiguate claims WITHIN one order, so sharing one set across orders could wrongly
+  // collapse two genuinely separate claims from different orders that happen to share a key.
+  const allItems = await query<any>(`
+    SELECT oi.order_id, COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
+           oi.description, oi.version_name, oi.price_eur, oi.claim_group_id,
+           (COALESCE(oi.inclusions_count, 0) > 0) AS is_explicit,
+           CASE
+             WHEN COALESCE(oi.inclusions_count, 0) > 0 THEN oi.inclusions_count
+             WHEN oi.description ILIKE '%album%' THEN COALESCE(oi.amount_claimed, 1)
+             ELSE 0
+           END AS effective_inclusions
+    FROM order_items oi
+    LEFT JOIN orders o ON o.id = oi.order_id
+    WHERE oi.order_id = ANY($1::uuid[])
+      AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
+      AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
+  `, [orderIds]).catch(() => [] as any[])
+
+  const itemsByOrder = new Map<string, any[]>()
+  for (const it of allItems) {
+    if (!itemsByOrder.has(it.order_id)) itemsByOrder.set(it.order_id, [])
+    itemsByOrder.get(it.order_id)!.push(it)
+  }
+
   const joinerTotals: Record<string, number> = {}
   for (const oid of orderIds) {
     const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
-    const items = await query<any>(`
-      SELECT COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
-             oi.description, oi.version_name, oi.price_eur, oi.claim_group_id,
-             (COALESCE(oi.inclusions_count, 0) > 0) AS is_explicit,
-             CASE
-               WHEN COALESCE(oi.inclusions_count, 0) > 0 THEN oi.inclusions_count
-               WHEN oi.description ILIKE '%album%' THEN COALESCE(oi.amount_claimed, 1)
-               ELSE 0
-             END AS effective_inclusions
-      FROM order_items oi
-      LEFT JOIN orders o ON o.id = oi.order_id
-      WHERE oi.order_id = $1
-        AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
-        AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
-        AND ($2::text[] IS NULL OR oi.version_name = ANY($2::text[]))
-    `, [oid, versions]).catch(() => [] as any[])
+    const items = (itemsByOrder.get(oid) || []).filter(it => !versions || versions.includes(it.version_name))
     // The Orders form lets a GOM claim one item for several members at once (e.g. "want a
     // photocard of any of these 4 members") — that becomes one order_items ROW PER MEMBER, and
     // an explicit "Inclusions" number typed for that claim is saved onto EVERY one of those
@@ -228,11 +286,13 @@ export async function autoFillInclusions(sessionId: string) {
   // no longer does (an order got deselected, a claim's inclusions_count got zeroed out, etc.)
   // would keep their stale number forever, which is what "the overwriting doesn't work" was about.
   await query(`DELETE FROM pc_pack_inclusions WHERE session_id=$1`, [sessionId])
-  for (const r of rows) {
-    await query(`
-      INSERT INTO pc_pack_inclusions (session_id, pack_id, joiner_id, inclusions_assigned)
-      VALUES ($1,$2,$3,$4)
-    `, [sessionId, r.pack_id, r.joiner_id, r.inclusions_assigned])
+  if (rows.length > 0) {
+    await query(
+      `INSERT INTO pc_pack_inclusions (session_id, pack_id, joiner_id, inclusions_assigned)
+       SELECT $1, t.pack_id, t.joiner_id, t.inclusions_assigned
+       FROM UNNEST($2::uuid[], $3::uuid[], $4::int[]) AS t(pack_id, joiner_id, inclusions_assigned)`,
+      [sessionId, rows.map(r => r.pack_id), rows.map(r => r.joiner_id), rows.map(r => r.inclusions_assigned)]
+    )
   }
 
   return { assignments: rows }
@@ -247,30 +307,50 @@ export async function resetInclusions(sessionId: string) {
   return { ok: true }
 }
 
+// ── Unit combos ("Mai + Jungeun") ─────────────────────────────────────
+// A unit item's sortable options are pc_item_units rows, not real members — every
+// stock/ranking/assignment id for that item is a unit id instead of a member id. The sort
+// algorithm below doesn't care either way (it treats these ids as opaque), EXCEPT for
+// "already owns this" comparisons: a fresh pc_item_units row (new id) gets created every time
+// a unit item is built, even for the exact same combo, so comparing raw ids would never
+// recognize a repeat sale of "Mai + Jungeun" as the same thing. unitOwnKey() gives units a
+// stable identity for that comparison — by NAME, exactly how packs/items themselves are already
+// matched across sessions (see the file header), NOT by which members are in the combo. That
+// distinction matters: two DIFFERENT unit photocards can legitimately feature the exact same
+// members (e.g. two different "Mai + Jungeun" designs across two boxes) — those must be tracked
+// as fully separate items, which member-set matching would have wrongly collapsed into one.
+// Naming them differently (even just "Mai + Jungeun A" / "Mai + Jungeun B") is what keeps them
+// apart; reusing the same name for what's genuinely the same product is what lets repeat-sale
+// ownership tracking recognize it across sessions.
+function unitOwnKey(name: string): string {
+  return `unit:${name}`
+}
+
 // ── Sort algorithm internals ─────────────────────────────────────────
 
 interface RankEntry { member_id: string; priority: number }
 interface ItemCtx {
-  stock: Map<string, number>                 // member_id -> available
+  stock: Map<string, number>                 // member_id (or unit id) -> available
   need: Map<string, number>                   // joiner_id -> remaining units needed
   ranking: Map<string, RankEntry[]>            // joiner_id -> sorted priority list
   submittedAt: Map<string, Date>               // joiner_id -> form submission time
-  ownSet: Set<string>                          // `${joiner_id}|${member_id}` already owned (cross-session + this run)
+  ownSet: Set<string>                          // `${joiner_id}|${ownKey}` already owned (cross-session + this run)
+  keyFor: (id: string) => string               // stock/ranking id -> ownership-comparison key (see above)
 }
 interface AssignResult { joiner_id: string; member_id: string; round: number; is_repeat: boolean; is_random: boolean }
 
-function isExhausted(list: RankEntry[], joinerId: string, ownSet: Set<string>): boolean {
-  return list.length > 0 && list.every(e => ownSet.has(`${joinerId}|${e.member_id}`))
+function isExhausted(list: RankEntry[], joinerId: string, ctx: Pick<ItemCtx, 'ownSet' | 'keyFor'>): boolean {
+  return list.length > 0 && list.every(e => ctx.ownSet.has(`${joinerId}|${ctx.keyFor(e.member_id)}`))
 }
 
 function tryAssignOne(list: RankEntry[], joinerId: string, ctx: ItemCtx, allowOwned: boolean): { member_id: string } | null {
   for (const e of list) {
-    const owned = ctx.ownSet.has(`${joinerId}|${e.member_id}`)
+    const owned = ctx.ownSet.has(`${joinerId}|${ctx.keyFor(e.member_id)}`)
     if (owned && !allowOwned) continue
     const avail = ctx.stock.get(e.member_id) || 0
     if (avail <= 0) continue
     ctx.stock.set(e.member_id, avail - 1)
-    ctx.ownSet.add(`${joinerId}|${e.member_id}`)
+    ctx.ownSet.add(`${joinerId}|${ctx.keyFor(e.member_id)}`)
     return { member_id: e.member_id }
   }
   return null
@@ -290,7 +370,7 @@ function timestampSort(ctx: ItemCtx): AssignResult[] {
     const list = ctx.ranking.get(joinerId) || []
     const n = ctx.need.get(joinerId) || 0
     for (let unit = 0; unit < n; unit++) {
-      const wasExhausted = isExhausted(list, joinerId, ctx.ownSet)
+      const wasExhausted = isExhausted(list, joinerId, ctx)
       let assigned = tryAssignOne(list, joinerId, ctx, false)
       let isRepeat = false
       if (!assigned && wasExhausted) {
@@ -327,8 +407,8 @@ function fairSort(ctx: ItemCtx): AssignResult[] {
         if ((ctx.need.get(joinerId) || 0) <= 0) continue
         const entry = list[level - 1]
         if (!entry) continue
-        const exhausted = isExhausted(list, joinerId, ctx.ownSet)
-        const owned = ctx.ownSet.has(`${joinerId}|${entry.member_id}`)
+        const exhausted = isExhausted(list, joinerId, ctx)
+        const owned = ctx.ownSet.has(`${joinerId}|${ctx.keyFor(entry.member_id)}`)
         if (owned && !exhausted) continue // normal case: already has it, skip to their next level
         if (!contenders.has(entry.member_id)) contenders.set(entry.member_id, [])
         contenders.get(entry.member_id)!.push(joinerId)
@@ -340,10 +420,10 @@ function fairSort(ctx: ItemCtx): AssignResult[] {
         const ordered = joinerIds.slice().sort((a, b) => (ctx.submittedAt.get(a)?.getTime() || 0) - (ctx.submittedAt.get(b)?.getTime() || 0))
         for (const joinerId of ordered) {
           if (avail <= 0) break
-          const wasOwned = ctx.ownSet.has(`${joinerId}|${memberId}`)
+          const wasOwned = ctx.ownSet.has(`${joinerId}|${ctx.keyFor(memberId)}`)
           avail -= 1
           ctx.stock.set(memberId, avail)
-          ctx.ownSet.add(`${joinerId}|${memberId}`)
+          ctx.ownSet.add(`${joinerId}|${ctx.keyFor(memberId)}`)
           ctx.need.set(joinerId, (ctx.need.get(joinerId) || 0) - 1)
           results.push({ joiner_id: joinerId, member_id: memberId, round, is_repeat: wasOwned, is_random: false })
           progressed = true
@@ -372,14 +452,14 @@ function randomFillUnsubmitted(ctx: ItemCtx, submittedJoinerIds: Set<string>): A
   for (const joinerId of joinerIds) {
     const n = ctx.need.get(joinerId) || 0
     for (let unit = 0; unit < n; unit++) {
-      const notOwned = [...ctx.stock.entries()].filter(([memberId, avail]) => avail > 0 && !ctx.ownSet.has(`${joinerId}|${memberId}`))
+      const notOwned = [...ctx.stock.entries()].filter(([memberId, avail]) => avail > 0 && !ctx.ownSet.has(`${joinerId}|${ctx.keyFor(memberId)}`))
       const pool = notOwned.length > 0 ? notOwned : [...ctx.stock.entries()].filter(([, avail]) => avail > 0)
       if (pool.length === 0) break // nothing left in stock at all for this item
 
       const [memberId] = pool[Math.floor(Math.random() * pool.length)]
-      const wasOwned = ctx.ownSet.has(`${joinerId}|${memberId}`)
+      const wasOwned = ctx.ownSet.has(`${joinerId}|${ctx.keyFor(memberId)}`)
       ctx.stock.set(memberId, (ctx.stock.get(memberId) || 0) - 1)
-      ctx.ownSet.add(`${joinerId}|${memberId}`)
+      ctx.ownSet.add(`${joinerId}|${ctx.keyFor(memberId)}`)
       ctx.need.set(joinerId, (ctx.need.get(joinerId) || 0) - 1)
       results.push({ joiner_id: joinerId, member_id: memberId, round: 0, is_repeat: wasOwned, is_random: true })
     }
@@ -394,8 +474,6 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
   const packs = await query<any>(`SELECT * FROM pc_packs WHERE session_id=$1 ORDER BY sort_order, created_at`, [sessionId])
   if (!packs.length) return { assigned: 0, unfulfilled: 0 }
 
-  const items = await query<any>(`SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at`, [sessionId])
-
   // Every run starts from a clean slate: clear this session's previous assignments and put
   // every item's available stock back to its full pulled total. Without this, a second run
   // would (a) treat "need" as ADDITIONAL on top of what joiners already got — inclusions_assigned
@@ -404,28 +482,53 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
   // the true total. This never touches pc_priority_forms / pc_priority_entries — re-running only
   // redoes the assignment step from the CURRENT inclusion counts using the forms already on file;
   // joiners never need to resubmit anything just because the GOM reran the sort.
-  await query(`DELETE FROM pc_assignments WHERE session_id=$1`, [sessionId])
-  await query(`
-    UPDATE pc_item_quantities SET available = total_pulled
-    WHERE item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
-  `, [sessionId])
+  //
+  // `items`, the DELETE, the stock reset, `inclusions`, `forms`, `entries`, `unitRows` and
+  // `ownershipRows` are all independent of each other (none reads another's JS result — the reads
+  // are plain SELECTs by sessionId and the ownership read explicitly excludes this session), so
+  // they run concurrently. `quantities` is the one exception: it has to be read AFTER the stock
+  // reset commits so it sees the reset `available` values, so that stays a separate step below.
+  const [items, , , inclusions, forms, entries, unitRows, ownershipRows] = await Promise.all([
+    query<any>(`SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at`, [sessionId]),
+    query(`DELETE FROM pc_assignments WHERE session_id=$1`, [sessionId]),
+    query(`
+      UPDATE pc_item_quantities SET available = total_pulled
+      WHERE item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
+    `, [sessionId]),
+    query<any>(`SELECT * FROM pc_pack_inclusions WHERE session_id=$1`, [sessionId]),
+    query<any>(`SELECT * FROM pc_priority_forms WHERE session_id=$1`, [sessionId]),
+    query<any>(`SELECT * FROM pc_priority_entries WHERE form_id = ANY(SELECT id FROM pc_priority_forms WHERE session_id=$1)`, [sessionId]),
+    // This session's unit combos (if any unit-tagged items exist) — used below to resolve a unit
+    // id back to its member set for ownership-key purposes.
+    query<any>(`
+      SELECT * FROM pc_item_units WHERE item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
+    `, [sessionId]),
+    // Cross-session ownership: match by pack NAME + item NAME (not id — different sessions have
+    // different rows). unit_name resolves a historical unit assignment back to its combo's name,
+    // so a repeat sale of the SAME-NAMED combo (a brand new pc_item_units row, different id) is
+    // recognized as "already owns this" via unitOwnKey below — while two different-named combos
+    // that happen to share members (two distinct unit photocards) are correctly kept apart.
+    query<any>(`
+      SELECT DISTINCT a.joiner_id, a.member_id, pk.name as pack_name, it.name as item_name, u.name as unit_name
+      FROM pc_assignments a
+      JOIN pc_packs pk ON pk.id = a.pack_id
+      JOIN pc_items it ON it.id = a.item_id
+      LEFT JOIN pc_item_units u ON u.id = a.member_id
+      WHERE a.session_id != $1
+    `, [sessionId]),
+  ])
 
   const quantities = await query<any>(`
     SELECT * FROM pc_item_quantities
     WHERE item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
   `, [sessionId])
-  const inclusions = await query<any>(`SELECT * FROM pc_pack_inclusions WHERE session_id=$1`, [sessionId])
-  const forms = await query<any>(`SELECT * FROM pc_priority_forms WHERE session_id=$1`, [sessionId])
-  const entries = await query<any>(`SELECT * FROM pc_priority_entries WHERE form_id = ANY(SELECT id FROM pc_priority_forms WHERE session_id=$1)`, [sessionId])
 
-  // Cross-session ownership: match by pack NAME + item NAME (not id — different sessions have different rows)
-  const ownershipRows = await query<any>(`
-    SELECT DISTINCT a.joiner_id, a.member_id, pk.name as pack_name, it.name as item_name
-    FROM pc_assignments a
-    JOIN pc_packs pk ON pk.id = a.pack_id
-    JOIN pc_items it ON it.id = a.item_id
-    WHERE a.session_id != $1
-  `, [sessionId])
+  const unitsById = new Map<string, any>()
+  for (const u of unitRows) unitsById.set(u.id, u)
+  function keyForId(id: string): string {
+    const u = unitsById.get(id)
+    return u ? unitOwnKey(u.name) : id
+  }
 
   const entriesByForm = new Map<string, any[]>()
   for (const e of entries) {
@@ -465,10 +568,13 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
 
       const ownSet = new Set<string>()
       for (const o of ownershipRows) {
-        if (o.pack_name === pack.name && o.item_name === item.name) ownSet.add(`${o.joiner_id}|${o.member_id}`)
+        if (o.pack_name === pack.name && o.item_name === item.name) {
+          const key = o.unit_name ? unitOwnKey(o.unit_name) : o.member_id
+          ownSet.add(`${o.joiner_id}|${key}`)
+        }
       }
 
-      const ctx: ItemCtx = { stock, need, ranking, submittedAt, ownSet }
+      const ctx: ItemCtx = { stock, need, ranking, submittedAt, ownSet, keyFor: keyForId }
       const results = method === 'timestamp' ? timestampSort(ctx) : fairSort(ctx)
 
       // Joiners who never submitted a form at all still get served, at random, from
@@ -486,17 +592,56 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
 
   // Persist. Deliberately NOT wrapped in a swallow-all catch — if this fails, the request
   // should return a real error instead of silently pretending the sort succeeded.
-  for (const a of pending) {
+  //
+  // Both the insert and the stock update used to run one row at a time — a sequential awaited
+  // round trip per assignment, then another per (item, member) stock row. For a session with
+  // dozens of joiners across a few items that's easily 100+ sequential round trips, which is
+  // exactly what turns clicking "Run Sort" into a multi-second (or worse) hang. Batched into
+  // one multi-row statement each below instead — the rows written are identical, just sent
+  // together rather than one at a time.
+  if (pending.length > 0) {
+    // The GOM results view and the joiner results view both read this table back with
+    // `ORDER BY created_at ASC` to reconstruct the order the sort actually produced results in.
+    // The old one-row-at-a-time inserts gave every row a distinct, later `now()` than the row
+    // before it, which is what made that ORDER BY meaningful. A single batched INSERT would give
+    // every row in it the exact same `now()` (Postgres evaluates now() once per statement) — so
+    // instead of a bare now(), each row gets an explicit timestamp stepped by 1 millisecond in
+    // the same order `pending` was built in (pack by pack, item by item, in the exact sequence
+    // the algorithm produced them), preserving the original ordering exactly rather than leaving
+    // same-timestamp ties to whatever order Postgres happens to return them in.
+    const baseTime = Date.now()
+    const createdAts = pending.map((_, idx) => new Date(baseTime + idx))
     await query(
       `INSERT INTO pc_assignments (session_id, pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, sort_method, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())`,
-      [sessionId, a.pack_id, a.item_id, a.joiner_id, a.member_id, a.round, a.is_repeat, a.is_random, method]
+       SELECT $1, t.pack_id, t.item_id, t.joiner_id, t.member_id, t.round, t.is_repeat, t.is_random, $2, t.created_at
+       FROM UNNEST($3::uuid[], $4::uuid[], $5::uuid[], $6::uuid[], $7::int[], $8::bool[], $9::bool[], $10::timestamptz[])
+         AS t(pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, created_at)`,
+      [
+        sessionId,
+        method,
+        pending.map(a => a.pack_id),
+        pending.map(a => a.item_id),
+        pending.map(a => a.joiner_id),
+        pending.map(a => a.member_id),
+        pending.map(a => a.round),
+        pending.map(a => a.is_repeat),
+        pending.map(a => a.is_random),
+        createdAts,
+      ]
     )
   }
+
+  const stockRows: { item_id: string; member_id: string; available: number }[] = []
   for (const [itemId, stock] of finalStockByItem) {
-    for (const [memberId, avail] of stock) {
-      await query(`UPDATE pc_item_quantities SET available=$1 WHERE item_id=$2 AND member_id=$3`, [avail, itemId, memberId])
-    }
+    for (const [memberId, avail] of stock) stockRows.push({ item_id: itemId, member_id: memberId, available: avail })
+  }
+  if (stockRows.length > 0) {
+    await query(
+      `UPDATE pc_item_quantities AS q SET available = t.available
+       FROM UNNEST($1::uuid[], $2::uuid[], $3::int[]) AS t(item_id, member_id, available)
+       WHERE q.item_id = t.item_id AND q.member_id = t.member_id`,
+      [stockRows.map(r => r.item_id), stockRows.map(r => r.member_id), stockRows.map(r => r.available)]
+    )
   }
 
   await query(

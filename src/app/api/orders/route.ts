@@ -24,13 +24,14 @@ const ADDY_MAP: Record<string, string> = { at_k_addy: 'KR', at_c_addy: 'CN', at_
 // Run migrations once per cold start only
 let migrationsDone = false
 async function ensureOrderColumns() {
-  // Always run the inclu backfill — idempotent, fast once all rows are fixed
+  if (migrationsDone) return
+  migrationsDone = true
+  // Idempotent backfill — belongs in the once-per-cold-start gate below, not run unconditionally
+  // on every request (it used to fire outside the gate on every single GET/POST/PATCH).
   query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
     WHERE inclusions_count = 0
       AND description IS NOT NULL
       AND LOWER(description) LIKE '%inclu%'`).catch(() => {})
-  if (migrationsDone) return
-  migrationsDone = true
   await Promise.all([
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ').catch(() => {}),
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS ordered_at TIMESTAMPTZ').catch(() => {}),
@@ -77,6 +78,14 @@ export async function GET(req: NextRequest) {
   const shop_id = searchParams.get('shop_id')
   const viewAs = searchParams.get('viewAs')
   const filterByJoiner = user.role === 'joiner' || viewAs === 'joiner'
+  // gom/payments and gom/pc-sorter already request ?lite=true, expecting a lighter payload — but
+  // pc-sorter's "inclusion sources" dropdown (allOrders.find(...).items) actually reads the full
+  // items array back out of this exact same lite-fetched list, so items can NOT be dropped for
+  // lite requests without breaking that feature. The only thing safe to drop for every caller,
+  // lite or not, is preview_image_url below (verified unused by every current list consumer) —
+  // `lite` is accepted but currently doesn't change the query itself.
+  const lite = searchParams.get('lite') === 'true'
+  void lite
 
   // Single aggregated query — no correlated subquery per order row
   let sql = `
@@ -107,7 +116,16 @@ export async function GET(req: NextRequest) {
   if (status) { sql += ` AND o.status = $${i++}`; params.push(status) }
   if (shop_id) { sql += ` AND o.shop_id = $${i++}`; params.push(shop_id) }
   sql += ' ORDER BY o.created_at DESC'
-  return NextResponse.json(await query(sql, params))
+  const rows = await query<any>(sql, params)
+  // preview_image_url is a base64 data URL that can run multiple MB per order — the list view
+  // never renders it (only the edit form and OrderDetail drawer do, and both fetch the single
+  // order separately), so strip it here and let the frontend know it exists via a boolean flag
+  // it can use to lazy-fetch the real image only when actually needed.
+  for (const row of rows) {
+    row.has_preview_image = !!row.preview_image_url
+    row.preview_image_url = null
+  }
+  return NextResponse.json(rows)
 }
 
 export async function POST(req: NextRequest) {
