@@ -150,7 +150,7 @@ export async function autoFillInclusions(sessionId: string) {
     const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
     const items = await query<any>(`
       SELECT COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
-             oi.description, oi.version_name, oi.price_eur,
+             oi.description, oi.version_name, oi.price_eur, oi.claim_group_id,
              (COALESCE(oi.inclusions_count, 0) > 0) AS is_explicit,
              CASE
                WHEN COALESCE(oi.inclusions_count, 0) > 0 THEN oi.inclusions_count
@@ -169,17 +169,23 @@ export async function autoFillInclusions(sessionId: string) {
     // an explicit "Inclusions" number typed for that claim is saved onto EVERY one of those
     // rows (by design — the edit form reads it back from just the first row of the group, never
     // a sum; see the comment in gom/orders/page.tsx's handleSave). So a row with an EXPLICIT
-    // inclusions_count must only be counted ONCE per (joiner, description, price, version)
-    // group here too, or a claim split across N members inflates its total by ×N (this is what
-    // "4 pobs + 4 inclusions showing as 16" was: 4 member rows × 4 each). Rows that fall back to
-    // the "album" amount_claimed path are NOT deduped — those never had a number typed in, and
-    // are always meant to add up one-per-row (one member pill = one inclusion).
+    // inclusions_count must only be counted ONCE per claim-line here too, or a claim split
+    // across N members inflates its total by ×N (this is what "4 pobs + 4 inclusions showing as
+    // 16" was: 4 member rows × 4 each). Rows saved after claim_group_id was introduced use that
+    // as the exact grouping key (one id per original line, set at save time); older rows saved
+    // before it existed fall back to a description+price+version heuristic, which can't tell two
+    // genuinely separate same-priced claims apart — resaving the order fixes those permanently.
+    // Rows that fall back to the "album" amount_claimed path are NOT deduped — those never had a
+    // number typed in, and are always meant to add up one-per-row (one member pill = one
+    // inclusion).
     const seenExplicit = new Set<string>()
     for (const it of items) {
       const amt = parseInt(it.effective_inclusions) || 0
       if (amt === 0) continue
       if (it.is_explicit) {
-        const groupKey = `${it.joiner_id}|${it.description || ''}|${it.price_eur ?? ''}|${it.version_name || ''}`
+        const groupKey = it.claim_group_id
+          ? `cg:${it.claim_group_id}`
+          : `${it.joiner_id}|${it.description || ''}|${it.price_eur ?? ''}|${it.version_name || ''}`
         if (seenExplicit.has(groupKey)) continue
         seenExplicit.add(groupKey)
       }

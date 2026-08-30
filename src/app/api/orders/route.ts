@@ -44,6 +44,15 @@ async function ensureOrderColumns() {
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS albums_bought JSONB DEFAULT NULL').catch(() => {}),
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS personal_joiner_id UUID REFERENCES profiles(id) ON DELETE SET NULL').catch(() => {}),
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS version_name TEXT DEFAULT NULL').catch(() => {}),
+    // Ties together every row a single item-line explodes into (one row per member picked on
+    // that line). Without this, there was no reliable way to tell "these 4 rows are really one
+    // claim, split across 4 members" apart from "these are 4 separate claims that happen to
+    // share the same description/price" — which caused inclusion totals to be either multiplied
+    // (summed every row) or wrongly collapsed (deduped by description+price, which can't tell
+    // two distinct same-priced claims apart). Set once per line at save time; NULL on rows saved
+    // before this column existed (readers fall back to the description+price+version heuristic
+    // for those).
+    query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS claim_group_id TEXT DEFAULT NULL').catch(() => {}),
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS item_type TEXT DEFAULT \'photocard\'').catch(() => {}),
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS inclusions_count INTEGER DEFAULT 0').catch(() => {}),
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS entries_count INTEGER DEFAULT 0').catch(() => {}),
@@ -120,10 +129,10 @@ export async function POST(req: NextRequest) {
   if (items?.length) {
     for (const item of items) {
       await query(
-        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, claim_group_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [order.id, item.member_id || null, item.joiner_id || null, item.pricing_type, item.description || null,
-          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0]
+          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.claim_group_id || null]
       )
     }
   }
@@ -199,9 +208,9 @@ export async function PATCH(req: NextRequest) {
     await query('DELETE FROM order_items WHERE order_id=$1', [id])
     for (const item of (items || [])) {
       await query(
-        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, version_name)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.version_name || null]
+        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, version_name, claim_group_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.version_name || null, item.claim_group_id || null]
       )
     }
   }

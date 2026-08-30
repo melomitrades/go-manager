@@ -95,26 +95,47 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     weight_g: number; item_count: number; total_inclusions: number; items: any[]
   }> = {}
 
+  // A claim split across several members (e.g. "want a photocard of any of these 4 members")
+  // saves as one order_items ROW PER MEMBER, and an explicit inclusions_count typed for that
+  // claim is saved onto every one of those rows identically (by design — see the comment in
+  // gom/orders/page.tsx's handleSave). Both the weight used for EMS/customs splitting AND the
+  // "total_inclusions" stat below must count that number ONCE per claim, not once per row, or a
+  // claim split across N members inflates a joiner's box weight (and therefore their EMS/customs
+  // share) by ×N. claim_group_id (set at save time) is the exact way to tell rows from the same
+  // claim apart from genuinely separate claims; rows saved before that column existed fall back
+  // to a joiner+description+price+version heuristic.
+  const seenClaimGroups: Record<string, Set<string>> = {} // joiner_id -> claim keys already counted
+
   for (const item of allItems) {
     const jid = item.joiner_id
     if (!joinerMap[jid]) {
       joinerMap[jid] = { joiner_id: jid, display_name: item.display_name, username: item.username, weight_g: 0, item_count: 0, total_inclusions: 0, items: [] }
     }
+    if (!seenClaimGroups[jid]) seenClaimGroups[jid] = new Set()
     // Skip late fees from EMS/customs weight calculation
     const isLateFee = /late.?fee/i.test(item.description || '')
     const typeKey = item.item_type || 'photocard'
     const claimed = item.amount_claimed || 1
-    const inclusions = typeKey === 'photocard' ? (parseInt(item.inclusions_count) || 0) : 0
+    const rawInclusions = typeKey === 'photocard' ? (parseInt(item.inclusions_count) || 0) : 0
+    let inclusions = 0
+    if (rawInclusions > 0) {
+      const claimKey = item.claim_group_id ? `cg:${item.claim_group_id}` : `legacy:${item.description || ''}|${item.price_eur ?? ''}|${item.version_name || ''}`
+      if (!seenClaimGroups[jid].has(claimKey)) {
+        seenClaimGroups[jid].add(claimKey)
+        inclusions = rawInclusions
+      }
+    }
     const effectiveCount = claimed + inclusions
     const unitWeight = isLateFee ? 0 : (weightByItemType[typeKey] ?? weightByType[typeKey] ?? 0)
     const wg = unitWeight * effectiveCount
     joinerMap[jid].weight_g += wg
     joinerMap[jid].item_count += isLateFee ? 0 : claimed
-    joinerMap[jid].total_inclusions += parseInt(item.inclusions_count) || 0
+    joinerMap[jid].total_inclusions += inclusions
     joinerMap[jid].items.push({
       id: item.id, description: item.description, member_name: item.member_name,
       amount_claimed: item.amount_claimed, price_eur: item.price_eur, item_type: item.item_type,
-      inclusions_count: parseInt(item.inclusions_count) || 0, weight_g: wg,
+      inclusions_count: parseInt(item.inclusions_count) || 0, claim_group_id: item.claim_group_id || null,
+      version_name: item.version_name || null, weight_g: wg,
       shop_name: item.shop_name, group_name: item.group_name, round_number: item.round_number,
     })
   }

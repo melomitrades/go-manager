@@ -42,16 +42,28 @@ export default function JoinerBoxesPage() {
 
     // Group items
     const groups: Record<string, { shop: string; desc: string; members: string[]; qty: number; inclusions: number; weight_g: number }> = {}
+    const seenClaimsByGroup: Record<string, Set<string>> = {}
     for (const it of items) {
       const key = `${it.shop_name || '?'}__${it.round_number || ''}__${it.description || it.item_type}`
-      if (!groups[key]) groups[key] = {
-        shop: (it.shop_name || '?') + (it.round_number ? ` #${it.round_number}` : ''),
-        desc: it.description || it.item_type, members: [], qty: 0, inclusions: 0, weight_g: 0
+      if (!groups[key]) {
+        groups[key] = {
+          shop: (it.shop_name || '?') + (it.round_number ? ` #${it.round_number}` : ''),
+          desc: it.description || it.item_type, members: [], qty: 0, inclusions: 0, weight_g: 0
+        }
+        seenClaimsByGroup[key] = new Set()
       }
       if (it.member_name && !groups[key].members.includes(it.member_name)) groups[key].members.push(it.member_name)
       groups[key].qty += it.amount_claimed || 1
-      // inclusions_count is per-row total, not per-member — only set from first row
-      if (groups[key].inclusions === 0) groups[key].inclusions = it.inclusions_count || 0
+      // inclusions_count is per-claim total, not per-row — a claim split across several members
+      // saves it onto every resulting row identically, so each distinct claim (by
+      // claim_group_id, when the row has one) is only added once, not once per row.
+      if ((it.inclusions_count || 0) > 0) {
+        const claimKey = it.claim_group_id ? `cg:${it.claim_group_id}` : '__legacy__'
+        if (!seenClaimsByGroup[key].has(claimKey)) {
+          seenClaimsByGroup[key].add(claimKey)
+          groups[key].inclusions += it.inclusions_count || 0
+        }
+      }
       groups[key].weight_g += it.weight_g || 0
     }
 

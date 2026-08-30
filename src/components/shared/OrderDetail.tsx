@@ -13,6 +13,7 @@ interface OrderDetailProps {
 // Group items with the same description+price into one consolidated line
 function groupItems(items: any[]): { label: string; qty: number; price_eur: number | null; price_krw: number | null; members: string[]; inclusions_count: number; entries_count: number }[] {
   const groups: Record<string, { label: string; qty: number; price_eur: number | null; price_krw: number | null; members: string[]; inclusions_count: number; entries_count: number }> = {}
+  const seenClaimsByGroup: Record<string, Set<string>> = {}
   for (const item of items) {
     const label = item.description || item.member?.name || 'Item'
     const price = item.price_eur ? parseFloat(item.price_eur) : null
@@ -20,13 +21,24 @@ function groupItems(items: any[]): { label: string; qty: number; price_eur: numb
     const key = `${label}__${price ?? 'null'}`
     if (!groups[key]) {
       groups[key] = { label, qty: 0, price_eur: price, price_krw: priceKrw, members: [], inclusions_count: 0, entries_count: 0 }
+      seenClaimsByGroup[key] = new Set()
     }
     groups[key].qty += item.amount_claimed || 1
     // inclusions_count is a per-claim-LINE total, not per-row — when one claim is split across
     // several members it's saved onto every resulting row identically (by design; see
-    // gom/orders/page.tsx's handleSave), so it must be read once per group, never summed, or a
-    // claim split across N members would display as N times its real total.
-    if (groups[key].inclusions_count === 0) groups[key].inclusions_count = item.inclusions_count || 0
+    // gom/orders/page.tsx's handleSave). Two genuinely separate claims can still land in this
+    // same label+price group (e.g. the same pricing option claimed twice), so it's not safe to
+    // just take the first row's value — each distinct claim (by claim_group_id, where the row
+    // has one) contributes its own inclusions_count once. Rows saved before claim_group_id
+    // existed have no id to dedupe by, so — same limitation as before — only the first such
+    // legacy row in the group counts; resaving the order assigns them proper ids.
+    if ((item.inclusions_count || 0) > 0) {
+      const claimKey = item.claim_group_id ? `cg:${item.claim_group_id}` : '__legacy__'
+      if (!seenClaimsByGroup[key].has(claimKey)) {
+        seenClaimsByGroup[key].add(claimKey)
+        groups[key].inclusions_count += item.inclusions_count || 0
+      }
+    }
     groups[key].entries_count += item.entries_count || 0
     if (item.member?.name) {
       const existing = groups[key].members.find((m: string) => m === item.member.name || m.startsWith(item.member.name + ' ×'))

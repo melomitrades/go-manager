@@ -363,7 +363,10 @@ export default function GomPcSorterPage() {
         const explicit = (parseInt(it.inclusions_count) || 0) > 0
         const amt = explicit ? (parseInt(it.inclusions_count) || 0) : (parseInt(it.amount_claimed) || 1)
         if (explicit) {
-          const key = `${it.description || ''}|${it.price_eur ?? ''}|${it.version_name || ''}`
+          // Same grouping key as the server's autoFillInclusions: prefer claim_group_id (exact)
+          // and only fall back to the description+price+version heuristic for rows saved before
+          // that column existed.
+          const key = it.claim_group_id ? `cg:${it.claim_group_id}` : `${it.description || ''}|${it.price_eur ?? ''}|${it.version_name || ''}`
           if (seenExplicit.has(key)) continue
           seenExplicit.add(key)
         }

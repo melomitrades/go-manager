@@ -177,3 +177,19 @@ app self-migrates its schema at runtime — no manual SQL required.
   breakdown. This mirrors the exact same counting logic "Auto-fill" itself uses server-side (including the
   per-claim dedupe from the fix above), so the numbers shown always explain what auto-fill actually assigned —
   it's read-only and doesn't change any saved data.
+- **Fixed the flip side of the inclusions dedupe fix: it could under-count when two genuinely separate claims
+  happened to share the same description/price.** The fix above told rows apart from each other by matching
+  description+price+version, on the assumption that matching = "same claim split across members." That's not
+  always true — a GOM can legitimately add two separate item lines using the same pricing option (e.g. the same
+  "POB" claimed for two different groups of members), and those got wrongly collapsed into one, which is exactly
+  what showed up as "the sources dropdown says 2, but 4 are actually assigned." Fixed properly this time by
+  giving every item line its own id at save time (`claim_group_id`, one per line, shared by every row it explodes
+  into) instead of guessing from description/price — order_items now carries this column, and every reader that
+  needs to tell "same claim" from "different claim" (Auto-fill, the new sources dropdown, Order Detail's
+  consolidated totals, and — found while fixing this — the Boxes page's per-joiner weight and EMS/customs cost
+  split, which had the exact same "only count the first row" bug and could overcharge a joiner whose claim was
+  split across members) now uses it. Rows saved before this column existed have no id to key off, so those still
+  fall back to the description+price+version guess — **existing orders need to be re-opened and saved once (Edit
+  → Save, no changes needed) to get this fix applied to their claims**; new orders and any order you resave get
+  it automatically. This is a read/aggregation fix only — it doesn't change how inclusions are entered, and
+  doesn't touch stored EMS/customs amounts that have already been locked in for a box.
