@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, Fragment } from 'react'
 import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Check, Clock, Zap, Repeat, Shuffle } from 'lucide-react'
 import { Button, Card, CardContent, CardHeader, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { formatDate, formatDateTime } from '@/lib/utils'
@@ -84,6 +84,7 @@ export default function GomPcSorterPage() {
   const [groups, setGroups] = useState<any[]>([])
   const [boxes, setBoxes] = useState<any[]>([])
   const [orders, setOrders] = useState<any[]>([])
+  const [allOrders, setAllOrders] = useState<any[]>([]) // unfiltered (includes closed) — for looking up an already-linked order by id, e.g. inclusion source breakdown
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -106,6 +107,7 @@ export default function GomPcSorterPage() {
 
   const [inclusionsModal, setInclusionsModal] = useState<string | null>(null)
   const [inclusionDrafts, setInclusionDrafts] = useState<Record<string, Record<string, string>>>({}) // joiner_id -> pack_id -> value
+  const [inclusionSourcesOpenFor, setInclusionSourcesOpenFor] = useState<string | null>(null) // joiner_id whose "sources" dropdown is expanded, in the Manage Inclusions box
 
   const [sortModal, setSortModal] = useState<string | null>(null)
   const [sortMethod, setSortMethod] = useState<'timestamp' | 'fair'>('fair')
@@ -126,6 +128,7 @@ export default function GomPcSorterPage() {
     setGroups(Array.isArray(g) ? g : [])
     setBoxes(Array.isArray(b) ? b : [])
     setOrders(Array.isArray(o) ? o.filter((x: any) => x.status !== 'closed') : [])
+    setAllOrders(Array.isArray(o) ? o : [])
     setLoading(false)
   }, [])
   useEffect(() => { fetchData() }, [fetchData])
@@ -326,6 +329,49 @@ export default function GomPcSorterPage() {
     setSortModal(null)
     await loadDetails(sessionId)
     await fetchData()
+  }
+
+  // Breaks a joiner's auto-filled inclusion total back down by source order — mirrors the
+  // server's autoFillInclusions logic (same version filter, same "explicit inclusions_count
+  // counted once per claim line, album-fallback counted per row" dedupe) so the numbers shown
+  // here always add up to what auto-fill actually assigned. Purely for display in the Manage
+  // Inclusions box; doesn't affect saving.
+  function inclusionSourcesForJoiner(d: any, joinerId: string): { order: any; amount: number }[] {
+    const sessionRow = d?.session
+    if (!sessionRow) return []
+    const orderIds: string[] = (() => {
+      try { const o = sessionRow.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] }
+    })()
+    if (orderIds.length === 0) return []
+    const orderVersions: Record<string, string[]> = (() => {
+      try { const v = sessionRow.order_versions; if (!v) return {}; return typeof v === 'string' ? JSON.parse(v) : v } catch { return {} }
+    })()
+    const results: { order: any; amount: number }[] = []
+    for (const oid of orderIds) {
+      const order = allOrders.find((o: any) => o.id === oid)
+      if (!order) { results.push({ order: { id: oid }, amount: -1 }); continue } // -1 = "can't tell, order not loaded"
+      const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
+      const relevant = (order.items || []).filter((it: any) => {
+        const jid = it.joiner_id || order.personal_joiner_id
+        if (jid !== joinerId) return false
+        if (versions && !versions.includes(it.version_name)) return false
+        return (parseInt(it.inclusions_count) || 0) > 0 || (it.description || '').toLowerCase().includes('album')
+      })
+      const seenExplicit = new Set<string>()
+      let amount = 0
+      for (const it of relevant) {
+        const explicit = (parseInt(it.inclusions_count) || 0) > 0
+        const amt = explicit ? (parseInt(it.inclusions_count) || 0) : (parseInt(it.amount_claimed) || 1)
+        if (explicit) {
+          const key = `${it.description || ''}|${it.price_eur ?? ''}|${it.version_name || ''}`
+          if (seenExplicit.has(key)) continue
+          seenExplicit.add(key)
+        }
+        amount += amt
+      }
+      if (amount > 0) results.push({ order, amount })
+    }
+    return results
   }
 
   const inclusionJoiners = (d: any) => {
@@ -819,7 +865,7 @@ export default function GomPcSorterPage() {
         const packs: any[] = d?.packs || []
         const joiners = inclusionJoiners(d)
         return (
-          <Modal open={true} onClose={() => setInclusionsModal(null)} title="Manage Inclusions" subtitle="How many full packs (inclusions) each joiner is due, per pack" size="lg">
+          <Modal open={true} onClose={() => { setInclusionsModal(null); setInclusionSourcesOpenFor(null) }} title="Manage Inclusions" subtitle="How many full packs (inclusions) each joiner is due, per pack" size="lg">
             <div className="space-y-4">
               <div className="flex items-center justify-between p-3 bg-primary/5 border border-primary/15 rounded-xl">
                 <div>
@@ -849,24 +895,60 @@ export default function GomPcSorterPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {joiners.map((j: any) => (
-                        <tr key={j.joiner_id}>
-                          <td className="px-3 py-2 font-semibold">{j.display_name || j.username}</td>
-                          {packs.map((p: any) => (
-                            <td key={p.id} className="px-3 py-2">
-                              <input type="number" min="0" value={inclusionDrafts[j.joiner_id]?.[p.id] || ''}
-                                onChange={e => setInclusionDrafts(prev => ({ ...prev, [j.joiner_id]: { ...(prev[j.joiner_id] || {}), [p.id]: e.target.value } }))}
-                                className="w-16 px-2 py-1.5 rounded-lg border border-input bg-background text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/25" placeholder="0" />
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
+                      {joiners.map((j: any) => {
+                        const sourcesOpen = inclusionSourcesOpenFor === j.joiner_id
+                        const sources = sourcesOpen ? inclusionSourcesForJoiner(d, j.joiner_id) : []
+                        return (
+                          <Fragment key={j.joiner_id}>
+                            <tr>
+                              <td className="px-3 py-2 align-top">
+                                <button
+                                  onClick={() => setInclusionSourcesOpenFor(sourcesOpen ? null : j.joiner_id)}
+                                  className="flex items-center gap-1 font-semibold hover:text-primary transition-colors"
+                                  title="Show which orders these inclusions were auto-filled from"
+                                >
+                                  {j.display_name || j.username}
+                                  {sourcesOpen ? <ChevronUp size={12} className="text-muted-foreground" /> : <ChevronDown size={12} className="text-muted-foreground" />}
+                                </button>
+                              </td>
+                              {packs.map((p: any) => (
+                                <td key={p.id} className="px-3 py-2 align-top">
+                                  <input type="number" min="0" value={inclusionDrafts[j.joiner_id]?.[p.id] || ''}
+                                    onChange={e => setInclusionDrafts(prev => ({ ...prev, [j.joiner_id]: { ...(prev[j.joiner_id] || {}), [p.id]: e.target.value } }))}
+                                    className="w-16 px-2 py-1.5 rounded-lg border border-input bg-background text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/25" placeholder="0" />
+                                </td>
+                              ))}
+                            </tr>
+                            {sourcesOpen && (
+                              <tr>
+                                <td colSpan={packs.length + 1} className="px-3 pb-2.5 pt-0">
+                                  <div className="bg-secondary/30 border border-border rounded-lg px-3 py-2">
+                                    {sources.length === 0 ? (
+                                      <p className="text-xs text-muted-foreground">Not from this session's orders — this joiner's inclusions were entered by hand, or the order they came from is no longer linked to this session.</p>
+                                    ) : (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {sources.map(({ order, amount }) => (
+                                          <span key={order.id} className="text-xs px-2 py-1 rounded-full bg-background border border-border font-medium">
+                                            {amount === -1
+                                              ? <>Order {order.id.slice(0, 8)} <span className="text-muted-foreground font-normal">(details unavailable)</span></>
+                                              : <>{orderLabel(order)} <span className="text-primary font-semibold">· {amount}</span></>}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
               )}
               <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setInclusionsModal(null)}>Cancel</Button>
+                <Button variant="outline" onClick={() => { setInclusionsModal(null); setInclusionSourcesOpenFor(null) }}>Cancel</Button>
                 <Button onClick={() => saveInclusions(inclusionsModal, packs)} disabled={saving}>{saving ? 'Saving…' : 'Save inclusions'}</Button>
               </div>
             </div>

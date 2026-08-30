@@ -169,3 +169,11 @@ app self-migrates its schema at runtime — no manual SQL required.
   are genuinely one-inclusion-per-member-row and still add up normally), and doesn't touch how inclusions get
   entered or stored — only how already-saved rows are read back and summed. Existing sessions just need
   "Auto-fill inclusions" run again to pick up the corrected numbers — no need to touch the order itself.
+- **Manage Inclusions box: each joiner's name is now a dropdown showing which orders their auto-filled number
+  came from.** Click a joiner's name in the inclusions table to expand a small panel listing every source order
+  and how many inclusions it contributed (e.g. "Round 2 · ShopName · 4"), so a number that looks off can be
+  traced back to its order instead of guessed at. If a joiner's total wasn't from this session's orders at all
+  (entered by hand, or the source order got unlinked from the session since), it says so instead of showing a
+  breakdown. This mirrors the exact same counting logic "Auto-fill" itself uses server-side (including the
+  per-claim dedupe from the fix above), so the numbers shown always explain what auto-fill actually assigned —
+  it's read-only and doesn't change any saved data.
