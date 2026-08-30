@@ -111,6 +111,7 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     if (sessionRow.deadline && new Date(sessionRow.deadline) < new Date()) {
       return NextResponse.json({ error: 'The deadline for this form has passed' }, { status: 403 })
     }
+    if (sessionRow.locked_at) return NextResponse.json({ error: 'This session is locked — the GOM has finalized its sort.' }, { status: 403 })
 
     // One submission per joiner per session, period — no self-service edits. If the GOM
     // reopens the form after a sort, that's for joiners who never submitted at all to get a
@@ -141,6 +142,34 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
 
   // ── Everything else is GOM/admin only ──
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  // ── Lock / unlock: freezes packs, items, quantities, inclusions, and the sort itself once
+  // the GOM is happy with the results, so nothing can shift under a result that may already
+  // have been communicated to joiners. Requires a sort to have actually run first — locking an
+  // un-sorted session wouldn't "validate" anything. Unlock just clears it; no side effects.
+  if (body.lock_sort !== undefined) {
+    const sessionRow = await queryOne<any>(`SELECT sort_run_at FROM pc_sorting_sessions WHERE id=$1`, [sessionId])
+    if (!sessionRow) return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+    if (!sessionRow.sort_run_at) return NextResponse.json({ error: 'Run the sort at least once before locking it.' }, { status: 400 })
+    const s = await queryOne(
+      `UPDATE pc_sorting_sessions SET locked_at=now(), form_open=false, updated_at=now() WHERE id=$1 RETURNING *`,
+      [sessionId]
+    )
+    return NextResponse.json(s)
+  }
+  if (body.unlock_sort !== undefined) {
+    const s = await queryOne(`UPDATE pc_sorting_sessions SET locked_at=NULL, updated_at=now() WHERE id=$1 RETURNING *`, [sessionId])
+    return NextResponse.json(s)
+  }
+
+  // Every other GOM action below mutates packs/items/quantities/inclusions/the sort — all
+  // blocked once the session is locked. (lock_sort/unlock_sort themselves are handled above,
+  // before this check, so unlocking always works regardless of current state.)
+  const mutatingKeys = ['add_pack', 'rename_pack', 'delete_pack', 'add_item', 'rename_item', 'delete_item', 'update_quantities', 'inclusions', 'auto_fill_inclusions', 'reset_inclusions']
+  if (mutatingKeys.some(k => body[k] !== undefined)) {
+    const sessionRow = await queryOne<any>(`SELECT locked_at FROM pc_sorting_sessions WHERE id=$1`, [sessionId])
+    if (sessionRow?.locked_at) return NextResponse.json({ error: 'This session is locked — unlock it first to make changes.' }, { status: 403 })
+  }
 
   if (body.add_pack) {
     const p = await queryOne(

@@ -331,6 +331,31 @@ export default function GomPcSorterPage() {
     await fetchData()
   }
 
+  const [lockingSession, setLockingSession] = useState<string | null>(null)
+
+  async function lockSort(sessionId: string) {
+    setLockingSession(sessionId)
+    await fetch(`/api/pc-sorter/${sessionId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lock_sort: true }),
+    })
+    await loadDetails(sessionId)
+    await fetchData()
+    setLockingSession(null)
+  }
+
+  async function unlockSort(sessionId: string) {
+    if (!confirm('Unlock this session? Packs, items, quantities, inclusions, and re-running the sort will become editable again.')) return
+    setLockingSession(sessionId)
+    await fetch(`/api/pc-sorter/${sessionId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unlock_sort: true }),
+    })
+    await loadDetails(sessionId)
+    await fetchData()
+    setLockingSession(null)
+  }
+
   // Breaks a joiner's auto-filled inclusion total back down by source order — mirrors the
   // server's autoFillInclusions logic (same version filter, same "explicit inclusions_count
   // counted once per claim line, album-fallback counted per row" dedupe) so the numbers shown
@@ -442,6 +467,7 @@ export default function GomPcSorterPage() {
             const d = sessionDetails[s.id]
             const packs: any[] = d?.packs || []
             const lastSort = lastSortResult[s.id]
+            const isLocked = !!s.locked_at
             // Default to Results once a sort has run (that's what a GOM opens the card to check),
             // otherwise Packs & Items (that's what's still being set up).
             const activeTab = detailTab[s.id] || (s.sort_run_at ? 'results' : 'packs')
@@ -453,9 +479,13 @@ export default function GomPcSorterPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-display font-semibold">{s.title}</p>
-                        <Badge className={`text-xs ${s.form_open ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-secondary text-muted-foreground border border-border'}`}>
-                          {s.form_open ? 'Form open' : 'Form closed'}
-                        </Badge>
+                        {isLocked ? (
+                          <Badge className="text-xs bg-violet-50 text-violet-700 border border-violet-200" title={`Locked ${formatDateTime(s.locked_at)}`}>🔒 Sort locked</Badge>
+                        ) : (
+                          <Badge className={`text-xs ${s.form_open ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-secondary text-muted-foreground border border-border'}`}>
+                            {s.form_open ? 'Form open' : 'Form closed'}
+                          </Badge>
+                        )}
                         {s.deadline && <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${new Date(s.deadline) < new Date() ? 'bg-destructive/10 text-destructive border-destructive/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>⏱ {formatDate(s.deadline)}</span>}
                         {s.box?.label && <Badge className="bg-sky-50 text-sky-700 border border-sky-200 text-xs">📦 {s.box.label}</Badge>}
                         {s.sort_method && <Badge className="bg-primary/10 text-primary border border-primary/20 text-xs">{s.sort_method === 'timestamp' ? <><Clock size={10} className="inline mr-0.5" />Timestamp</> : <><Zap size={10} className="inline mr-0.5" />Fair</>} sorted</Badge>}
@@ -463,14 +493,16 @@ export default function GomPcSorterPage() {
                       {s.group?.name && <p className="text-xs text-muted-foreground mt-0.5">{s.group.name}</p>}
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <Button
-                        variant={s.form_open ? 'outline' : 'default'}
-                        size="sm"
-                        onClick={() => toggleFormOpen(s)}
-                        title={s.sort_run_at ? "Sort already ran — reopening only lets joiners who haven't submitted yet do so before you sort again. Joiners who already submitted stay locked in; they can't edit." : ''}
-                      >
-                        {s.form_open ? <><ToggleRight size={14} /> Close form</> : <><ToggleLeft size={14} /> Open form</>}
-                      </Button>
+                      {!isLocked && (
+                        <Button
+                          variant={s.form_open ? 'outline' : 'default'}
+                          size="sm"
+                          onClick={() => toggleFormOpen(s)}
+                          title={s.sort_run_at ? "Sort already ran — reopening only lets joiners who haven't submitted yet do so before you sort again. Joiners who already submitted stay locked in; they can't edit." : ''}
+                        >
+                          {s.form_open ? <><ToggleRight size={14} /> Close form</> : <><ToggleLeft size={14} /> Open form</>}
+                        </Button>
+                      )}
                       <Button variant="ghost" size="sm" onClick={async () => {
                         setEditForm({ title: s.title, group_id: s.group_id || '', deadline: s.deadline?.slice(0, 16) || '', box_id: s.box_id || '' })
                         const savedIds = (() => { try { const o = s.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] } })()
@@ -515,12 +547,16 @@ export default function GomPcSorterPage() {
                           <div className="flex items-center justify-between mb-2">
                             <div>
                               <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Packs & items</p>
-                              {s.sort_run_at && <p className="text-[11px] text-muted-foreground mt-0.5">"N left" badges show what's still unassigned since the last sort ({formatDateTime(s.sort_run_at)}).</p>}
+                              {isLocked
+                                ? <p className="text-[11px] text-violet-700 dark:text-violet-400 mt-0.5">🔒 Locked — unlock the sort (Results tab) to edit packs, items, or quantities.</p>
+                                : s.sort_run_at && <p className="text-[11px] text-muted-foreground mt-0.5">"N left" badges show what's still unassigned since the last sort ({formatDateTime(s.sort_run_at)}).</p>}
                             </div>
-                            <div className="flex items-center gap-1.5">
-                              <Input placeholder="New pack name (e.g. Ver. A)" value={newPackName[s.id] || ''} onChange={e => setNewPackName(p => ({ ...p, [s.id]: e.target.value }))} className="w-48 text-xs py-1.5" />
-                              <Button size="sm" variant="outline" onClick={() => addPack(s.id)}><Plus size={12} /> Add pack</Button>
-                            </div>
+                            {!isLocked && (
+                              <div className="flex items-center gap-1.5">
+                                <Input placeholder="New pack name (e.g. Ver. A)" value={newPackName[s.id] || ''} onChange={e => setNewPackName(p => ({ ...p, [s.id]: e.target.value }))} className="w-48 text-xs py-1.5" />
+                                <Button size="sm" variant="outline" onClick={() => addPack(s.id)}><Plus size={12} /> Add pack</Button>
+                              </div>
+                            )}
                           </div>
 
                           {packs.length === 0 ? (
@@ -534,20 +570,22 @@ export default function GomPcSorterPage() {
                                   <div key={pack.id} className="border border-border rounded-xl overflow-hidden">
                                     <div className="flex items-center justify-between px-3 py-2 bg-secondary/30 border-b border-border">
                                       <p className="text-sm font-semibold">{pack.name}</p>
-                                      <button onClick={() => deletePack(s.id, pack.id)} className="text-destructive/50 hover:text-destructive"><Trash2 size={12} /></button>
+                                      {!isLocked && <button onClick={() => deletePack(s.id, pack.id)} className="text-destructive/50 hover:text-destructive"><Trash2 size={12} /></button>}
                                     </div>
                                     <div className="p-3 space-y-3">
-                                      <div className="flex items-center gap-1.5">
-                                        <Input placeholder="New item (e.g. Photocard)" value={newItemName[pack.id] || ''} onChange={e => setNewItemName(p => ({ ...p, [pack.id]: e.target.value }))} className="text-xs py-1.5 flex-1" />
-                                        <Button size="sm" variant="outline" onClick={() => addItem(s.id, pack.id)}><Plus size={11} /> Add item</Button>
-                                      </div>
+                                      {!isLocked && (
+                                        <div className="flex items-center gap-1.5">
+                                          <Input placeholder="New item (e.g. Photocard)" value={newItemName[pack.id] || ''} onChange={e => setNewItemName(p => ({ ...p, [pack.id]: e.target.value }))} className="text-xs py-1.5 flex-1" />
+                                          <Button size="sm" variant="outline" onClick={() => addItem(s.id, pack.id)}><Plus size={11} /> Add item</Button>
+                                        </div>
+                                      )}
                                       {items.length === 0 ? (
                                         <p className="text-xs text-muted-foreground">No items in this pack yet.</p>
                                       ) : items.map((item: any) => (
                                         <div key={item.id} className="border border-border/60 rounded-lg p-2.5">
                                           <div className="flex items-center justify-between mb-2">
                                             <p className="text-xs font-bold text-primary">{item.name}</p>
-                                            <button onClick={() => deleteItem(s.id, item.id)} className="text-destructive/40 hover:text-destructive"><Trash2 size={11} /></button>
+                                            {!isLocked && <button onClick={() => deleteItem(s.id, item.id)} className="text-destructive/40 hover:text-destructive"><Trash2 size={11} /></button>}
                                           </div>
                                           {groupMembers.length === 0 ? (
                                             <p className="text-xs text-muted-foreground">Select a group for this session to set quantities.</p>
@@ -575,13 +613,16 @@ export default function GomPcSorterPage() {
                                                     )}
                                                     <Input type="number" min="0" placeholder="0" value={qtyDrafts[item.id]?.[m.id] ?? ''}
                                                       onChange={e => setQtyDrafts(p => ({ ...p, [item.id]: { ...(p[item.id] || {}), [m.id]: e.target.value } }))}
-                                                      className="w-20 text-xs py-1" />
+                                                      disabled={isLocked}
+                                                      className="w-20 text-xs py-1 disabled:opacity-50" />
                                                   </div>
                                                 )
                                               })}
-                                              <div className="flex justify-end pt-1">
-                                                <Button size="sm" variant="outline" onClick={() => saveQuantities(s.id, item.id, groupMembers)}>Save quantities</Button>
-                                              </div>
+                                              {!isLocked && (
+                                                <div className="flex justify-end pt-1">
+                                                  <Button size="sm" variant="outline" onClick={() => saveQuantities(s.id, item.id, groupMembers)}>Save quantities</Button>
+                                                </div>
+                                              )}
                                             </div>
                                           )}
                                         </div>
@@ -611,7 +652,7 @@ export default function GomPcSorterPage() {
                                   {expected !== totalUnits && <> · {expected} item{expected !== 1 ? 's' : ''} once sorted (packs have more than one item)</>}
                                 </p>
                               </div>
-                              <Button size="sm" variant="outline" onClick={() => setInclusionsModal(s.id)}>Manage inclusions</Button>
+                              <Button size="sm" variant="outline" onClick={() => setInclusionsModal(s.id)}>{isLocked ? 'View inclusions' : 'Manage inclusions'}</Button>
                             </div>
                           )
                         })()}
@@ -692,22 +733,37 @@ export default function GomPcSorterPage() {
                           const expected = expectedAssignedTotal(d)
                           const staleVsCurrent = lastSort && typeof lastSort.totalDemand === 'number' && lastSort.totalDemand !== expected
                           return (
-                            <div className="p-3 border border-primary/20 bg-primary/5 rounded-xl">
+                            <div className={`p-3 border rounded-xl ${isLocked ? 'border-violet-200 bg-violet-50 dark:border-violet-800 dark:bg-violet-900/10' : 'border-primary/20 bg-primary/5'}`}>
                               <div className="flex items-center justify-between">
                                 <div>
-                                  <p className="text-sm font-semibold">Run sort</p>
+                                  <p className="text-sm font-semibold">{isLocked ? '🔒 Sort locked' : 'Run sort'}</p>
                                   <p className="text-xs text-muted-foreground">
-                                    {s.sort_run_at ? `Last run ${formatDateTime(s.sort_run_at)} · ${s.sort_method}` : 'Not run yet'}
-                                    {expected > 0 && <> · {expected} item{expected !== 1 ? 's' : ''} expected from current inclusions</>}
+                                    {isLocked
+                                      ? `Locked ${formatDateTime(s.locked_at)} — packs, items, quantities, and inclusions can't be edited, and the sort can't be re-run until you unlock it.`
+                                      : <>
+                                          {s.sort_run_at ? `Last run ${formatDateTime(s.sort_run_at)} · ${s.sort_method}` : 'Not run yet'}
+                                          {expected > 0 && <> · {expected} item{expected !== 1 ? 's' : ''} expected from current inclusions</>}
+                                        </>}
                                   </p>
                                 </div>
-                                <Button size="sm" onClick={() => setSortModal(s.id)}><Check size={12} /> Run sort</Button>
+                                {isLocked ? (
+                                  <Button size="sm" variant="outline" onClick={() => unlockSort(s.id)} disabled={lockingSession === s.id}>🔓 Unlock</Button>
+                                ) : (
+                                  <div className="flex items-center gap-1.5">
+                                    <Button size="sm" variant="outline" onClick={() => setSortModal(s.id)}><Check size={12} /> Run sort</Button>
+                                    {s.sort_run_at && (
+                                      <Button size="sm" onClick={() => lockSort(s.id)} disabled={lockingSession === s.id} title="Locks packs, items, quantities, and inclusions so nothing can shift under this result">
+                                        {lockingSession === s.id ? 'Saving…' : <>💾 Save sort</>}
+                                      </Button>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                               {lastSort && (
                                 <p className="text-xs mt-2 text-muted-foreground">
                                   Assigned {lastSort.assigned} · Unfulfilled {lastSort.unfulfilled}
                                   {typeof lastSort.totalDemand === 'number' && <> (of {lastSort.totalDemand} expected at sort time)</>}
-                                  {staleVsCurrent && (
+                                  {staleVsCurrent && !isLocked && (
                                     <span className="block text-amber-600 dark:text-amber-400 font-medium mt-1">
                                       ⚠ Inclusions or items changed since this sort ran — {expected} expected now vs {lastSort.totalDemand} then. Re-run to match.
                                     </span>
@@ -888,9 +944,12 @@ export default function GomPcSorterPage() {
         const d = sessionDetails[inclusionsModal]
         const packs: any[] = d?.packs || []
         const joiners = inclusionJoiners(d)
+        const modalLocked = !!sessions.find((s: any) => s.id === inclusionsModal)?.locked_at
         return (
-          <Modal open={true} onClose={() => { setInclusionsModal(null); setInclusionSourcesOpenFor(null) }} title="Manage Inclusions" subtitle="How many full packs (inclusions) each joiner is due, per pack" size="lg">
+          <Modal open={true} onClose={() => { setInclusionsModal(null); setInclusionSourcesOpenFor(null) }} title={modalLocked ? 'Inclusions (locked)' : 'Manage Inclusions'} subtitle={modalLocked ? "This session's sort is locked — unlock it (Results tab) to edit inclusions." : "How many full packs (inclusions) each joiner is due, per pack"} size="lg">
             <div className="space-y-4">
+              {!modalLocked && (
+              <>
               <div className="flex items-center justify-between p-3 bg-primary/5 border border-primary/15 rounded-xl">
                 <div>
                   <p className="text-sm font-semibold">Auto-fill / refresh from orders</p>
@@ -905,6 +964,8 @@ export default function GomPcSorterPage() {
                 </div>
                 <Button size="sm" variant="destructive" onClick={() => resetInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>Reset</Button>
               </div>
+              </>
+              )}
               {joiners.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-8">No joiners found yet. Auto-fill from orders, or wait for priority forms to come in.</p>
               ) : (
@@ -939,7 +1000,8 @@ export default function GomPcSorterPage() {
                                 <td key={p.id} className="px-3 py-2 align-top">
                                   <input type="number" min="0" value={inclusionDrafts[j.joiner_id]?.[p.id] || ''}
                                     onChange={e => setInclusionDrafts(prev => ({ ...prev, [j.joiner_id]: { ...(prev[j.joiner_id] || {}), [p.id]: e.target.value } }))}
-                                    className="w-16 px-2 py-1.5 rounded-lg border border-input bg-background text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/25" placeholder="0" />
+                                    disabled={modalLocked}
+                                    className="w-16 px-2 py-1.5 rounded-lg border border-input bg-background text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/25 disabled:opacity-50" placeholder="0" />
                                 </td>
                               ))}
                             </tr>
@@ -972,8 +1034,8 @@ export default function GomPcSorterPage() {
                 </div>
               )}
               <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => { setInclusionsModal(null); setInclusionSourcesOpenFor(null) }}>Cancel</Button>
-                <Button onClick={() => saveInclusions(inclusionsModal, packs)} disabled={saving}>{saving ? 'Saving…' : 'Save inclusions'}</Button>
+                <Button variant="outline" onClick={() => { setInclusionsModal(null); setInclusionSourcesOpenFor(null) }}>{modalLocked ? 'Close' : 'Cancel'}</Button>
+                {!modalLocked && <Button onClick={() => saveInclusions(inclusionsModal, packs)} disabled={saving}>{saving ? 'Saving…' : 'Save inclusions'}</Button>}
               </div>
             </div>
           </Modal>

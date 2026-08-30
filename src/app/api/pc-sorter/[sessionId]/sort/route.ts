@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
+import { queryOne } from '@/lib/db'
 import { runPcSort } from '@/lib/pcSorter'
 
 export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {
@@ -12,6 +13,11 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
   const { method } = await req.json()
   if (method !== 'timestamp' && method !== 'fair') {
     return NextResponse.json({ error: 'method must be "timestamp" or "fair"' }, { status: 400 })
+  }
+
+  const sessionRow = await queryOne<any>(`SELECT locked_at FROM pc_sorting_sessions WHERE id=$1`, [params.sessionId])
+  if (sessionRow?.locked_at) {
+    return NextResponse.json({ error: 'This session is locked — unlock it first to re-run the sort.' }, { status: 403 })
   }
 
   try {

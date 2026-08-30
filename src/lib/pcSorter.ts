@@ -33,6 +33,10 @@ export async function ensurePcSorterSchema() {
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_versions JSONB DEFAULT NULL`,
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS sort_method TEXT`,
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS sort_run_at TIMESTAMPTZ`,
+    // Once a GOM is happy with a sort's results, they can lock the session: packs/items,
+    // quantities, inclusions, and the sort itself all become read-only until unlocked again.
+    // NULL = unlocked (the normal, editable state).
+    `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`,
 
     // Packs (was "versions") — one or more per session
     `CREATE TABLE IF NOT EXISTS pc_packs (

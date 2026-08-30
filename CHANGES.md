@@ -201,3 +201,14 @@ app self-migrates its schema at runtime — no manual SQL required.
   resets before a fresh run). The quantity box itself is unchanged: it's still the editable original total,
   still what "Save quantities" writes and what a re-run starts fresh from — the badge is a read-only add-on next
   to it, so nothing about editing or resaving stock changes.
+- **Added a "Save sort" button to lock a session's results once they're final.** Once a sort has run, the
+  Results tab now shows a "💾 Save sort" button next to "Run sort". Clicking it locks the session: packs, items,
+  quantities, and inclusions all become read-only (their add/delete/edit controls and Manage Inclusions'
+  Auto-fill/Reset/number boxes disappear or gray out — the inclusions modal switches to a view-only "View
+  inclusions" mode so the sources dropdown still works), "Run sort" is replaced with a locked notice, and the
+  form is force-closed so a joiner can't slip in a late submission that never gets sorted. Every one of those
+  actions is also blocked server-side, not just hidden in the UI. A locked session shows a "🔒 Sort locked" badge
+  where "Form open/closed" normally shows. It's reversible — an "🔓 Unlock" button (with a confirmation, since
+  it reopens editing on something that may already look final) puts the session back to normal. Locking requires
+  a sort to have actually run at least once; it doesn't touch or re-run the sort itself, and doesn't affect
+  anything for sessions you never lock.

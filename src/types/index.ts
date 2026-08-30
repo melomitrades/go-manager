@@ -244,6 +244,9 @@ export interface PCSortingSession {
   deadline: string | null
   sort_method: SortMethod | null
   sort_run_at: string | null
+  // Set once the GOM locks the sort as final — packs, items, quantities, inclusions, and the
+  // sort itself all become read-only until this is cleared again. NULL = unlocked (editable).
+  locked_at: string | null
   created_by: string | null
   created_at: string
   updated_at: string
