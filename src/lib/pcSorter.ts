@@ -150,6 +150,8 @@ export async function autoFillInclusions(sessionId: string) {
     const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
     const items = await query<any>(`
       SELECT COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
+             oi.description, oi.version_name, oi.price_eur,
+             (COALESCE(oi.inclusions_count, 0) > 0) AS is_explicit,
              CASE
                WHEN COALESCE(oi.inclusions_count, 0) > 0 THEN oi.inclusions_count
                WHEN oi.description ILIKE '%album%' THEN COALESCE(oi.amount_claimed, 1)
@@ -162,8 +164,26 @@ export async function autoFillInclusions(sessionId: string) {
         AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
         AND ($2::text[] IS NULL OR oi.version_name = ANY($2::text[]))
     `, [oid, versions]).catch(() => [] as any[])
+    // The Orders form lets a GOM claim one item for several members at once (e.g. "want a
+    // photocard of any of these 4 members") — that becomes one order_items ROW PER MEMBER, and
+    // an explicit "Inclusions" number typed for that claim is saved onto EVERY one of those
+    // rows (by design — the edit form reads it back from just the first row of the group, never
+    // a sum; see the comment in gom/orders/page.tsx's handleSave). So a row with an EXPLICIT
+    // inclusions_count must only be counted ONCE per (joiner, description, price, version)
+    // group here too, or a claim split across N members inflates its total by ×N (this is what
+    // "4 pobs + 4 inclusions showing as 16" was: 4 member rows × 4 each). Rows that fall back to
+    // the "album" amount_claimed path are NOT deduped — those never had a number typed in, and
+    // are always meant to add up one-per-row (one member pill = one inclusion).
+    const seenExplicit = new Set<string>()
     for (const it of items) {
-      joinerTotals[it.joiner_id] = (joinerTotals[it.joiner_id] || 0) + (parseInt(it.effective_inclusions) || 0)
+      const amt = parseInt(it.effective_inclusions) || 0
+      if (amt === 0) continue
+      if (it.is_explicit) {
+        const groupKey = `${it.joiner_id}|${it.description || ''}|${it.price_eur ?? ''}|${it.version_name || ''}`
+        if (seenExplicit.has(groupKey)) continue
+        seenExplicit.add(groupKey)
+      }
+      joinerTotals[it.joiner_id] = (joinerTotals[it.joiner_id] || 0) + amt
     }
   }
 

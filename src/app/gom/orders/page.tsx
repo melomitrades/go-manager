@@ -423,6 +423,14 @@ export default function GomOrdersPage() {
         const entriesPerItem = opt?.entries && opt.entries !== '' ? parseInt(opt.entries) : 0
         const versionName = form.is_multi_version ? (versionByOptId[item.pricing_option_id] || null) : null
         const base = { joiner_id: rowJoinerId as string|null, pricing_type:'custom' as const, description:itemDescription, price_eur:opt?.price_eur?parseFloat(opt.price_eur):null, price_krw:priceKrw, entries_count:0, item_type:opt?.weight_category||'photocard', weight_g:opt?.weight_g?parseFloat(opt.weight_g):null, inclusions_count:item.inclusions_count||0, version_name:versionName }
+        // NOTE: "Inclusions" is entered ONCE per item line — it's the total this whole claim
+        // represents, not a per-member value. When the line explodes into one order_items ROW
+        // PER MEMBER PILL below, every resulting row intentionally carries the SAME
+        // inclusions_count value (not divided/split) — this mirrors how the edit-modal loader
+        // above (line ~274) reconstructs a line from saved rows: it reads inclusions_count from
+        // only the first row of the group, not a sum. Any code that reads inclusions_count back
+        // out across a group of rows (auto-fill, Order Detail, Boxes) MUST take it once per
+        // group, never sum it — summing multiplies the entered total by the member-pill count.
         if (item.member_ids.length>0) return item.member_ids.map(mid => ({...base, member_id:mid, amount_claimed:1, entries_count:entriesPerItem}))
         return [{ ...base, member_id:null as string|null, amount_claimed:item.qty, entries_count:entriesPerItem*item.qty }]
       })

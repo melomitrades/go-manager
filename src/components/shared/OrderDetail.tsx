@@ -22,7 +22,11 @@ function groupItems(items: any[]): { label: string; qty: number; price_eur: numb
       groups[key] = { label, qty: 0, price_eur: price, price_krw: priceKrw, members: [], inclusions_count: 0, entries_count: 0 }
     }
     groups[key].qty += item.amount_claimed || 1
-    groups[key].inclusions_count += item.inclusions_count || 0
+    // inclusions_count is a per-claim-LINE total, not per-row — when one claim is split across
+    // several members it's saved onto every resulting row identically (by design; see
+    // gom/orders/page.tsx's handleSave), so it must be read once per group, never summed, or a
+    // claim split across N members would display as N times its real total.
+    if (groups[key].inclusions_count === 0) groups[key].inclusions_count = item.inclusions_count || 0
     groups[key].entries_count += item.entries_count || 0
     if (item.member?.name) {
       const existing = groups[key].members.find((m: string) => m === item.member.name || m.startsWith(item.member.name + ' ×'))

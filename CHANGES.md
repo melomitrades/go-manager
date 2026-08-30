@@ -154,3 +154,18 @@ app self-migrates its schema at runtime — no manual SQL required.
   `order_versions` column on the session (`{order_id: [versions still included]}`); an order with no entry there
   behaves exactly as before (every version counts). Manually-entered inclusion numbers, priority forms, and the
   sort algorithm itself are unaffected — this only changes what auto-fill computes.
+- **Fixed: auto-filled inclusions were inflated when a claim was split across multiple members (e.g. "4 pobs + 4
+  inclusions" auto-populated as 16, not 4).** Root cause: when a GOM types an "Inclusions" number once for a
+  claim line but selects several member pills for it (e.g. 4 members = "I want a photocard of any of these 4"),
+  that one line is saved as 4 separate `order_items` rows — one per member — and by design every one of those
+  rows carries the SAME inclusions number (the Orders edit form already reads it back from just the first row of
+  the group, never a sum, so this duplication is intentional at the storage layer). Two places that later READ
+  those rows got this wrong by summing across the group instead of reading it once: "Auto-fill inclusions" in PC
+  Sorter (`autoFillInclusions`) and the consolidated line totals on the Order Detail page — both were adding the
+  same number once per member row, so a claim split across N members inflated its total by ×N (4 members × 4
+  inclusions = 16). Both now dedupe the same way the Boxes page already correctly did: an explicit inclusions
+  number is only counted once per (joiner, item, price, version) group, no matter how many member rows it was
+  saved across. This does NOT affect claims with no explicit inclusions number set (those "album"-fallback rows
+  are genuinely one-inclusion-per-member-row and still add up normally), and doesn't touch how inclusions get
+  entered or stored — only how already-saved rows are read back and summed. Existing sessions just need
+  "Auto-fill inclusions" run again to pick up the corrected numbers — no need to touch the order itself.
