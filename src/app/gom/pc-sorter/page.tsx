@@ -513,7 +513,10 @@ export default function GomPcSorterPage() {
                         {activeTab === 'packs' && (
                         <div>
                           <div className="flex items-center justify-between mb-2">
-                            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Packs & items</p>
+                            <div>
+                              <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Packs & items</p>
+                              {s.sort_run_at && <p className="text-[11px] text-muted-foreground mt-0.5">"N left" badges show what's still unassigned since the last sort ({formatDateTime(s.sort_run_at)}).</p>}
+                            </div>
                             <div className="flex items-center gap-1.5">
                               <Input placeholder="New pack name (e.g. Ver. A)" value={newPackName[s.id] || ''} onChange={e => setNewPackName(p => ({ ...p, [s.id]: e.target.value }))} className="w-48 text-xs py-1.5" />
                               <Button size="sm" variant="outline" onClick={() => addPack(s.id)}><Plus size={12} /> Add pack</Button>
@@ -550,14 +553,32 @@ export default function GomPcSorterPage() {
                                             <p className="text-xs text-muted-foreground">Select a group for this session to set quantities.</p>
                                           ) : (
                                             <div className="space-y-1">
-                                              {groupMembers.map((m: any) => (
-                                                <div key={m.id} className="flex items-center gap-2">
-                                                  <span className="text-xs flex-1">{m.name}</span>
-                                                  <Input type="number" min="0" placeholder="0" value={qtyDrafts[item.id]?.[m.id] ?? ''}
-                                                    onChange={e => setQtyDrafts(p => ({ ...p, [item.id]: { ...(p[item.id] || {}), [m.id]: e.target.value } }))}
-                                                    className="w-20 text-xs py-1" />
-                                                </div>
-                                              ))}
+                                              {groupMembers.map((m: any) => {
+                                                const q = (d.quantities || []).find((x: any) => x.item_id === item.id && x.member_id === m.id)
+                                                const remaining = q ? (parseInt(q.available) || 0) : null
+                                                const total = parseInt(qtyDrafts[item.id]?.[m.id] || '0') || 0
+                                                const showRemaining = !!s.sort_run_at && remaining !== null
+                                                return (
+                                                  <div key={m.id} className="flex items-center gap-2">
+                                                    <span className="text-xs flex-1">{m.name}</span>
+                                                    {showRemaining && (
+                                                      <span
+                                                        title="Left unassigned after the last sort — the box on the right is still the original total pulled (used to redo the sort or add more)"
+                                                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${
+                                                          remaining === 0 ? 'bg-secondary text-muted-foreground border-border'
+                                                          : remaining < total ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                                          : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                                        }`}
+                                                      >
+                                                        {remaining} left
+                                                      </span>
+                                                    )}
+                                                    <Input type="number" min="0" placeholder="0" value={qtyDrafts[item.id]?.[m.id] ?? ''}
+                                                      onChange={e => setQtyDrafts(p => ({ ...p, [item.id]: { ...(p[item.id] || {}), [m.id]: e.target.value } }))}
+                                                      className="w-20 text-xs py-1" />
+                                                  </div>
+                                                )
+                                              })}
                                               <div className="flex justify-end pt-1">
                                                 <Button size="sm" variant="outline" onClick={() => saveQuantities(s.id, item.id, groupMembers)}>Save quantities</Button>
                                               </div>

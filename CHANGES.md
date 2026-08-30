@@ -193,3 +193,11 @@ app self-migrates its schema at runtime — no manual SQL required.
   → Save, no changes needed) to get this fix applied to their claims**; new orders and any order you resave get
   it automatically. This is a read/aggregation fix only — it doesn't change how inclusions are entered, and
   doesn't touch stored EMS/customs amounts that have already been locked in for a box.
+- **Packs & Items now shows how many of each member's photocards are still unassigned after a sort.** Previously
+  the quantity boxes always showed the original total pulled, with no way to see what's actually left once
+  sorting has consumed some of it. Once a session has been sorted, a small "N left" badge appears next to each
+  member — green if untouched, amber if partially assigned, gray if fully assigned out — reflecting
+  `pc_item_quantities.available` (the same running stock the sort algorithm itself decrements from and always
+  resets before a fresh run). The quantity box itself is unchanged: it's still the editable original total,
+  still what "Save quantities" writes and what a re-run starts fresh from — the badge is a read-only add-on next
+  to it, so nothing about editing or resaving stock changes.
