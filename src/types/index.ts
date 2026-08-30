@@ -234,6 +234,11 @@ export interface PCSortingSession {
   group_id: string | null
   box_id: string | null
   order_ids: string[] | null
+  // Per-order album-version narrowing. Only orders that are multi-version AND where the GOM
+  // deliberately excluded at least one version get an entry here — { order_id: [version names
+  // still included] }. An order with no entry (or a non-multi-version order) means "every
+  // version of this order counts", same as before this field existed.
+  order_versions: Record<string, string[]> | null
   title: string
   form_open: boolean
   deadline: string | null

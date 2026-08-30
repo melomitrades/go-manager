@@ -44,15 +44,16 @@ export async function POST(req: NextRequest) {
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   await ensurePcSorterSchema()
 
-  const { title, group_id, box_id, deadline, order_ids } = await req.json()
+  const { title, group_id, box_id, deadline, order_ids, order_versions } = await req.json()
   if (!title) return NextResponse.json({ error: 'Title is required' }, { status: 400 })
 
   // Sessions always start closed — the GOM opens the form explicitly once packs/items/
   // quantities/inclusions are set up.
   const pcSession = await queryOne(
-    `INSERT INTO pc_sorting_sessions (title, group_id, created_by, deadline, box_id, order_ids, form_open)
-     VALUES ($1,$2,$3,$4,$5,$6,false) RETURNING *`,
-    [title, group_id || null, user.id, deadline || null, box_id || null, order_ids ? JSON.stringify(order_ids) : null]
+    `INSERT INTO pc_sorting_sessions (title, group_id, created_by, deadline, box_id, order_ids, order_versions, form_open)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,false) RETURNING *`,
+    [title, group_id || null, user.id, deadline || null, box_id || null, order_ids ? JSON.stringify(order_ids) : null,
+     order_versions ? JSON.stringify(order_versions) : null]
   )
   return NextResponse.json(pcSession, { status: 201 })
 }
@@ -64,15 +65,15 @@ export async function PATCH(req: NextRequest) {
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   await ensurePcSorterSchema()
 
-  const { id, title, form_open, group_id, deadline, box_id, order_ids } = await req.json()
+  const { id, title, form_open, group_id, deadline, box_id, order_ids, order_versions } = await req.json()
   const s = await queryOne(
     `UPDATE pc_sorting_sessions SET
        title=COALESCE($1,title), form_open=COALESCE($2,form_open),
        group_id=COALESCE($3,group_id), deadline=$4, box_id=COALESCE($5,box_id),
-       order_ids=COALESCE($6,order_ids), updated_at=now()
-     WHERE id=$7 RETURNING *`,
+       order_ids=COALESCE($6,order_ids), order_versions=COALESCE($7,order_versions), updated_at=now()
+     WHERE id=$8 RETURNING *`,
     [title || null, form_open ?? null, group_id || null, deadline || null, box_id || null,
-     order_ids ? JSON.stringify(order_ids) : null, id]
+     order_ids ? JSON.stringify(order_ids) : null, order_versions ? JSON.stringify(order_versions) : null, id]
   )
   return NextResponse.json(s)
 }

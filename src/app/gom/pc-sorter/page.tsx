@@ -8,6 +8,77 @@ function orderLabel(o: any) {
   return [o.group?.name, o.round_number ? `R${o.round_number}` : null, o.shop?.name].filter(Boolean).join(' · ') || o.id?.slice(0, 8)
 }
 
+// All version names on a multi-version order, e.g. ["Ver. A", "Ver. B"]. Empty for a normal order.
+function versionsForOrder(o: any): string[] {
+  if (!o?.is_multi_version) return []
+  try {
+    const vn = o.version_names
+    const arr = Array.isArray(vn) ? vn : (vn ? JSON.parse(vn) : [])
+    return (arr || []).filter(Boolean)
+  } catch { return [] }
+}
+
+// Checkboxes for which orders (and, for multi-version orders, which specific versions of
+// each) feed inclusion counts into a session. An order with no version override selected
+// still counts every version — the override map only ever holds deliberate narrowing.
+function OrderPicker({ orders, orderIds, setOrderIds, orderVersions, setOrderVersions }: {
+  orders: any[]
+  orderIds: string[]
+  setOrderIds: (fn: any) => void
+  orderVersions: Record<string, string[]>
+  setOrderVersions: (fn: any) => void
+}) {
+  function toggleOrder(o: any) {
+    setOrderIds((prev: string[]) => prev.includes(o.id) ? prev.filter(x => x !== o.id) : [...prev, o.id])
+  }
+  function toggleVersion(o: any, vn: string) {
+    const all = versionsForOrder(o)
+    setOrderVersions((prev: Record<string, string[]>) => {
+      const current = prev[o.id] ?? all
+      const next = current.includes(vn) ? current.filter(v => v !== vn) : [...current, vn]
+      const copy = { ...prev }
+      if (next.length === all.length) delete copy[o.id] // back to "every version" — no override needed
+      else copy[o.id] = next
+      return copy
+    })
+  }
+  return (
+    <div className="border border-border rounded-xl overflow-hidden max-h-64 overflow-y-auto divide-y divide-border/50">
+      {orders.map((o: any) => {
+        const allVersions = versionsForOrder(o)
+        const included = orderIds.includes(o.id)
+        const checkedVersions = orderVersions[o.id] ?? allVersions
+        return (
+          <div key={o.id} className={allVersions.length > 0 ? 'bg-secondary/10' : ''}>
+            <label className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
+              <input type="checkbox" checked={included} onChange={() => toggleOrder(o)} className="accent-primary w-3.5 h-3.5" />
+              <span className="text-sm flex-1">{orderLabel(o)}</span>
+              {allVersions.length > 0 && (
+                <span className="text-[10px] font-semibold text-muted-foreground">
+                  {checkedVersions.length}/{allVersions.length} versions
+                </span>
+              )}
+            </label>
+            {included && allVersions.length > 0 && (
+              <div className="pl-9 pb-2 pr-4 space-y-1">
+                {allVersions.map(vn => (
+                  <label key={vn} className="flex items-center gap-2.5 py-1 cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                    <input type="checkbox" checked={checkedVersions.includes(vn)} onChange={() => toggleVersion(o, vn)} className="accent-primary w-3 h-3" />
+                    {vn}
+                  </label>
+                ))}
+                {checkedVersions.length === 0 && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400">No version selected — this order won't contribute any inclusions.</p>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function GomPcSorterPage() {
   const [sessions, setSessions] = useState<any[]>([])
   const [groups, setGroups] = useState<any[]>([])
@@ -19,10 +90,12 @@ export default function GomPcSorterPage() {
   const [createModal, setCreateModal] = useState(false)
   const [form, setForm] = useState({ title: '', group_id: '', box_id: '', deadline: '' })
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([])
+  const [selectedOrderVersions, setSelectedOrderVersions] = useState<Record<string, string[]>>({})
 
   const [editingSession, setEditingSession] = useState<any>(null)
   const [editForm, setEditForm] = useState({ title: '', group_id: '', deadline: '', box_id: '' })
   const [editOrderIds, setEditOrderIds] = useState<string[]>([])
+  const [editOrderVersions, setEditOrderVersions] = useState<Record<string, string[]>>({})
 
   const [expandedSession, setExpandedSession] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<Record<string, 'packs' | 'forms' | 'results'>>({})
@@ -83,8 +156,9 @@ export default function GomPcSorterPage() {
     await loadDetails(sessionId)
   }
 
-  function onBoxChange(boxId: string, setIds: (ids: string[]) => void, setF: (fn: any) => void) {
+  function onBoxChange(boxId: string, setIds: (ids: string[]) => void, setF: (fn: any) => void, setVersions: (v: any) => void) {
     setF((f: any) => ({ ...f, box_id: boxId }))
+    setVersions({}) // switching boxes invalidates any per-order version narrowing from before
     if (!boxId) { setIds([]); return }
     const box = boxes.find((b: any) => b.id === boxId)
     const linkedIds: string[] = (box?.linked_orders || []).map((o: any) => o.order_id || o.id).filter(Boolean)
@@ -106,11 +180,13 @@ export default function GomPcSorterPage() {
         box_id: form.box_id || null,
         deadline: form.deadline || null,
         order_ids: selectedOrderIds.length > 0 ? selectedOrderIds : null,
+        order_versions: selectedOrderVersions,
       }),
     })
     setCreateModal(false)
     setForm({ title: '', group_id: '', box_id: '', deadline: '' })
     setSelectedOrderIds([])
+    setSelectedOrderVersions({})
     await fetchData()
     setSaving(false)
   }
@@ -128,6 +204,7 @@ export default function GomPcSorterPage() {
         deadline: editForm.deadline || null,
         box_id: editForm.box_id || null,
         order_ids: editOrderIds.length > 0 ? editOrderIds : null,
+        order_versions: editOrderVersions,
       }),
     })
     setEditingSession(null)
@@ -349,6 +426,8 @@ export default function GomPcSorterPage() {
                         setEditForm({ title: s.title, group_id: s.group_id || '', deadline: s.deadline?.slice(0, 16) || '', box_id: s.box_id || '' })
                         const savedIds = (() => { try { const o = s.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] } })()
                         setEditOrderIds(savedIds.length > 0 ? savedIds : boxLinkedOrderIds(s.box_id))
+                        const savedVersions = (() => { try { const v = s.order_versions; if (!v) return {}; return typeof v === 'string' ? JSON.parse(v) : v } catch { return {} } })()
+                        setEditOrderVersions(savedVersions)
                         setEditingSession(s)
                       }}>Edit</Button>
                       <Button variant="ghost" size="icon" onClick={() => handleDelete(s.id)}><Trash2 size={13} className="text-destructive/50" /></Button>
@@ -655,7 +734,7 @@ export default function GomPcSorterPage() {
       </div>
 
       {/* Create Session Modal */}
-      <Modal open={createModal} onClose={() => { setCreateModal(false); setForm({ title: '', group_id: '', box_id: '', deadline: '' }); setSelectedOrderIds([]) }} title="New Sorting Session" size="lg">
+      <Modal open={createModal} onClose={() => { setCreateModal(false); setForm({ title: '', group_id: '', box_id: '', deadline: '' }); setSelectedOrderIds([]); setSelectedOrderVersions({}) }} title="New Sorting Session" size="lg">
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             <FormField label="Session Title" required>
@@ -667,7 +746,7 @@ export default function GomPcSorterPage() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             <FormField label="EMS/customs box" required>
-              <Select options={boxes.map((b: any) => ({ value: b.id, label: b.label || 'Box' }))} placeholder="Select box…" value={form.box_id} onChange={e => onBoxChange(e.target.value, setSelectedOrderIds, setForm)} />
+              <Select options={boxes.map((b: any) => ({ value: b.id, label: b.label || 'Box' }))} placeholder="Select box…" value={form.box_id} onChange={e => onBoxChange(e.target.value, setSelectedOrderIds, setForm, setSelectedOrderVersions)} />
             </FormField>
             <FormField label="Group">
               <Select options={groups.map((g: any) => ({ value: g.id, label: g.name }))} placeholder="Select group…" value={form.group_id} onChange={e => setForm(f => ({ ...f, group_id: e.target.value }))} />
@@ -675,23 +754,18 @@ export default function GomPcSorterPage() {
           </div>
           {form.box_id && (
             <FormField label="Orders included in this session">
-              <p className="text-xs text-muted-foreground mb-2">Inclusion counts will be pulled from these orders. All orders from the box are pre-selected.</p>
-              <div className="border border-border rounded-xl overflow-hidden max-h-48 overflow-y-auto divide-y divide-border/50">
-                {orders.filter((o: any) => boxLinkedOrderIds(form.box_id).includes(o.id)).map((o: any) => (
-                  <label key={o.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
-                    <input type="checkbox" checked={selectedOrderIds.includes(o.id)}
-                      onChange={() => setSelectedOrderIds(prev => prev.includes(o.id) ? prev.filter(x => x !== o.id) : [...prev, o.id])}
-                      className="accent-primary w-3.5 h-3.5" />
-                    <span className="text-sm">{orderLabel(o)}</span>
-                  </label>
-                ))}
-              </div>
+              <p className="text-xs text-muted-foreground mb-2">Inclusion counts will be pulled from these orders. All orders from the box are pre-selected. For a multi-version order, uncheck the versions you don't want feeding this session.</p>
+              <OrderPicker
+                orders={orders.filter((o: any) => boxLinkedOrderIds(form.box_id).includes(o.id))}
+                orderIds={selectedOrderIds} setOrderIds={setSelectedOrderIds}
+                orderVersions={selectedOrderVersions} setOrderVersions={setSelectedOrderVersions}
+              />
               {selectedOrderIds.length > 0 && <p className="text-xs text-primary font-semibold mt-1">{selectedOrderIds.length} order{selectedOrderIds.length !== 1 ? 's' : ''} selected</p>}
             </FormField>
           )}
           <p className="text-xs text-muted-foreground">After creating the session, add packs (e.g. "Ver. A") and their items, set quantities, then use "Manage inclusions" to auto-fill from these orders.</p>
           <div className="flex justify-end gap-3 pt-2">
-            <Button variant="outline" onClick={() => { setCreateModal(false); setSelectedOrderIds([]) }}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setCreateModal(false); setSelectedOrderIds([]); setSelectedOrderVersions({}) }}>Cancel</Button>
             <Button onClick={handleCreate} disabled={saving || !form.title || !form.box_id}>{saving ? 'Creating…' : 'Create Session'}</Button>
           </div>
         </div>
@@ -714,7 +788,7 @@ export default function GomPcSorterPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                 <FormField label="Box">
                   <Select options={boxes.map((b: any) => ({ value: b.id, label: b.label || 'Box' }))} placeholder="No box…" value={editForm.box_id}
-                    onChange={e => onBoxChange(e.target.value, setEditOrderIds, setEditForm)} />
+                    onChange={e => onBoxChange(e.target.value, setEditOrderIds, setEditForm, setEditOrderVersions)} />
                 </FormField>
                 <FormField label="Group">
                   <Select options={groups.map((g: any) => ({ value: g.id, label: g.name }))} placeholder="Select…" value={editForm.group_id} onChange={e => setEditForm(f => ({ ...f, group_id: e.target.value }))} />
@@ -722,16 +796,12 @@ export default function GomPcSorterPage() {
               </div>
               {editForm.box_id && (
                 <FormField label="Orders included in this session">
-                  <div className="border border-border rounded-xl overflow-hidden max-h-48 overflow-y-auto divide-y divide-border/50">
-                    {editBoxOrders.map((o: any) => (
-                      <label key={o.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
-                        <input type="checkbox" checked={editOrderIds.includes(o.id)}
-                          onChange={() => setEditOrderIds(prev => prev.includes(o.id) ? prev.filter(x => x !== o.id) : [...prev, o.id])}
-                          className="accent-primary w-3.5 h-3.5" />
-                        <span className="text-sm">{orderLabel(o)}</span>
-                      </label>
-                    ))}
-                  </div>
+                  <p className="text-xs text-muted-foreground mb-2">For a multi-version order, uncheck the versions you don't want feeding this session.</p>
+                  <OrderPicker
+                    orders={editBoxOrders}
+                    orderIds={editOrderIds} setOrderIds={setEditOrderIds}
+                    orderVersions={editOrderVersions} setOrderVersions={setEditOrderVersions}
+                  />
                 </FormField>
               )}
               <div className="flex justify-end gap-3 pt-2">

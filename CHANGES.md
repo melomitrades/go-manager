@@ -143,3 +143,14 @@ app self-migrates its schema at runtime — no manual SQL required.
   instead of their own — both now send `?viewAs=joiner` too, for the same reason. `joiner/layout.tsx` still lets
   gom/admin accounts through without a redirect (that part of the earlier fix was correct and stays); the
   comment there now describes this convention instead of the removed picker.
+- **Multi-version orders can now be narrowed to specific album versions when linking them to a sorting
+  session.** Previously, the "Orders included in this session" list (in New/Edit Session) only let you check or
+  uncheck a whole order — if that order was multi-version (e.g. 3 different album versions bought together),
+  every version's claims counted toward inclusions with no way to leave one out. Checking a multi-version order
+  now reveals its versions underneath as their own checkboxes (all checked by default, so nothing changes for
+  sessions that don't need this); unchecking a version excludes just that version's claims from this session's
+  auto-filled inclusion counts while the rest of the order still counts normally. This only affects "Auto-fill
+  inclusions" — it filters which `order_items` rows are summed per joiner by their `version_name`, using a new
+  `order_versions` column on the session (`{order_id: [versions still included]}`); an order with no entry there
+  behaves exactly as before (every version counts). Manually-entered inclusion numbers, priority forms, and the
+  sort algorithm itself are unaffected — this only changes what auto-fill computes.

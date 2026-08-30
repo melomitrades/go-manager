@@ -28,6 +28,9 @@ export async function ensurePcSorterSchema() {
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ`,
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS box_id UUID REFERENCES boxes(id) ON DELETE SET NULL`,
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_ids JSONB DEFAULT NULL`,
+    // Per-order album-version narrowing: { order_id: [version names to include] }. Absent key =
+    // every version of that order counts (unchanged default behavior).
+    `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_versions JSONB DEFAULT NULL`,
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS sort_method TEXT`,
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS sort_run_at TIMESTAMPTZ`,
 
@@ -129,8 +132,22 @@ export async function autoFillInclusions(sessionId: string) {
   // whole box: only the orders the GOM explicitly picked for this session count.
   if (orderIds.length === 0) return { assignments: [] as any[] }
 
+  // Per-order album-version narrowing. A key present (even as []) means the GOM explicitly
+  // chose which versions of THAT order count for this session — only those version_name values
+  // are counted (an empty array means every version was deliberately excluded, so that order
+  // contributes nothing). A key absent means no narrowing was set: every version of that order
+  // counts, same as before this feature existed.
+  const orderVersions: Record<string, string[]> = (() => {
+    try {
+      const ov = sessionRow.order_versions
+      if (!ov) return {}
+      return typeof ov === 'string' ? JSON.parse(ov) : ov
+    } catch { return {} }
+  })()
+
   const joinerTotals: Record<string, number> = {}
   for (const oid of orderIds) {
+    const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
     const items = await query<any>(`
       SELECT COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
              CASE
@@ -143,7 +160,8 @@ export async function autoFillInclusions(sessionId: string) {
       WHERE oi.order_id = $1
         AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
         AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
-    `, [oid]).catch(() => [] as any[])
+        AND ($2::text[] IS NULL OR oi.version_name = ANY($2::text[]))
+    `, [oid, versions]).catch(() => [] as any[])
     for (const it of items) {
       joinerTotals[it.joiner_id] = (joinerTotals[it.joiner_id] || 0) + (parseInt(it.effective_inclusions) || 0)
     }
