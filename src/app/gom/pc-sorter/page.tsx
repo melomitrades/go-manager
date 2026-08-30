@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback, Fragment } from 'react'
-import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Check, Clock, Zap, Repeat, Shuffle } from 'lucide-react'
+import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Check, Clock, Zap, Repeat, Shuffle, ShieldCheck } from 'lucide-react'
 import { Button, Card, CardContent, CardHeader, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { formatDate, formatDateTime } from '@/lib/utils'
 
@@ -897,6 +897,7 @@ export default function GomPcSorterPage() {
                           const joinerCount = Object.keys(rowsByJoiner).length
                           const totalRandom = allAssignments.filter((a: any) => a.is_random).length
                           const totalRepeat = allAssignments.filter((a: any) => a.is_repeat).length
+                          const totalGuaranteed = allAssignments.filter((a: any) => a.is_guaranteed).length
                           const expected = expectedAssignedTotal(d)
 
                           return (
@@ -906,6 +907,7 @@ export default function GomPcSorterPage() {
                                   <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Results</p>
                                   <p className="text-xs text-muted-foreground mt-0.5">
                                     {allAssignments.length}{expected > 0 && expected !== allAssignments.length ? ` of ${expected} expected` : ''} item{allAssignments.length !== 1 ? 's' : ''} assigned to {joinerCount} joiner{joinerCount !== 1 ? 's' : ''}
+                                    {totalGuaranteed > 0 && <> · <ShieldCheck size={10} className="inline text-emerald-500" /> {totalGuaranteed} guaranteed</>}
                                     {totalRandom > 0 && <> · <Shuffle size={10} className="inline text-sky-500" /> {totalRandom} random</>}
                                     {totalRepeat > 0 && <> · <Repeat size={10} className="inline text-amber-500" /> {totalRepeat} repeat</>}
                                   </p>
@@ -943,6 +945,7 @@ export default function GomPcSorterPage() {
                                                 <span key={r.id} className="inline-flex items-center gap-1 text-xs pl-2 pr-2 py-1 rounded-full bg-secondary/50 border border-border">
                                                   <span className="text-muted-foreground">{r.item_name}</span>
                                                   <span className="text-foreground font-semibold">{r.member_name}</span>
+                                                  {r.is_guaranteed && <span title="Guaranteed — matched a version this joiner specifically claimed, not ranked or competed for"><ShieldCheck size={10} className="text-emerald-500" /></span>}
                                                   {r.is_repeat && <span title="Repeat — every other option was already owned"><Repeat size={10} className="text-amber-500" /></span>}
                                                   {r.is_random && <span title="Random — no priority form was submitted"><Shuffle size={10} className="text-sky-500" /></span>}
                                                 </span>

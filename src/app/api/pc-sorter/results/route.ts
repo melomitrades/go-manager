@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   const joinerId = user.role === 'joiner' ? user.id : (joinerIdParam || null)
 
   const rows = await query(`
-    SELECT a.id, a.session_id, a.joiner_id, a.round, a.is_repeat, a.is_random, a.sort_method, a.created_at,
+    SELECT a.id, a.session_id, a.joiner_id, a.round, a.is_repeat, a.is_random, a.is_guaranteed, a.sort_method, a.created_at,
            pk.name as pack_name, it.name as item_name, COALESCE(m.name, u.name) as member_name,
            s.title as session_title, p.display_name, p.username
     FROM pc_assignments a

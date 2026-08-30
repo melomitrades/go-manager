@@ -79,7 +79,7 @@ function JoinerItemsPanel({ joinerId, joinerName }: { joinerId: string | null; j
               <div key={r.id} className="flex items-center gap-3 bg-primary/5 border border-primary/10 rounded-xl px-4 py-2.5 text-sm">
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold">{r.member_name}</p>
-                  <p className="text-xs text-muted-foreground">{r.session_title} · {r.pack_name} · {r.item_name}{r.is_repeat ? ' (2nd copy)' : ''}{r.is_random ? ' (random — no form submitted)' : ''}</p>
+                  <p className="text-xs text-muted-foreground">{r.session_title} · {r.pack_name} · {r.item_name}{r.is_guaranteed ? ' (guaranteed — matched their claimed version)' : ''}{r.is_repeat ? ' (2nd copy)' : ''}{r.is_random ? ' (random — no form submitted)' : ''}</p>
                 </div>
               </div>
             ))}

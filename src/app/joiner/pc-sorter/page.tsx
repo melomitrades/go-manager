@@ -166,6 +166,7 @@ export default function JoinerPCSorterPage() {
                                     <p className="text-sm">{r.item_name}</p>
                                     <p className="text-sm font-semibold">
                                       {r.member_name}
+                                      {r.is_guaranteed && <span className="text-emerald-600 ml-1.5 text-xs font-normal">(guaranteed)</span>}
                                       {r.is_repeat && <span className="text-amber-600 ml-1.5 text-xs font-normal">(2nd)</span>}
                                       {r.is_random && <span className="text-sky-600 ml-1.5 text-xs font-normal">(random)</span>}
                                     </p>

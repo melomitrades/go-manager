@@ -64,6 +64,7 @@ function SortResultsList({ results }: { results: any[] }) {
           <p key={r.id} className="text-xs">
             <span className="text-muted-foreground">{r.pack_name} · {r.item_name}:</span>{' '}
             <span className="font-semibold">{r.member_name}</span>
+            {r.is_guaranteed && <span className="text-emerald-600 ml-1">(guaranteed — matched their claimed version)</span>}
             {r.is_repeat && <span className="text-amber-600 ml-1">(2nd)</span>}
             {r.is_random && <span className="text-sky-600 ml-1">(random — no form submitted)</span>}
           </p>

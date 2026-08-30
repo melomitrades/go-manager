@@ -254,3 +254,33 @@ app self-migrates its schema at runtime — no manual SQL required.
   / "MJ Unit 2". They'll be ranked, assigned, and repeat-tracked as fully separate items. Conversely, naming a
   unit combo the exact same thing in a later session is what lets a repeat sale of the SAME product carry over
   ownership tracking the way solo members already do.
+- **New: "guaranteed" unit claims — for a multi-version release (e.g. a 3-way unit album) where the bundled ID
+  card set is physically fixed to whichever version you get, not something to sort at all for the joiners who
+  picked a version on purpose.** The scenario: an album has several "unit versions" (e.g. "MAI + JUNGEUN" /
+  "JEEMIN + KOKO" / a third), each one guaranteed to come with that exact member combo's ID card set. Some
+  joiners claimed a SPECIFIC version in their order — they're entitled to that exact set, no ranking, no
+  competing with anyone. Other joiners claimed the release without picking a version — which set they end up
+  with genuinely needs the normal priority sort, using whatever's left once every guaranteed claim is accounted
+  for. Previously there was no way to express "guaranteed for some, sorted for others" — every item was either
+  fully random/ranked or fully manual.
+  **Setup**: model the release as ONE unit-tagged item (e.g. named "ID Card Set") with one unit combo per
+  version — NOT three separate items. (Three separate items would mean "1 of every item" under this app's
+  existing pack rule — one of EACH version — when really a joiner should get exactly ONE.) Name each unit combo
+  to match EXACTLY (case/whitespace-insensitive, but the words must match) the `version_name` used on the
+  matching multi-version order in Orders — that's the only thing that links a claim to a guarantee.
+  **What happens automatically**: when the sort runs, for each unit-tagged item, any joiner whose order claimed
+  one of its units BY NAME is granted that exact unit directly — before anyone's priorities are even looked at —
+  consumed from that unit's own stock and subtracted from that joiner's remaining pack inclusions for this item
+  only (their other items in the same pack, and any additional non-version-specific inclusions on this same
+  item, are completely unaffected and still go through the normal flow). Whatever's left — stock, and joiners'
+  remaining need — then runs through the regular priority sort exactly as before. Guaranteed assignments show up
+  in Results/joiner views/Sending Out with a green "guaranteed" note (a ShieldCheck icon in the GOM view), same
+  as repeat/random already do, and count as "already owns this" for future sessions the same as any other
+  assignment. If a guaranteed total can't be fully covered (not enough of that version was actually pulled), the
+  shortfall just falls through to "unfulfilled," the same as the sort already handles any other stock shortage —
+  nothing crashes or over-assigns. Uses the exact same per-claim-line counting rules as auto-fill inclusions
+  (explicit `inclusions_count`, or the "album" `amount_claimed` fallback, deduped by `claim_group_id`), so a
+  guaranteed count is never inflated by the same multi-member-claim-row duplication that was fixed earlier in
+  this doc. One thing to keep in mind: matching is by unit NAME only, scoped to the item it's checked against —
+  if two different unit-tagged items in the same session happen to reuse the same unit name, a matching claim
+  would guarantee against both, so keep unit names unique across a session if that's a possibility.

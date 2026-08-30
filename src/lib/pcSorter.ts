@@ -73,6 +73,10 @@ export async function ensurePcSorterSchema() {
     `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS round INTEGER NOT NULL DEFAULT 1`,
     `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_repeat BOOLEAN NOT NULL DEFAULT false`,
     `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_random BOOLEAN NOT NULL DEFAULT false`,
+    // Set when this assignment was handed out because the joiner's order claimed a SPECIFIC
+    // version whose ID card set is physically guaranteed to match (see computeGuaranteedUnitClaims
+    // below) — never ranked/competed for, unlike is_repeat/is_random.
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_guaranteed BOOLEAN NOT NULL DEFAULT false`,
   ])
 
   // Phase 2: depends on pc_packs (and pc_sorting_sessions) from phase 1.
@@ -307,6 +311,112 @@ export async function resetInclusions(sessionId: string) {
   return { ok: true }
 }
 
+// ── Guaranteed unit claims (e.g. a multi-version album whose bundled ID card set is fixed by
+// which version you bought) ─────────────────────────────────────────
+// Some unit-tagged items aren't "rank your favorite of these members" at all — they're several
+// mutually exclusive PHYSICAL VERSIONS of one release (e.g. a 3-way "MAI + JUNGEUN" / "JEEMIN +
+// KOKO" / "..." unit album), each bundled with an ID card set that's guaranteed to match the
+// version, not randomly pulled. A joiner whose order claimed one of those versions BY NAME is
+// entitled to that exact unit — no ranking, no competing with anyone else for it — while a
+// joiner who claimed the release without picking a version still needs the normal priority sort
+// to decide which one they end up with, from whatever's left once every guaranteed claim is
+// subtracted. This only ever fires when an order claim's version_name matches a unit's name
+// EXACTLY (trimmed/case-folded) — an item with no matching claims behaves exactly as before
+// (fully rank-and-sort, nothing guaranteed). Matching only ever narrows within the item it's
+// checked against — two different unit-tagged items that happen to reuse the same unit name
+// would each independently match the same claim, so keep unit names unique across a session's
+// unit-tagged items if that could happen.
+//
+// Returns item_id -> joiner_id -> unit_id -> guaranteed count, computed with the exact same
+// per-claim-line rules as autoFillInclusions (explicit inclusions_count, or the "album"
+// amount_claimed fallback, deduped by claim_group_id) so a guaranteed count is never inflated by
+// the same multi-member-claim-row duplication that fix addressed — just additionally bucketed by
+// matching each line's version_name to a unit, instead of only summed into a flat per-pack total.
+async function computeGuaranteedUnitClaims(
+  sessionRow: any,
+  items: any[],
+  unitRows: any[]
+): Promise<Map<string, Map<string, Map<string, number>>>> {
+  const result = new Map<string, Map<string, Map<string, number>>>()
+  const unitItems = items.filter((i: any) => i.is_unit)
+  if (unitItems.length === 0) return result
+
+  const normalize = (s: string) => (s || '').trim().toLowerCase()
+
+  // item_id -> normalized unit name -> unit id
+  const unitsByItemAndName = new Map<string, Map<string, string>>()
+  for (const u of unitRows) {
+    if (!unitsByItemAndName.has(u.item_id)) unitsByItemAndName.set(u.item_id, new Map())
+    unitsByItemAndName.get(u.item_id)!.set(normalize(u.name), u.id)
+  }
+
+  const orderIds: string[] = (() => {
+    try { const o = sessionRow.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] }
+  })()
+  if (orderIds.length === 0) return result
+
+  const orderVersions: Record<string, string[]> = (() => {
+    try { const ov = sessionRow.order_versions; if (!ov) return {}; return typeof ov === 'string' ? JSON.parse(ov) : ov } catch { return {} }
+  })()
+
+  const allLines = await query<any>(`
+    SELECT oi.order_id, COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
+           oi.description, oi.version_name, oi.price_eur, oi.claim_group_id,
+           (COALESCE(oi.inclusions_count, 0) > 0) AS is_explicit,
+           CASE
+             WHEN COALESCE(oi.inclusions_count, 0) > 0 THEN oi.inclusions_count
+             WHEN oi.description ILIKE '%album%' THEN COALESCE(oi.amount_claimed, 1)
+             ELSE 0
+           END AS effective_inclusions
+    FROM order_items oi
+    LEFT JOIN orders o ON o.id = oi.order_id
+    WHERE oi.order_id = ANY($1::uuid[])
+      AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
+      AND oi.version_name IS NOT NULL
+      AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
+  `, [orderIds]).catch(() => [] as any[])
+
+  const linesByOrder = new Map<string, any[]>()
+  for (const l of allLines) {
+    if (!linesByOrder.has(l.order_id)) linesByOrder.set(l.order_id, [])
+    linesByOrder.get(l.order_id)!.push(l)
+  }
+
+  for (const item of unitItems) {
+    const byName = unitsByItemAndName.get(item.id)
+    if (!byName || byName.size === 0) continue
+    const perJoiner = new Map<string, Map<string, number>>()
+
+    for (const oid of orderIds) {
+      const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
+      const lines = (linesByOrder.get(oid) || []).filter(l => !versions || versions.includes(l.version_name))
+      // Same claim-line dedup as autoFillInclusions, re-created per order (not shared across
+      // orders) for the same reason: it's only meant to disambiguate claims WITHIN one order.
+      const seenExplicit = new Set<string>()
+      for (const line of lines) {
+        const unitId = byName.get(normalize(line.version_name))
+        if (!unitId) continue // this claim's version isn't one of this item's units
+        const amt = parseInt(line.effective_inclusions) || 0
+        if (amt === 0) continue
+        if (line.is_explicit) {
+          const groupKey = line.claim_group_id
+            ? `cg:${line.claim_group_id}`
+            : `${line.joiner_id}|${line.description || ''}|${line.price_eur ?? ''}|${line.version_name || ''}`
+          if (seenExplicit.has(groupKey)) continue
+          seenExplicit.add(groupKey)
+        }
+        if (!perJoiner.has(line.joiner_id)) perJoiner.set(line.joiner_id, new Map())
+        const forJoiner = perJoiner.get(line.joiner_id)!
+        forJoiner.set(unitId, (forJoiner.get(unitId) || 0) + amt)
+      }
+    }
+
+    if (perJoiner.size > 0) result.set(item.id, perJoiner)
+  }
+
+  return result
+}
+
 // ── Unit combos ("Mai + Jungeun") ─────────────────────────────────────
 // A unit item's sortable options are pc_item_units rows, not real members — every
 // stock/ranking/assignment id for that item is a unit id instead of a member id. The sort
@@ -483,12 +593,13 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
   // redoes the assignment step from the CURRENT inclusion counts using the forms already on file;
   // joiners never need to resubmit anything just because the GOM reran the sort.
   //
-  // `items`, the DELETE, the stock reset, `inclusions`, `forms`, `entries`, `unitRows` and
-  // `ownershipRows` are all independent of each other (none reads another's JS result — the reads
-  // are plain SELECTs by sessionId and the ownership read explicitly excludes this session), so
-  // they run concurrently. `quantities` is the one exception: it has to be read AFTER the stock
-  // reset commits so it sees the reset `available` values, so that stays a separate step below.
-  const [items, , , inclusions, forms, entries, unitRows, ownershipRows] = await Promise.all([
+  // `items`, the DELETE, the stock reset, `inclusions`, `forms`, `entries`, `unitRows`,
+  // `ownershipRows` and `sessionRow` are all independent of each other (none reads another's JS
+  // result — the reads are plain SELECTs by sessionId and the ownership read explicitly excludes
+  // this session), so they run concurrently. `quantities` is the one exception: it has to be read
+  // AFTER the stock reset commits so it sees the reset `available` values, so that stays a
+  // separate step below.
+  const [items, , , inclusions, forms, entries, unitRows, ownershipRows, sessionRow] = await Promise.all([
     query<any>(`SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at`, [sessionId]),
     query(`DELETE FROM pc_assignments WHERE session_id=$1`, [sessionId]),
     query(`
@@ -516,6 +627,8 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
       LEFT JOIN pc_item_units u ON u.id = a.member_id
       WHERE a.session_id != $1
     `, [sessionId]),
+    // Needed to compute guaranteed unit claims below (order_ids / order_versions scoping).
+    queryOne<any>(`SELECT * FROM pc_sorting_sessions WHERE id=$1`, [sessionId]),
   ])
 
   const quantities = await query<any>(`
@@ -530,6 +643,9 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
     return u ? unitOwnKey(u.name) : id
   }
 
+  // item_id -> joiner_id -> unit_id -> guaranteed count (see computeGuaranteedUnitClaims for why).
+  const guaranteedByItem = await computeGuaranteedUnitClaims(sessionRow || {}, items, unitRows)
+
   const entriesByForm = new Map<string, any[]>()
   for (const e of entries) {
     if (!entriesByForm.has(e.form_id)) entriesByForm.set(e.form_id, [])
@@ -538,7 +654,7 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
 
   const submittedJoinerIds = new Set(forms.map((f: any) => f.joiner_id))
 
-  type PendingAssignment = { pack_id: string; item_id: string; joiner_id: string; member_id: string; round: number; is_repeat: boolean; is_random: boolean }
+  type PendingAssignment = { pack_id: string; item_id: string; joiner_id: string; member_id: string; round: number; is_repeat: boolean; is_random: boolean; is_guaranteed: boolean }
   const pending: PendingAssignment[] = []
   let totalDemand = 0
   let totalAssigned = 0
@@ -556,6 +672,50 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
       }
       for (const n of need.values()) totalDemand += n
 
+      const ownSet = new Set<string>()
+      for (const o of ownershipRows) {
+        if (o.pack_name === pack.name && o.item_name === item.name) {
+          const key = o.unit_name ? unitOwnKey(o.unit_name) : o.member_id
+          ownSet.add(`${o.joiner_id}|${key}`)
+        }
+      }
+
+      // Guaranteed unit claims: a joiner whose order claimed a specific version bundled with one
+      // of this item's units gets it directly — no ranking, no competing — subtracted from BOTH
+      // their remaining need for this item (need is otherwise the same value shared by every item
+      // in the pack, since 1 inclusion = 1 of every item) and the unit's own stock, before the
+      // competitive sort below ever sees either number. Also folded into ownSet so it counts
+      // toward "already owns this" for the rest of this run and future sessions, same as any
+      // other assignment. Runs BEFORE `ranking` is built, but ranking doesn't need to exclude
+      // these joiners — need/stock are already reduced, so a guaranteed joiner who also happens
+      // to rank this item just has less (or nothing) left to compete for.
+      const guaranteedForItem = guaranteedByItem.get(item.id)
+      if (guaranteedForItem) {
+        for (const [joinerId, byUnit] of guaranteedForItem) {
+          let remainingNeed = need.get(joinerId) || 0
+          if (remainingNeed <= 0) continue
+          for (const [unitId, claimedCount] of byUnit) {
+            if (remainingNeed <= 0) break
+            const avail = stock.get(unitId) || 0
+            // Capped at whatever's actually left in stock and in the joiner's remaining need —
+            // never grants more than either allows, so a guaranteed total that (by manual
+            // inclusions or a stock shortfall) exceeds what's actually available just degrades to
+            // "unfulfilled" for the rest, the same way the competitive sort already does.
+            const grant = Math.min(claimedCount, avail, remainingNeed)
+            if (grant <= 0) continue
+            stock.set(unitId, avail - grant)
+            remainingNeed -= grant
+            const key = `${joinerId}|${keyForId(unitId)}`
+            ownSet.add(key)
+            for (let i = 0; i < grant; i++) {
+              pending.push({ pack_id: pack.id, item_id: item.id, joiner_id: joinerId, member_id: unitId, round: 1, is_repeat: false, is_random: false, is_guaranteed: true })
+              totalAssigned += 1
+            }
+          }
+          need.set(joinerId, remainingNeed)
+        }
+      }
+
       const ranking = new Map<string, RankEntry[]>()
       const submittedAt = new Map<string, Date>()
       for (const form of forms) {
@@ -564,14 +724,6 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
           .filter((e: any) => e.item_id === item.id)
           .sort((a: any, b: any) => a.priority - b.priority)
         if (es.length) ranking.set(form.joiner_id, es.map((e: any) => ({ member_id: e.member_id, priority: e.priority })))
-      }
-
-      const ownSet = new Set<string>()
-      for (const o of ownershipRows) {
-        if (o.pack_name === pack.name && o.item_name === item.name) {
-          const key = o.unit_name ? unitOwnKey(o.unit_name) : o.member_id
-          ownSet.add(`${o.joiner_id}|${key}`)
-        }
       }
 
       const ctx: ItemCtx = { stock, need, ranking, submittedAt, ownSet, keyFor: keyForId }
@@ -584,7 +736,7 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
       const allResults = results.concat(randomResults)
       totalAssigned += allResults.length
       for (const r of allResults) {
-        pending.push({ pack_id: pack.id, item_id: item.id, joiner_id: r.joiner_id, member_id: r.member_id, round: r.round, is_repeat: r.is_repeat, is_random: r.is_random })
+        pending.push({ pack_id: pack.id, item_id: item.id, joiner_id: r.joiner_id, member_id: r.member_id, round: r.round, is_repeat: r.is_repeat, is_random: r.is_random, is_guaranteed: false })
       }
       finalStockByItem.set(item.id, stock)
     }
@@ -612,10 +764,10 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
     const baseTime = Date.now()
     const createdAts = pending.map((_, idx) => new Date(baseTime + idx))
     await query(
-      `INSERT INTO pc_assignments (session_id, pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, sort_method, created_at)
-       SELECT $1, t.pack_id, t.item_id, t.joiner_id, t.member_id, t.round, t.is_repeat, t.is_random, $2, t.created_at
-       FROM UNNEST($3::uuid[], $4::uuid[], $5::uuid[], $6::uuid[], $7::int[], $8::bool[], $9::bool[], $10::timestamptz[])
-         AS t(pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, created_at)`,
+      `INSERT INTO pc_assignments (session_id, pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, is_guaranteed, sort_method, created_at)
+       SELECT $1, t.pack_id, t.item_id, t.joiner_id, t.member_id, t.round, t.is_repeat, t.is_random, t.is_guaranteed, $2, t.created_at
+       FROM UNNEST($3::uuid[], $4::uuid[], $5::uuid[], $6::uuid[], $7::int[], $8::bool[], $9::bool[], $10::bool[], $11::timestamptz[])
+         AS t(pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, is_guaranteed, created_at)`,
       [
         sessionId,
         method,
@@ -626,6 +778,7 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
         pending.map(a => a.round),
         pending.map(a => a.is_repeat),
         pending.map(a => a.is_random),
+        pending.map(a => a.is_guaranteed),
         createdAts,
       ]
     )

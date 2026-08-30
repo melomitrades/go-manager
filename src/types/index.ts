@@ -345,6 +345,10 @@ export interface PCAssignment {
   round: number
   is_repeat: boolean
   is_random: boolean
+  // Handed out because the joiner's order claimed a specific version whose unit is physically
+  // guaranteed to match (see computeGuaranteedUnitClaims in pcSorter.ts) — never ranked/competed
+  // for, unlike is_repeat/is_random.
+  is_guaranteed: boolean
   sort_method: SortMethod
   created_at: string
   joiner?: Profile
