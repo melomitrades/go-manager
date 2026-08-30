@@ -28,8 +28,8 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button'
 
 // ── Badge ─────────────────────────────────────────────────
-export function Badge({ children, className, variant }: { children: React.ReactNode; className?: string; variant?: string }) {
-  return <span className={cn('inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold', variant && `status-${variant}`, className)}>{children}</span>
+export function Badge({ children, className, variant, ...props }: { children: React.ReactNode; className?: string; variant?: string } & React.HTMLAttributes<HTMLSpanElement>) {
+  return <span className={cn('inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold', variant && `status-${variant}`, className)} {...props}>{children}</span>
 }
 
 export function StatusBadge({ status }: { status: OrderStatus }) {

@@ -212,3 +212,15 @@ app self-migrates its schema at runtime — no manual SQL required.
   it reopens editing on something that may already look final) puts the session back to normal. Locking requires
   a sort to have actually run at least once; it doesn't touch or re-run the sort itself, and doesn't affect
   anything for sessions you never lock.
+- **Fixed a Vercel build failure introduced by the "Save sort" feature.** The locked-session badge ("🔒 Sort
+  locked") passed a `title` attribute (for a hover tooltip showing when it was locked) to the shared `Badge`
+  component, but `Badge` only accepted `children`/`className`/`variant` — TypeScript correctly rejected the
+  build. Fixed by widening `Badge` to accept any standard `<span>` attribute (`title` included) like the other
+  shared components (`Button`, `Card`, `Input`) already do, rather than special-casing `title`. Also manually
+  re-audited every other shared-component usage touched across this whole redesign (`StatusBadge`, `Card`-
+  family, `Label`, `FormField`, `Modal`, `PageHeader`, `EmptyState`, `Table`/`Th`/`Td`/`Tr`) against their actual
+  prop signatures in `src/components/ui/index.tsx` — no other instance of this bug class found. Worth knowing:
+  this sandbox can't run a full `npm install`/`next build` (its registry access is blocked here), so local
+  verification this whole project has been single-file `tsc` checks plus manual auditing, which is exactly what
+  missed this one — pasting a Vercel build log here whenever a deploy goes red is the fastest way to catch
+  anything that slips through, and is genuinely useful, not just a fallback.
