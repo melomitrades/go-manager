@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
-import { ensurePcSorterSchema, autoFillInclusions, resetInclusions } from '@/lib/pcSorter'
+import { ensurePcSorterSchema, autoFillInclusions, resetInclusions, computeGuaranteedUnitClaims } from '@/lib/pcSorter'
 
 export async function GET(req: NextRequest, { params }: { params: { sessionId: string } }) {
   const session = await getServerSession(authOptions)
@@ -94,6 +94,21 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
   const viewAsJoiner = new URL(req.url).searchParams.get('viewAs') === 'joiner'
   const scopeToSelf = user.role === 'joiner' || (['gom', 'admin'].includes(user.role) && viewAsJoiner)
 
+  // Flatten item_id -> joiner_id -> unit_id -> count into a flat list the frontend can filter/sum
+  // easily, so joiner-facing UIs can subtract guaranteed counts from a pack's inclusions and know
+  // when there's nothing left for a joiner to actually sort. This reuses the exact same
+  // guaranteed-claims computation used at sort time, so "hide the form" here can never disagree
+  // with what running the sort would actually pre-assign.
+  const guaranteedByItem = await computeGuaranteedUnitClaims(sessionRow, items, units)
+  let guaranteed: { item_id: string; joiner_id: string; unit_id: string; count: number }[] = []
+  for (const [item_id, byJoiner] of guaranteedByItem) {
+    for (const [joiner_id, byUnit] of byJoiner) {
+      for (const [unit_id, count] of byUnit) {
+        guaranteed.push({ item_id, joiner_id, unit_id, count })
+      }
+    }
+  }
+
   // Joiners (real, or a gom/admin viewing their own joiner side) only ever see their own
   // priority forms / entries / inclusions / assignments — never other joiners' picks or results.
   if (scopeToSelf) {
@@ -103,9 +118,10 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
     inclusions = (inclusions as any[]).filter(i => i.joiner_id === user.id)
     assignments = (assignments as any[]).filter(a => a.joiner_id === user.id)
     ownership = []
+    guaranteed = guaranteed.filter(g => g.joiner_id === user.id)
   }
 
-  return NextResponse.json({ session: sessionRow, packs, items, units, quantities, inclusions, forms, entries, assignments, ownership })
+  return NextResponse.json({ session: sessionRow, packs, items, units, quantities, inclusions, forms, entries, assignments, ownership, guaranteed })
 }
 
 export async function POST(req: NextRequest, { params }: { params: { sessionId: string } }) {

@@ -6,6 +6,27 @@ import { formatDate } from '@/lib/utils'
 
 interface RankedMember { member_id: string; name: string }
 
+// A pack's inclusions apply uniformly to every item in it ("1 inclusion = 1 of every item in the
+// pack"), so this is the joiner's raw due-count for `item` before any guaranteed claims are
+// subtracted.
+function inclusionsForPackFrom(inclusions: any[], packId: string): number {
+  return inclusions.filter((i: any) => i.pack_id === packId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+}
+
+function guaranteedForItemFrom(guaranteed: any[], itemId: string): number {
+  return guaranteed.filter((g: any) => g.item_id === itemId).reduce((s: number, g: any) => s + (parseInt(g.count) || 0), 0)
+}
+
+// How many of `item` this joiner still needs to actually RANK — their pack-level due count, minus
+// whatever's already guaranteed to a specific unit they claimed (guaranteed claims only ever apply
+// to is_unit items; a non-unit item's remaining need is just the pack's due count). Zero means
+// there's nothing left for them to sort for this item, so it shouldn't appear on the form.
+function remainingNeedForItem(item: any, det: any, packId: string): number {
+  const packNeed = inclusionsForPackFrom(det?.inclusions || [], packId)
+  if (!item?.is_unit) return packNeed
+  return Math.max(0, packNeed - guaranteedForItemFrom(det?.guaranteed || [], item.id))
+}
+
 export default function JoinerPCSorterPage() {
   const [sessions, setSessions] = useState<any[]>([])
   const [details, setDetails] = useState<Record<string, any>>({})
@@ -68,9 +89,16 @@ export default function JoinerPCSorterPage() {
 
   async function submitForm(sessionId: string) {
     setSaving(sessionId)
+    const det = details[sessionId]
     const itemOrders = order[sessionId] || {}
+    const itemsById = new Map((det?.items || []).map((i: any) => [i.id, i]))
     const flat: { item_id: string; member_id: string; priority: number }[] = []
     for (const [itemId, members] of Object.entries(itemOrders)) {
+      const item = itemsById.get(itemId)
+      // Skip items the joiner has nothing left to rank for (already fully guaranteed, or not due
+      // to them at all) — mirrors the visibility filter in the render below, so we never submit
+      // priorities for an item that was never shown as a form to rank.
+      if (!item || remainingNeedForItem(item, det, item.pack_id) <= 0) continue
       members.forEach((m, idx) => flat.push({ item_id: itemId, member_id: m.member_id, priority: idx + 1 }))
     }
     const res = await fetch(`/api/pc-sorter/${sessionId}`, {
@@ -103,12 +131,22 @@ export default function JoinerPCSorterPage() {
           const deadlinePassed = session.deadline && new Date(session.deadline) < new Date()
           const myInclusions: any[] = det.inclusions || []
           const myTotalInclusions = myInclusions.reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
-          const inclusionsForPack = (packId: string) => myInclusions.filter(i => i.pack_id === packId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+          const inclusionsForPack = (packId: string) => inclusionsForPackFrom(myInclusions, packId)
           const isSorted = !!session.sort_run_at
           // Only show the ranking form while it's actually open and not yet submitted — once
           // submitted, priorities are locked (no self-service edits).
           const canSubmit = session.form_open && !isSubmitted && !deadlinePassed
           const myAssignments: any[] = det.assignments || []
+          // Whether there's anything left to actually rank: an item only counts if it has stock
+          // (members.length > 0) AND the joiner still has some unmet need for it after subtracting
+          // guaranteed claims. A joiner with 0 inclusions everywhere, or whose entire need is
+          // already covered by guaranteed unit claims, has nothing to sort — they shouldn't be
+          // shown a pointless empty/no-op form.
+          const hasAnythingToSort = packs.some((pack: any) =>
+            (det.items || []).some((item: any) =>
+              item.pack_id === pack.id && (itemOrders[item.id] || []).length > 0 && remainingNeedForItem(item, det, pack.id) > 0
+            )
+          )
 
           return (
             <Card key={session.id}>
@@ -187,10 +225,18 @@ export default function JoinerPCSorterPage() {
                     <p className="text-sm font-medium">Your priorities have been submitted and can't be changed. Your GOM will run the sort when ready — your results will show here once they do.</p>
                   </div>
                 </CardContent>
+              ) : canSubmit && !hasAnythingToSort ? (
+                <CardContent>
+                  <div className="flex items-center gap-2.5 bg-secondary/30 border border-border rounded-xl px-4 py-3 text-muted-foreground">
+                    <p className="text-sm">Nothing for you to sort here — either nothing is due to you in this session, or everything due is already guaranteed to a specific version you claimed. Check back after your GOM runs the sort.</p>
+                  </div>
+                </CardContent>
               ) : canSubmit ? (
                 <CardContent className="space-y-5">
                   {packs.map((pack: any) => {
-                    const items: any[] = (det.items || []).filter((i: any) => i.pack_id === pack.id)
+                    const items: any[] = (det.items || []).filter((i: any) =>
+                      i.pack_id === pack.id && (itemOrders[i.id] || []).length > 0 && remainingNeedForItem(i, det, pack.id) > 0
+                    )
                     if (!items.length) return null
                     return (
                       <div key={pack.id} className="space-y-3">
@@ -200,7 +246,6 @@ export default function JoinerPCSorterPage() {
                         </p>
                         {items.map((item: any) => {
                           const members = itemOrders[item.id] || []
-                          if (members.length === 0) return null
                           return (
                             <div key={item.id} className="border border-border rounded-2xl overflow-hidden">
                               <div className="px-4 py-3 bg-secondary/40 border-b border-border">

@@ -284,3 +284,26 @@ app self-migrates its schema at runtime — no manual SQL required.
   this doc. One thing to keep in mind: matching is by unit NAME only, scoped to the item it's checked against —
   if two different unit-tagged items in the same session happen to reuse the same unit name, a matching claim
   would guarantee against both, so keep unit names unique across a session if that's a possibility.
+
+- **Joiners with nothing to sort no longer see a ranking form.** Previously, the joiner-facing Sorting page
+  rendered a ranking form for every item that had stock, regardless of whether that particular joiner actually
+  had any inclusions due to them for that item — and, since guaranteed unit claims (above) can now cover a
+  joiner's *entire* need for an item automatically, a joiner could be shown a form to rank something that was
+  already fully decided for them before they ever opened the page.
+  **What changed**: for each item, the joiner's remaining need is now computed as their pack's due-count minus
+  whatever's already covered by a guaranteed unit claim for that specific item (non-unit items are unaffected —
+  guaranteed claims only ever apply to unit-tagged items). An item only appears on the form if that remaining
+  need is greater than zero AND there's stock to rank. A pack with no such items is hidden entirely, and if a
+  joiner has nothing left to sort anywhere in the session — whether because they simply have zero inclusions, or
+  because everything due to them is already guaranteed — the session card shows a plain "nothing to sort" note
+  instead of an empty or pointless form. The submit payload is filtered the same way, so priorities are never
+  submitted for an item that was never shown.
+  **Adjacent fix**: the GOM's "Awaiting submission" list (and the "X of Y submitted" count above it) previously
+  flagged any joiner with inclusions assigned and no submitted form as pending — which meant a joiner whose
+  entire need was covered by guaranteed claims, and who therefore has no form to submit, would sit there
+  permanently as "awaiting submission" forever. That list now uses the same guaranteed-aware check, so those
+  joiners are correctly left off it.
+  Both sides pull from a new `guaranteed` field returned by the session detail API (self-scoped to the joiner's
+  own claims when viewed as a joiner), computed with the exact same `computeGuaranteedUnitClaims` function the
+  sort itself uses at run time — so what the form hides can never disagree with what the sort would actually
+  pre-assign.

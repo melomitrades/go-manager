@@ -332,7 +332,7 @@ export async function resetInclusions(sessionId: string) {
 // amount_claimed fallback, deduped by claim_group_id) so a guaranteed count is never inflated by
 // the same multi-member-claim-row duplication that fix addressed — just additionally bucketed by
 // matching each line's version_name to a unit, instead of only summed into a flat per-pack total.
-async function computeGuaranteedUnitClaims(
+export async function computeGuaranteedUnitClaims(
   sessionRow: any,
   items: any[],
   unitRows: any[]

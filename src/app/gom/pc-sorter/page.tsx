@@ -452,6 +452,29 @@ export default function GomPcSorterPage() {
     return list
   }
 
+  // Sum of guaranteed claims for one joiner+item (guaranteed claims only ever apply to is_unit items).
+  const guaranteedForJoinerItem = (d: any, joinerId: string, itemId: string) =>
+    (d?.guaranteed || []).filter((g: any) => g.joiner_id === joinerId && g.item_id === itemId).reduce((s: number, g: any) => s + (parseInt(g.count) || 0), 0)
+
+  // Whether a joiner has anything left to actually RANK anywhere in this session — false when
+  // every item they're due for is either not due to them at all, or fully covered by a guaranteed
+  // unit claim (so it was pre-assigned automatically and never needed ranking). Mirrors the
+  // joiner-facing page's own visibility filter, so a joiner who's never shown a ranking form there
+  // is never left dangling as "awaiting submission" here — they'll never submit one.
+  const hasAnythingToSort = (d: any, joinerId: string) => {
+    const packs: any[] = d?.packs || []
+    const items: any[] = d?.items || []
+    return packs.some((pack: any) => {
+      const packNeed = (d?.inclusions || []).filter((i: any) => i.joiner_id === joinerId && i.pack_id === pack.id).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+      if (packNeed <= 0) return false
+      return items.some((item: any) => {
+        if (item.pack_id !== pack.id) return false
+        if (!item.is_unit) return true
+        return packNeed - guaranteedForJoinerItem(d, joinerId, item.id) > 0
+      })
+    })
+  }
+
   // Joiners who have inclusions assigned (so they're expected to rank) but haven't submitted a form yet
   const pendingJoiners = (d: any) => {
     const submittedIds = new Set((d?.forms || []).map((f: any) => f.joiner_id))
@@ -459,6 +482,7 @@ export default function GomPcSorterPage() {
     const list: any[] = []
     for (const i of d?.inclusions || []) {
       if (submittedIds.has(i.joiner_id) || seen.has(i.joiner_id)) continue
+      if (!hasAnythingToSort(d, i.joiner_id)) continue
       seen.add(i.joiner_id)
       list.push(i)
     }
