@@ -91,7 +91,7 @@ export default function JoinerPCSorterPage() {
     setSaving(sessionId)
     const det = details[sessionId]
     const itemOrders = order[sessionId] || {}
-    const itemsById = new Map((det?.items || []).map((i: any) => [i.id, i]))
+    const itemsById = new Map<string, any>((det?.items || []).map((i: any) => [i.id, i]))
     const flat: { item_id: string; member_id: string; priority: number }[] = []
     for (const [itemId, members] of Object.entries(itemOrders)) {
       const item = itemsById.get(itemId)
