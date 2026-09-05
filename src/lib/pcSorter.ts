@@ -1,4 +1,5 @@
 import { query, queryOne } from './db'
+import { ensureWeightVariantsSchema } from './weightVariants'
 
 // ============================================================
 // PC SORTER — shared schema migration, inclusion auto-fill,
@@ -34,6 +35,10 @@ let pcSorterMigDone = false
 export async function ensurePcSorterSchema() {
   if (pcSorterMigDone) return
   pcSorterMigDone = true
+
+  // Weight variants (the shared, group-scoped named-weight library from Orders/Boxes) must exist
+  // before pc_packs/pc_items can carry a weight_variant_id FK to it — see phases 2 and 3 below.
+  await ensureWeightVariantsSchema()
 
   // Phase 1: only touches tables that already exist independent of this migration (pc_sorting_sessions,
   // boxes, pc_priority_forms, pc_assignments) — nothing here depends on anything else in this function.
@@ -90,6 +95,14 @@ export async function ensurePcSorterSchema() {
       created_at TIMESTAMPTZ DEFAULT now()
     )`,
 
+    // Optional link to the shared weight-variant library (see src/lib/weightVariants.ts). Lets a
+    // pack be named FROM an existing (or newly-created) weight variant instead of a plain typed
+    // string, so a pack like "Ver. A" and an Orders album pricing option for the same version
+    // share one name instead of the GOM re-typing it in two places and them drifting apart. Purely
+    // a naming convenience — nothing about the sort algorithm, inclusions, or ownership tracking
+    // reads this column; a pack with no linked variant behaves exactly as before.
+    `ALTER TABLE pc_packs ADD COLUMN IF NOT EXISTS weight_variant_id UUID REFERENCES weight_variants(id) ON DELETE SET NULL`,
+
     // How many full packs (inclusions) each joiner is due, per pack
     `CREATE TABLE IF NOT EXISTS pc_pack_inclusions (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,6 +122,11 @@ export async function ensurePcSorterSchema() {
     // group member. Set once at creation; there's no UI to flip it after the fact, same as an
     // item's name.
     `ALTER TABLE pc_items ADD COLUMN IF NOT EXISTS is_unit BOOLEAN NOT NULL DEFAULT false`,
+
+    // Same naming-reuse link as pc_packs.weight_variant_id above, but for an individual item
+    // within a pack (e.g. "Photocard", "Lenticular") — same convenience, same "purely cosmetic,
+    // nothing else reads it" caveat.
+    `ALTER TABLE pc_items ADD COLUMN IF NOT EXISTS weight_variant_id UUID REFERENCES weight_variants(id) ON DELETE SET NULL`,
 
     // A "unit" combo — several real members packaged as one sortable option (e.g. "Mai +
     // Jungeun") for a single unit-tagged item. Scoped to that one item, not the group's member

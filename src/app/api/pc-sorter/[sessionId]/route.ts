@@ -24,9 +24,17 @@ export async function GET(req: NextRequest, { params }: { params: { sessionId: s
   // as 9 sequential round trips. `let` because forms/entries/inclusions/assignments/ownership get
   // filtered in place below when scoping the response to a single joiner.
   let [packs, items, units, quantities, inclusions, forms, entries, assignments, ownership] = await Promise.all([
-    query(`SELECT * FROM pc_packs WHERE session_id=$1 ORDER BY sort_order, created_at`, [sessionId]),
     query(`
-      SELECT * FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY sort_order, created_at
+      SELECT pk.*, wv.label as variant_label, wv.weight_g as variant_weight_g
+      FROM pc_packs pk
+      LEFT JOIN weight_variants wv ON wv.id = pk.weight_variant_id
+      WHERE pk.session_id=$1 ORDER BY pk.sort_order, pk.created_at
+    `, [sessionId]),
+    query(`
+      SELECT it.*, wv.label as variant_label, wv.weight_g as variant_weight_g
+      FROM pc_items it
+      LEFT JOIN weight_variants wv ON wv.id = it.weight_variant_id
+      WHERE it.pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1) ORDER BY it.sort_order, it.created_at
     `, [sessionId]),
     // A unit-tagged item's sortable options are pc_item_units rows (several real members combined
     // into one, e.g. "Mai + Jungeun") instead of one row per real group member — fetched here so
@@ -202,14 +210,22 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
 
   if (body.add_pack) {
     const p = await queryOne(
-      `INSERT INTO pc_packs (session_id, name, sort_order)
-       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_packs WHERE session_id=$1),0)) RETURNING *`,
-      [sessionId, body.add_pack.name]
+      `INSERT INTO pc_packs (session_id, name, sort_order, weight_variant_id)
+       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_packs WHERE session_id=$1),0), $3) RETURNING *`,
+      [sessionId, body.add_pack.name, body.add_pack.weight_variant_id || null]
     )
     return NextResponse.json(p, { status: 201 })
   }
   if (body.rename_pack) {
-    await query(`UPDATE pc_packs SET name=$1 WHERE id=$2 AND session_id=$3`, [body.rename_pack.name, body.rename_pack.pack_id, sessionId])
+    // weight_variant_id is optional in the payload — when the rename came from the GOM picking
+    // a different (or no) linked weight variant, this updates the link along with the name;
+    // when it's just a plain rename (key absent), the existing link is left untouched.
+    if (body.rename_pack.weight_variant_id !== undefined) {
+      await query(`UPDATE pc_packs SET name=$1, weight_variant_id=$2 WHERE id=$3 AND session_id=$4`,
+        [body.rename_pack.name, body.rename_pack.weight_variant_id || null, body.rename_pack.pack_id, sessionId])
+    } else {
+      await query(`UPDATE pc_packs SET name=$1 WHERE id=$2 AND session_id=$3`, [body.rename_pack.name, body.rename_pack.pack_id, sessionId])
+    }
     return NextResponse.json({ ok: true })
   }
   if (body.delete_pack) {
@@ -219,14 +235,20 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
 
   if (body.add_item) {
     const it = await queryOne(
-      `INSERT INTO pc_items (pack_id, name, sort_order, is_unit)
-       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_items WHERE pack_id=$1),0), $3) RETURNING *`,
-      [body.add_item.pack_id, body.add_item.name, !!body.add_item.is_unit]
+      `INSERT INTO pc_items (pack_id, name, sort_order, is_unit, weight_variant_id)
+       VALUES ($1,$2, COALESCE((SELECT MAX(sort_order)+1 FROM pc_items WHERE pack_id=$1),0), $3, $4) RETURNING *`,
+      [body.add_item.pack_id, body.add_item.name, !!body.add_item.is_unit, body.add_item.weight_variant_id || null]
     )
     return NextResponse.json(it, { status: 201 })
   }
   if (body.rename_item) {
-    await query(`UPDATE pc_items SET name=$1 WHERE id=$2`, [body.rename_item.name, body.rename_item.item_id])
+    // Same optional weight_variant_id convention as rename_pack above.
+    if (body.rename_item.weight_variant_id !== undefined) {
+      await query(`UPDATE pc_items SET name=$1, weight_variant_id=$2 WHERE id=$3`,
+        [body.rename_item.name, body.rename_item.weight_variant_id || null, body.rename_item.item_id])
+    } else {
+      await query(`UPDATE pc_items SET name=$1 WHERE id=$2`, [body.rename_item.name, body.rename_item.item_id])
+    }
     return NextResponse.json({ ok: true })
   }
   if (body.delete_item) {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
+import { ensureWeightVariantsSchema } from '@/lib/weightVariants'
 
 async function notifyJoiners(orderId: string, status: string, shopName: string | null) {
   const statusLabels: Record<string, string> = {
@@ -26,6 +27,7 @@ let migrationsDone = false
 async function ensureOrderColumns() {
   if (migrationsDone) return
   migrationsDone = true
+  await ensureWeightVariantsSchema()
   // Idempotent backfill — belongs in the once-per-cold-start gate below, not run unconditionally
   // on every request (it used to fire outside the gate on every single GET/POST/PATCH).
   query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
@@ -147,10 +149,10 @@ export async function POST(req: NextRequest) {
   if (items?.length) {
     for (const item of items) {
       await query(
-        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, claim_group_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, claim_group_id, weight_variant_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [order.id, item.member_id || null, item.joiner_id || null, item.pricing_type, item.description || null,
-          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.claim_group_id || null]
+          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.claim_group_id || null, item.weight_variant_id || null]
       )
     }
   }
@@ -226,9 +228,9 @@ export async function PATCH(req: NextRequest) {
     await query('DELETE FROM order_items WHERE order_id=$1', [id])
     for (const item of (items || [])) {
       await query(
-        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, version_name, claim_group_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-        [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.version_name || null, item.claim_group_id || null]
+        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, version_name, claim_group_id, weight_variant_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.version_name || null, item.claim_group_id || null, item.weight_variant_id || null]
       )
     }
   }

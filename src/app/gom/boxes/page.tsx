@@ -25,6 +25,21 @@ export default function GomBoxesPage() {
   const [sharesLoading, setSharesLoading] = useState<string | null>(null)
   const [expandedJoiner, setExpandedJoiner] = useState<string | null>(null)
   const [excludedJoiners, setExcludedJoiners] = useState<Record<string, Set<string>>>({})
+  const [variantWeightInputs, setVariantWeightInputs] = useState<Record<string, string>>({})
+  const [savingVariant, setSavingVariant] = useState<string | null>(null)
+
+  async function confirmVariantWeight(boxId: string, variantId: string) {
+    const raw = variantWeightInputs[variantId]
+    const weight_g = parseFloat(raw)
+    if (!raw || isNaN(weight_g) || weight_g <= 0) return
+    setSavingVariant(variantId)
+    await fetch(`/api/weight-variants/${variantId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ weight_g }),
+    })
+    await loadShares(boxId)
+    setSavingVariant(null)
+  }
 
   function toggleExclude(boxId: string, joinerId: string) {
     setExcludedJoiners(prev => {
@@ -191,6 +206,7 @@ export default function GomBoxesPage() {
             ? <EmptyState icon={Box} title="No boxes yet" action={<Button onClick={openNew}><Plus size={14}/> New Box</Button>} />
             : boxes.map(box => {
                 const shares = boxShares[box.id]
+                const hasMissingVariants = (shares?.missingVariants?.length || 0) > 0
                 const isExpanded = expandedBox === box.id
                 const totalEur = parseFloat(box.ems_total_eur || 0) + parseFloat(box.customs_total_eur || 0)
                 const totalKrw = parseFloat(box.ems_total_krw || 0) + parseFloat(box.customs_total_krw || 0)
@@ -269,7 +285,7 @@ export default function GomBoxesPage() {
                               <div className="flex gap-2 flex-shrink-0">
                                 <button
                                   onClick={async () => {
-                                    if (shares?.ems_payment_requested) return
+                                    if (shares?.ems_payment_requested || hasMissingVariants) return
                                     const excluded = excludedJoiners[box.id] || new Set()
                                     const totalW = shares.joiners.filter((j: any) => !excluded.has(j.joiner_id)).reduce((s: number, j: any) => s + (j.weight_g || 0), 0)
                                     const emsTotal = parseFloat(box.ems_total_eur || 0)
@@ -285,14 +301,15 @@ export default function GomBoxesPage() {
                                     })
                                     await loadShares(box.id)
                                   }}
-                                  disabled={shares?.ems_payment_requested}
-                                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${shares?.ems_payment_requested ? 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default' : 'bg-primary text-primary-foreground border-primary hover:opacity-90'}`}
+                                  disabled={shares?.ems_payment_requested || hasMissingVariants}
+                                  title={hasMissingVariants ? 'Confirm all weight variants below before sending EMS' : undefined}
+                                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${shares?.ems_payment_requested ? 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default' : hasMissingVariants ? 'bg-secondary text-muted-foreground border-border cursor-not-allowed opacity-60' : 'bg-primary text-primary-foreground border-primary hover:opacity-90'}`}
                                 >
                                   {shares?.ems_payment_requested ? '✓ EMS sent' : '💸 Ask EMS'}
                                 </button>
                                 <button
                                   onClick={async () => {
-                                    if (shares?.customs_payment_requested) return
+                                    if (shares?.customs_payment_requested || hasMissingVariants) return
                                     const excluded = excludedJoiners[box.id] || new Set()
                                     const totalW = shares.joiners.filter((j: any) => !excluded.has(j.joiner_id)).reduce((s: number, j: any) => s + (j.weight_g || 0), 0)
                                     const customsTotal = parseFloat(box.customs_total_eur || 0)
@@ -308,14 +325,40 @@ export default function GomBoxesPage() {
                                     })
                                     await loadShares(box.id)
                                   }}
-                                  disabled={shares?.customs_payment_requested}
-                                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${shares?.customs_payment_requested ? 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default' : 'bg-sky-600 text-white border-sky-600 hover:opacity-90'}`}
+                                  disabled={shares?.customs_payment_requested || hasMissingVariants}
+                                  title={hasMissingVariants ? 'Confirm all weight variants below before sending Customs' : undefined}
+                                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${shares?.customs_payment_requested ? 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default' : hasMissingVariants ? 'bg-secondary text-muted-foreground border-border cursor-not-allowed opacity-60' : 'bg-sky-600 text-white border-sky-600 hover:opacity-90'}`}
                                 >
                                   {shares?.customs_payment_requested ? '✓ Customs sent' : '🛃 Ask Customs'}
                                 </button>
                               </div>
                             )}
                           </div>
+                          {hasMissingVariants && (
+                            <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-3 py-2.5">
+                              <p className="text-xs font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide mb-1.5">⚠️ Confirm weights before sending EMS/Customs</p>
+                              <p className="text-xs text-muted-foreground mb-2">These weight variants are used by items in this box but haven't been weighed yet. Enter each one's gram weight — it'll apply everywhere this variant is used.</p>
+                              <div className="space-y-1.5">
+                                {shares.missingVariants.map((mv: any) => (
+                                  <div key={mv.id} className="flex items-center gap-2">
+                                    <span className="text-sm flex-1 min-w-0 truncate">
+                                      <span className="text-muted-foreground">{ITEM_TYPES.find(t => t.value === mv.item_type)?.label || mv.item_type}:</span> <span className="font-semibold">{mv.label}</span>
+                                    </span>
+                                    <input
+                                      type="number"
+                                      placeholder="grams"
+                                      value={variantWeightInputs[mv.id] ?? ''}
+                                      onChange={e => setVariantWeightInputs(prev => ({ ...prev, [mv.id]: e.target.value }))}
+                                      className="w-24 text-sm px-2 py-1 rounded-lg border border-border bg-background"
+                                    />
+                                    <Button size="sm" disabled={savingVariant === mv.id} onClick={() => confirmVariantWeight(box.id, mv.id)}>
+                                      {savingVariant === mv.id ? '...' : 'Save'}
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                           {sharesLoading === box.id ? (
                             <div className="flex justify-center py-4"><div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"/></div>
                           ) : !shares?.joiners?.length ? (
@@ -332,8 +375,9 @@ export default function GomBoxesPage() {
                                 const emsRpg = emsTotal / totalWeight
                                 const customsRpg = customsTotal / totalWeight
                                 const itemTypes: any[] = shares.itemTypes || []
+                                const variantsInUse: any[] = (shares.variantsInUse || []).filter((v: any) => v.weight_g != null)
                                 const LABELS: Record<string, string> = { photocard: 'Photocard / Inclusion', album: 'Album', photobook: 'Photobook', custom: 'Custom' }
-                                if (itemTypes.length === 0) return null
+                                if (itemTypes.length === 0 && variantsInUse.length === 0) return null
                                 return (
                                   <div className="px-4 py-3 bg-primary/5 border-b border-border space-y-2">
                                     {emsTotal > 0 && (
@@ -347,6 +391,16 @@ export default function GomBoxesPage() {
                                             return (
                                               <div key={it.item_type} className="flex items-center gap-1.5 text-sm">
                                                 <span className="text-muted-foreground">{label} ({wg}g):</span>
+                                                <span className="font-bold text-blue-600 font-mono">{formatEur(rate)}</span>
+                                              </div>
+                                            )
+                                          })}
+                                          {variantsInUse.map((v: any) => {
+                                            const wg = parseFloat(v.weight_g || 0)
+                                            const rate = Math.ceil(emsRpg * wg * 100) / 100
+                                            return (
+                                              <div key={v.id} className="flex items-center gap-1.5 text-sm">
+                                                <span className="text-muted-foreground">{v.label} ({wg}g):</span>
                                                 <span className="font-bold text-blue-600 font-mono">{formatEur(rate)}</span>
                                               </div>
                                             )
@@ -366,6 +420,16 @@ export default function GomBoxesPage() {
                                             return (
                                               <div key={it.item_type} className="flex items-center gap-1.5 text-sm">
                                                 <span className="text-muted-foreground">{label} ({wg}g):</span>
+                                                <span className="font-bold text-purple-600 font-mono">{formatEur(rate)}</span>
+                                              </div>
+                                            )
+                                          })}
+                                          {variantsInUse.map((v: any) => {
+                                            const wg = parseFloat(v.weight_g || 0)
+                                            const rate = Math.ceil(customsRpg * wg * 100) / 100
+                                            return (
+                                              <div key={v.id} className="flex items-center gap-1.5 text-sm">
+                                                <span className="text-muted-foreground">{v.label} ({wg}g):</span>
                                                 <span className="font-bold text-purple-600 font-mono">{formatEur(rate)}</span>
                                               </div>
                                             )
@@ -430,14 +494,24 @@ export default function GomBoxesPage() {
                                       const lockedEms = s.ems_amount_eur != null ? parseFloat(s.ems_amount_eur) : null
                                       // Always compute EMS share for GOM (use locked if published, else live)
                                       const emsShare = lockedEms ?? (!isExcluded && totalWeight > 0 ? ceil2(parseFloat(box.ems_total_eur || 0) * joinerWeight / totalWeight) : 0)
-                                      const emsRate = joinerWeight > 0 ? emsShare / joinerWeight : 0
+                                      // Per-piece rate for the breakdown below: the box's TRUE blended rate
+                                      // (total EMS ÷ total box weight), not this joiner's own locked total ÷
+                                      // their weight. Those two only match when nothing's changed since the
+                                      // last publish — if a joiner's claims were edited afterward, back-solving
+                                      // the rate from their (now stale) locked amount produced a per-piece
+                                      // price that didn't match any configured weight, which is exactly what
+                                      // made "same weight type, different price" look like a bug. Using the
+                                      // box-wide rate here means every piece of the same weight always shows
+                                      // the same price, matching what everyone is actually billed per gram.
+                                      const emsRate = totalWeight > 0 ? parseFloat(box.ems_total_eur || 0) / totalWeight : 0
 
                                       // Customs — show as preview before asking, and as locked after
                                       const customsRequested = shares.customs_payment_requested
                                       const showCustomsBreakdown = parseFloat(box.customs_total_eur || 0) > 0
                                       const lockedCustoms = s.customs_amount_eur != null ? parseFloat(s.customs_amount_eur) : null
                                       const customsShare = showCustomsBreakdown ? (customsRequested ? (lockedCustoms ?? ceil2(parseFloat(box.customs_total_eur || 0) * joinerWeight / (totalWeight || 1))) : ceil2(parseFloat(box.customs_total_eur || 0) * joinerWeight / (totalWeight || 1))) : 0
-                                      const customsRate = joinerWeight > 0 ? customsShare / joinerWeight : 0
+                                      // Same fix as emsRate above: true box-wide €/g, not back-solved per joiner.
+                                      const customsRate = totalWeight > 0 ? parseFloat(box.customs_total_eur || 0) / totalWeight : 0
 
                                       const groups: Record<string, { shop: string; desc: string; members: string[]; qty: number; inclusions: number; weight_g: number }> = {}
                                       const seenClaimsByGroup: Record<string, Set<string>> = {}

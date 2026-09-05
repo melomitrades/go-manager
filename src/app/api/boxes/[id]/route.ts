@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
+import { ensureWeightVariantsSchema } from '@/lib/weightVariants'
 
 let migDone = false
 async function ensureTables() {
   if (migDone) return
   migDone = true
+  await ensureWeightVariantsSchema()
   await Promise.all([
     query(`CREATE TABLE IF NOT EXISTS box_joiner_shares (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -81,13 +83,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
         COALESCE(oi.item_type, 'photocard') as item_type,
         COALESCE(oi.inclusions_count, 0) as inclusions_count,
         m.name as member_name,
-        s.name as shop_name, g.name as group_name, o.round_number, o.type as order_type
+        s.name as shop_name, g.name as group_name, o.round_number, o.type as order_type,
+        wv.label as variant_label, wv.weight_g as variant_weight_g
       FROM order_items oi
       LEFT JOIN orders o ON o.id = oi.order_id
       LEFT JOIN profiles p ON p.id = COALESCE(oi.joiner_id, o.personal_joiner_id)
       LEFT JOIN members m ON m.id = oi.member_id
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
+      LEFT JOIN weight_variants wv ON wv.id = oi.weight_variant_id
       WHERE oi.order_id = ANY($1::uuid[])
         AND (oi.joiner_id IS NOT NULL OR (oi.joiner_id IS NULL AND o.personal_joiner_id IS NOT NULL AND o.type = 'personal'))
         AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
@@ -109,6 +113,16 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   // to a joiner+description+price+version heuristic.
   const seenClaimGroups: Record<string, Set<string>> = {} // joiner_id -> claim keys already counted
 
+  // Items created after the weight-variants feature shipped carry a weight_variant_id and are
+  // weighed via that variant's own (global, reusable) weight_g — NOT the box's legacy per-type
+  // Item Weights config. Older items (weight_variant_id NULL) keep resolving through the old
+  // weightByItemType/weightByType lookup exactly as before, so historical boxes are untouched.
+  // A variant that's been named but not yet physically weighed (weight_g still NULL) contributes
+  // 0 for now; every such variant actually in use gets collected into missingVariants so the
+  // Boxes page can block "Ask EMS"/"Ask Customs" until it's filled in.
+  const missingVariantsMap: Record<string, { id: string; item_type: string; label: string }> = {}
+  const variantsInUseMap: Record<string, { id: string; item_type: string; label: string; weight_g: number | null }> = {}
+
   for (const item of allItems) {
     const jid = item.joiner_id
     if (!joinerMap[jid]) {
@@ -129,7 +143,19 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       }
     }
     const effectiveCount = claimed + inclusions
-    const unitWeight = isLateFee ? 0 : (weightByItemType[typeKey] ?? weightByType[typeKey] ?? 0)
+    let unitWeight = 0
+    if (isLateFee) {
+      unitWeight = 0
+    } else if (item.weight_variant_id) {
+      const vw = item.variant_weight_g != null ? parseFloat(item.variant_weight_g) : null
+      unitWeight = vw ?? 0
+      variantsInUseMap[item.weight_variant_id] = { id: item.weight_variant_id, item_type: typeKey, label: item.variant_label || 'Unnamed variant', weight_g: vw }
+      if (vw == null) {
+        missingVariantsMap[item.weight_variant_id] = { id: item.weight_variant_id, item_type: typeKey, label: item.variant_label || 'Unnamed variant' }
+      }
+    } else {
+      unitWeight = weightByItemType[typeKey] ?? weightByType[typeKey] ?? 0
+    }
     const wg = unitWeight * effectiveCount
     joinerMap[jid].weight_g += wg
     joinerMap[jid].item_count += isLateFee ? 0 : claimed
@@ -139,6 +165,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       amount_claimed: item.amount_claimed, price_eur: item.price_eur, item_type: item.item_type,
       inclusions_count: parseInt(item.inclusions_count) || 0, claim_group_id: item.claim_group_id || null,
       version_name: item.version_name || null, weight_g: wg,
+      weight_variant_id: item.weight_variant_id || null, variant_label: item.variant_label || null,
       shop_name: item.shop_name, group_name: item.group_name, round_number: item.round_number,
     })
   }
@@ -156,6 +183,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }, 0)
   const totalWeight = Object.values(joinerMap).reduce((s, j) => s + j.weight_g, 0)
   const joinerCount = Object.keys(joinerMap).length
+  const missingVariants = Object.values(missingVariantsMap)
+  const variantsInUse = Object.values(variantsInUseMap)
 
   const b = box as any
   const joiners = Object.values(joinerMap).map(j => {
@@ -186,7 +215,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const ems_requested = b.ems_payment_requested || false
     const customs_requested = b.customs_payment_requested || false
     if (!ems_requested && !customs_requested) {
-      return NextResponse.json({ box, joiners: [], itemTypes: boxItemTypes, totalWeight, weightByType, weightByItemType, ems_payment_requested: false, customs_payment_requested: false })
+      return NextResponse.json({ box, joiners: [], itemTypes: boxItemTypes, totalWeight, totalWeightActive, weightByType, weightByItemType, variantsInUse, missingVariants, ems_payment_requested: false, customs_payment_requested: false })
     }
     const mine = joiners.find(j => j.joiner_id === user.id)
     if (mine) {
@@ -205,10 +234,30 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
         m.customs_amount_eur = m.customs_amount_eur != null ? parseFloat(m.customs_amount_eur) : m.customs_share_eur
       }
     }
-    return NextResponse.json({ box, joiners: mine ? [mine] : [], itemTypes: boxItemTypes, totalWeight, weightByType, weightByItemType, ems_payment_requested: ems_requested, customs_payment_requested: customs_requested })
+    return NextResponse.json({ box, joiners: mine ? [mine] : [], itemTypes: boxItemTypes, totalWeight, totalWeightActive, weightByType, weightByItemType, variantsInUse, missingVariants, ems_payment_requested: ems_requested, customs_payment_requested: customs_requested })
   }
 
-  return NextResponse.json({ box, joiners, itemTypes: boxItemTypes, totalWeight, weightByType, weightByItemType, ems_payment_requested: b.ems_payment_requested || false, customs_payment_requested: b.customs_payment_requested || false })
+  return NextResponse.json({ box, joiners, itemTypes: boxItemTypes, totalWeight, totalWeightActive, weightByType, weightByItemType, variantsInUse, missingVariants, ems_payment_requested: b.ems_payment_requested || false, customs_payment_requested: b.customs_payment_requested || false })
+}
+
+// Re-derives this box's linked order ids and checks whether any of their items point at a
+// weight_variant that's been named but never actually weighed. Used to block publish server-side
+// too, not just in the UI (the UI's own disabled-button state can be raced or bypassed by a
+// direct request), so a box never gets billed off an incomplete weight table.
+async function findMissingVariants(boxId: string): Promise<{ id: string; item_type: string; label: string }[]> {
+  const box = await queryOne('SELECT order_id FROM boxes WHERE id=$1', [boxId]) as any
+  const linkedOrderRows = await query('SELECT order_id FROM box_orders WHERE box_id=$1', [boxId]).catch(() => [] as any[]) as any[]
+  const orderIds: string[] = linkedOrderRows.map((r: any) => r.order_id)
+  if (orderIds.length === 0 && box?.order_id) orderIds.push(box.order_id)
+  if (orderIds.length === 0) return []
+  const rows = await query(
+    `SELECT DISTINCT wv.id, wv.item_type, wv.label
+     FROM order_items oi
+     JOIN weight_variants wv ON wv.id = oi.weight_variant_id
+     WHERE oi.order_id = ANY($1::uuid[]) AND wv.weight_g IS NULL`,
+    [orderIds]
+  ).catch(() => [] as any[]) as any[]
+  return rows
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
@@ -233,6 +282,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   // Publish EMS — lock each joiner's ceil-rounded amount
   if (body.action === 'publish_ems') {
     if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    const missing = await findMissingVariants(params.id)
+    if (missing.length > 0) {
+      return NextResponse.json({ error: 'Some items still need a confirmed weight before EMS can be sent', missingVariants: missing }, { status: 409 })
+    }
     const { joiner_shares } = body // [{ joiner_id, ems_amount_eur }]
     for (const js of joiner_shares) {
       await query(
@@ -248,6 +301,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   // Publish Customs
   if (body.action === 'publish_customs') {
     if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    const missing = await findMissingVariants(params.id)
+    if (missing.length > 0) {
+      return NextResponse.json({ error: 'Some items still need a confirmed weight before Customs can be sent', missingVariants: missing }, { status: 409 })
+    }
     const { joiner_shares } = body
     for (const js of joiner_shares) {
       await query(

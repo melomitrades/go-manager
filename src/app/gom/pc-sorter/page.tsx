@@ -2,7 +2,19 @@
 import { useEffect, useState, useCallback, Fragment } from 'react'
 import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Check, Clock, Zap, Repeat, Shuffle, ShieldCheck } from 'lucide-react'
 import { Button, Card, CardContent, CardHeader, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
+import { WeightVariantPicker, type WeightVariant } from '@/components/shared/WeightVariantPicker'
 import { formatDate, formatDateTime } from '@/lib/utils'
+
+// Same 4 categories the weight-variant library uses everywhere else (Orders, Boxes). A pack
+// almost always represents an album version, so its picker is fixed to 'album'; an item can be
+// any of the four (a plain "Photocard" vs a "Lenticular"/"ID card" filed under Custom, etc.), so
+// its picker gets a small type selector alongside it, same convention as Orders' pricing options.
+const PC_ITEM_TYPES = [
+  { value: 'photocard', label: '🃏 Photocard' },
+  { value: 'album', label: '💿 Album' },
+  { value: 'photobook', label: '📖 Photobook' },
+  { value: 'custom', label: '✏️ Custom' },
+]
 
 function orderLabel(o: any) {
   return [o.group?.name, o.round_number ? `R${o.round_number}` : null, o.shop?.name].filter(Boolean).join(' · ') || o.id?.slice(0, 8)
@@ -104,6 +116,12 @@ export default function GomPcSorterPage() {
   const [newPackName, setNewPackName] = useState<Record<string, string>>({})
   const [newItemName, setNewItemName] = useState<Record<string, string>>({})
   const [newItemIsUnit, setNewItemIsUnit] = useState<Record<string, boolean>>({}) // pack_id -> checkbox state
+  // Optional link to the shared weight-variant library, so a pack/item can be named FROM an
+  // existing (or newly-created) variant instead of retyping a version name that also lives in
+  // Orders/Boxes. session_id -> variant id for packs; pack_id -> variant id / item type for items.
+  const [newPackVariant, setNewPackVariant] = useState<Record<string, string>>({})
+  const [newItemVariant, setNewItemVariant] = useState<Record<string, string>>({})
+  const [newItemType, setNewItemType] = useState<Record<string, string>>({}) // pack_id -> item_type, default 'photocard'
   const [qtyDrafts, setQtyDrafts] = useState<Record<string, Record<string, string>>>({}) // item_id -> member_id (or unit id) -> value
   // Draft state for building a new unit combo ("Mai + Jungeun") on a unit-tagged item, before
   // it's saved as a PCItemUnit. item_id -> selected real member ids / an overridden combo name.
@@ -240,9 +258,10 @@ export default function GomPcSorterPage() {
     if (!name) return
     await fetch(`/api/pc-sorter/${sessionId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ add_pack: { name } }),
+      body: JSON.stringify({ add_pack: { name, weight_variant_id: newPackVariant[sessionId] || null } }),
     })
     setNewPackName(p => ({ ...p, [sessionId]: '' }))
+    setNewPackVariant(p => ({ ...p, [sessionId]: '' }))
     await loadDetails(sessionId)
   }
 
@@ -260,10 +279,11 @@ export default function GomPcSorterPage() {
     if (!name) return
     await fetch(`/api/pc-sorter/${sessionId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ add_item: { pack_id: packId, name, is_unit: !!newItemIsUnit[packId] } }),
+      body: JSON.stringify({ add_item: { pack_id: packId, name, is_unit: !!newItemIsUnit[packId], weight_variant_id: newItemVariant[packId] || null } }),
     })
     setNewItemName(p => ({ ...p, [packId]: '' }))
     setNewItemIsUnit(p => ({ ...p, [packId]: false }))
+    setNewItemVariant(p => ({ ...p, [packId]: '' }))
     await loadDetails(sessionId)
   }
 
@@ -614,8 +634,21 @@ export default function GomPcSorterPage() {
                                 : s.sort_run_at && <p className="text-[11px] text-muted-foreground mt-0.5">"N left" badges show what's still unassigned since the last sort ({formatDateTime(s.sort_run_at)}).</p>}
                             </div>
                             {!isLocked && (
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap justify-end">
                                 <Input placeholder="New pack name (e.g. Ver. A)" value={newPackName[s.id] || ''} onChange={e => setNewPackName(p => ({ ...p, [s.id]: e.target.value }))} className="w-48 text-xs py-1.5" />
+                                <WeightVariantPicker
+                                  itemType="album"
+                                  groupId={s.group_id || null}
+                                  value={newPackVariant[s.id] || ''}
+                                  required={false}
+                                  placeholder="Or pick a weight variant…"
+                                  onChange={(id, variant) => {
+                                    setNewPackVariant(p => ({ ...p, [s.id]: id }))
+                                    // Only auto-fill the name field if the GOM hasn't already typed
+                                    // one by hand — never clobber a deliberately different name.
+                                    if (variant && !(newPackName[s.id] || '').trim()) setNewPackName(p => ({ ...p, [s.id]: variant.label }))
+                                  }}
+                                />
                                 <Button size="sm" variant="outline" onClick={() => addPack(s.id)}><Plus size={12} /> Add pack</Button>
                               </div>
                             )}
@@ -631,14 +664,39 @@ export default function GomPcSorterPage() {
                                 return (
                                   <div key={pack.id} className="border border-border rounded-xl overflow-hidden">
                                     <div className="flex items-center justify-between px-3 py-2 bg-secondary/30 border-b border-border">
-                                      <p className="text-sm font-semibold">{pack.name}</p>
+                                      <p className="text-sm font-semibold flex items-center gap-1.5">
+                                        {pack.name}
+                                        {pack.variant_label && (
+                                          <span className="text-[10px] font-medium text-muted-foreground bg-background border border-border rounded-full px-1.5 py-0.5" title="Linked to the shared weight-variant library">
+                                            🔗 {pack.variant_label}{pack.variant_weight_g != null ? ` — ${pack.variant_weight_g}g` : ''}
+                                          </span>
+                                        )}
+                                      </p>
                                       {!isLocked && <button onClick={() => deletePack(s.id, pack.id)} className="text-destructive/50 hover:text-destructive"><Trash2 size={12} /></button>}
                                     </div>
                                     <div className="p-3 space-y-3">
                                       {!isLocked && (
                                         <div className="space-y-1.5">
-                                          <div className="flex items-center gap-1.5">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
                                             <Input placeholder="New item (e.g. Photocard)" value={newItemName[pack.id] || ''} onChange={e => setNewItemName(p => ({ ...p, [pack.id]: e.target.value }))} className="text-xs py-1.5 flex-1" />
+                                            <select
+                                              value={newItemType[pack.id] || 'photocard'}
+                                              onChange={e => setNewItemType(p => ({ ...p, [pack.id]: e.target.value }))}
+                                              className="px-2 py-1.5 rounded-lg border border-input bg-background text-xs focus:outline-none focus:ring-2 focus:ring-primary/25"
+                                            >
+                                              {PC_ITEM_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                                            </select>
+                                            <WeightVariantPicker
+                                              itemType={newItemType[pack.id] || 'photocard'}
+                                              groupId={s.group_id || null}
+                                              value={newItemVariant[pack.id] || ''}
+                                              required={false}
+                                              placeholder="Or pick a weight variant…"
+                                              onChange={(id, variant) => {
+                                                setNewItemVariant(p => ({ ...p, [pack.id]: id }))
+                                                if (variant && !(newItemName[pack.id] || '').trim()) setNewItemName(p => ({ ...p, [pack.id]: variant.label }))
+                                              }}
+                                            />
                                             <Button size="sm" variant="outline" onClick={() => addItem(s.id, pack.id)}><Plus size={11} /> Add item</Button>
                                           </div>
                                           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer pl-0.5">
@@ -659,6 +717,11 @@ export default function GomPcSorterPage() {
                                             <p className="text-xs font-bold text-primary flex items-center gap-1.5">
                                               {item.name}
                                               {item.is_unit && <span className="text-[10px] font-semibold text-violet-700 bg-violet-50 border border-violet-200 rounded-full px-1.5 py-0.5">👥 Unit</span>}
+                                              {item.variant_label && (
+                                                <span className="text-[10px] font-medium text-muted-foreground bg-background border border-border rounded-full px-1.5 py-0.5" title="Linked to the shared weight-variant library">
+                                                  🔗 {item.variant_label}{item.variant_weight_g != null ? ` — ${item.variant_weight_g}g` : ''}
+                                                </span>
+                                              )}
                                             </p>
                                             {!isLocked && <button onClick={() => deleteItem(s.id, item.id)} className="text-destructive/40 hover:text-destructive"><Trash2 size={11} /></button>}
                                           </div>

@@ -8,6 +8,7 @@ import {
 } from '@/components/ui'
 import { formatDate } from '@/lib/utils'
 import { OrderDetail } from '@/components/shared/OrderDetail'
+import { WeightVariantPicker } from '@/components/shared/WeightVariantPicker'
 import type { Order, Shop, Group, Member, Profile, OrderStatus, OrderType } from '@/types'
 import { ORDER_STATUS_LABELS } from '@/types'
 
@@ -22,7 +23,11 @@ const ITEM_TYPES = [
 
 interface PricingOption {
   id: string; label: string; price_eur: string; price_krw: string; weight_category: string; weight_g: string; entries: string
+  // Which named weight profile (e.g. "Ver A", "Lightstick") this pricing option's weight comes
+  // from — see WeightVariantPicker below. '' means none picked yet.
+  weight_variant_id?: string
 }
+
 interface ItemLine {
   id: string; member_ids: string[]; qty: number; description: string; pricing_option_id: string; inclusions_count: number
 }
@@ -220,6 +225,7 @@ export default function GomOrdersPage() {
               entries: item.entries_count ? String(item.entries_count) : '',
               weight_category: item.item_type || 'photocard',
               weight_g: String(item.weight_g != null && item.weight_g !== '' ? item.weight_g : ((!item.item_type || item.item_type === 'photocard') ? '1' : '')),
+              weight_variant_id: item.weight_variant_id || '',
             }
           }
         }
@@ -433,7 +439,7 @@ export default function GomOrdersPage() {
         const priceKrw = opt?.price_krw && opt.price_krw !== '' ? Math.round(parseFloat(opt.price_krw)) : null
         const entriesPerItem = opt?.entries && opt.entries !== '' ? parseInt(opt.entries) : 0
         const versionName = form.is_multi_version ? (versionByOptId[item.pricing_option_id] || null) : null
-        const base = { joiner_id: rowJoinerId as string|null, pricing_type:'custom' as const, description:itemDescription, price_eur:opt?.price_eur?parseFloat(opt.price_eur):null, price_krw:priceKrw, entries_count:0, item_type:opt?.weight_category||'photocard', weight_g:opt?.weight_g?parseFloat(opt.weight_g):null, inclusions_count:item.inclusions_count||0, version_name:versionName, claim_group_id:item.id }
+        const base = { joiner_id: rowJoinerId as string|null, pricing_type:'custom' as const, description:itemDescription, price_eur:opt?.price_eur?parseFloat(opt.price_eur):null, price_krw:priceKrw, entries_count:0, item_type:opt?.weight_category||'photocard', weight_g:opt?.weight_g?parseFloat(opt.weight_g):null, weight_variant_id:opt?.weight_variant_id||null, inclusions_count:item.inclusions_count||0, version_name:versionName, claim_group_id:item.id }
         // NOTE: "Inclusions" is entered ONCE per item line — it's the total this whole claim
         // represents, not a per-member value. When the line explodes into one order_items ROW
         // PER MEMBER PILL below, every resulting row intentionally carries the SAME
@@ -663,13 +669,23 @@ export default function GomOrdersPage() {
                       </div>
                       <div className="space-y-2">
                         {opts.map((opt: PricingOption) => (
-                          <div key={opt.id} className={`grid gap-2 items-center ${form.is_fancall ? 'grid-cols-[1fr_100px_110px_80px_130px_32px]' : 'grid-cols-[1fr_100px_110px_130px_32px]'}`}>
-                            <Input placeholder={`e.g. "${prefix}POB only"`} value={opt.label} onChange={e=>updateOpt(opt.id,'label',e.target.value)}/>
-                            <Input type="number" placeholder="€" value={opt.price_eur} onChange={e=>updateOpt(opt.id,'price_eur',e.target.value)}/>
-                            <Input type="number" placeholder="₩" value={opt.price_krw||''} onChange={e=>updateOpt(opt.id,'price_krw',e.target.value)}/>
-                            {form.is_fancall && <Input type="number" placeholder="0" min="0" value={opt.entries||''} onChange={e=>updateOpt(opt.id,'entries',e.target.value)}/>}
-                            <Select options={ITEM_TYPES} value={opt.weight_category||'photocard'} onChange={e=>{updateOpt(opt.id,'weight_category',e.target.value); if(e.target.value==='photocard') updateOpt(opt.id,'weight_g','1')}}/>
-                            <button onClick={()=>removeOpt(opt.id)} disabled={opts.length===1} className="text-muted-foreground hover:text-destructive disabled:opacity-20 transition-colors"><X size={15}/></button>
+                          <div key={opt.id} className="space-y-1.5">
+                            <div className={`grid gap-2 items-center ${form.is_fancall ? 'grid-cols-[1fr_100px_110px_80px_130px_32px]' : 'grid-cols-[1fr_100px_110px_130px_32px]'}`}>
+                              <Input placeholder={`e.g. "${prefix}POB only"`} value={opt.label} onChange={e=>updateOpt(opt.id,'label',e.target.value)}/>
+                              <Input type="number" placeholder="€" value={opt.price_eur} onChange={e=>updateOpt(opt.id,'price_eur',e.target.value)}/>
+                              <Input type="number" placeholder="₩" value={opt.price_krw||''} onChange={e=>updateOpt(opt.id,'price_krw',e.target.value)}/>
+                              {form.is_fancall && <Input type="number" placeholder="0" min="0" value={opt.entries||''} onChange={e=>updateOpt(opt.id,'entries',e.target.value)}/>}
+                              <Select options={ITEM_TYPES} value={opt.weight_category||'photocard'} onChange={e=>{updateOpt(opt.id,'weight_category',e.target.value); updateOpt(opt.id,'weight_variant_id','')}}/>
+                              <button onClick={()=>removeOpt(opt.id)} disabled={opts.length===1} className="text-muted-foreground hover:text-destructive disabled:opacity-20 transition-colors"><X size={15}/></button>
+                            </div>
+                            <div className="pl-1">
+                              <WeightVariantPicker
+                                itemType={opt.weight_category || 'photocard'}
+                                groupId={orderType === 'group' ? (form.group_id || null) : null}
+                                value={opt.weight_variant_id || ''}
+                                onChange={v => updateOpt(opt.id, 'weight_variant_id', v)}
+                              />
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -727,13 +743,23 @@ export default function GomOrdersPage() {
                       </div>
                       <div className="space-y-2">
                         {ver.options.map((opt: PricingOption) => (
-                          <div key={opt.id} className={`grid gap-2 items-center ${form.is_fancall ? 'grid-cols-[1fr_100px_110px_80px_130px_32px]' : 'grid-cols-[1fr_100px_110px_130px_32px]'}`}>
-                            <Input placeholder='e.g. "POB only"' value={opt.label} onChange={e=>updateOpt(opt.id,'label',e.target.value)}/>
-                            <Input type="number" placeholder="€" value={opt.price_eur} onChange={e=>updateOpt(opt.id,'price_eur',e.target.value)}/>
-                            <Input type="number" placeholder="₩" value={opt.price_krw||''} onChange={e=>updateOpt(opt.id,'price_krw',e.target.value)}/>
-                            {form.is_fancall && <Input type="number" placeholder="0" min="0" value={opt.entries||''} onChange={e=>updateOpt(opt.id,'entries',e.target.value)}/>}
-                            <Select options={ITEM_TYPES} value={opt.weight_category||'photocard'} onChange={e=>{updateOpt(opt.id,'weight_category',e.target.value); if(e.target.value==='photocard') updateOpt(opt.id,'weight_g','1')}}/>
-                            <button onClick={()=>removeOpt(opt.id)} disabled={ver.options.length===1} className="text-muted-foreground hover:text-destructive disabled:opacity-20 transition-colors"><X size={15}/></button>
+                          <div key={opt.id} className="space-y-1.5">
+                            <div className={`grid gap-2 items-center ${form.is_fancall ? 'grid-cols-[1fr_100px_110px_80px_130px_32px]' : 'grid-cols-[1fr_100px_110px_130px_32px]'}`}>
+                              <Input placeholder='e.g. "POB only"' value={opt.label} onChange={e=>updateOpt(opt.id,'label',e.target.value)}/>
+                              <Input type="number" placeholder="€" value={opt.price_eur} onChange={e=>updateOpt(opt.id,'price_eur',e.target.value)}/>
+                              <Input type="number" placeholder="₩" value={opt.price_krw||''} onChange={e=>updateOpt(opt.id,'price_krw',e.target.value)}/>
+                              {form.is_fancall && <Input type="number" placeholder="0" min="0" value={opt.entries||''} onChange={e=>updateOpt(opt.id,'entries',e.target.value)}/>}
+                              <Select options={ITEM_TYPES} value={opt.weight_category||'photocard'} onChange={e=>{updateOpt(opt.id,'weight_category',e.target.value); updateOpt(opt.id,'weight_variant_id','')}}/>
+                              <button onClick={()=>removeOpt(opt.id)} disabled={ver.options.length===1} className="text-muted-foreground hover:text-destructive disabled:opacity-20 transition-colors"><X size={15}/></button>
+                            </div>
+                            <div className="pl-1">
+                              <WeightVariantPicker
+                                itemType={opt.weight_category || 'photocard'}
+                                groupId={orderType === 'group' ? (form.group_id || null) : null}
+                                value={opt.weight_variant_id || ''}
+                                onChange={v => updateOpt(opt.id, 'weight_variant_id', v)}
+                              />
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -756,13 +782,23 @@ export default function GomOrdersPage() {
               </div>
               <div className="space-y-2">
                 {pricingOptions.map(opt => (
-                  <div key={opt.id} className={`grid gap-2 items-center ${form.is_fancall ? 'grid-cols-[1fr_100px_110px_80px_130px_32px]' : 'grid-cols-[1fr_100px_110px_130px_32px]'}`}>
-                    <Input placeholder='e.g. "POB only"' value={opt.label} onChange={e=>updatePricingOption(opt.id,'label',e.target.value)}/>
-                    <Input type="number" placeholder="€" value={opt.price_eur} onChange={e=>updatePricingOption(opt.id,'price_eur',e.target.value)}/>
-                    <Input type="number" placeholder="₩" value={opt.price_krw||''} onChange={e=>updatePricingOption(opt.id,'price_krw',e.target.value)}/>
-                    {form.is_fancall && <Input type="number" placeholder="0" min="0" value={opt.entries||''} onChange={e=>updatePricingOption(opt.id,'entries',e.target.value)} title="Entries per item"/>}
-                    <Select options={ITEM_TYPES} value={opt.weight_category||'photocard'} onChange={e=>{updatePricingOption(opt.id,'weight_category',e.target.value); if(e.target.value==='photocard') updatePricingOption(opt.id,'weight_g','1')}}/>
-                    <button onClick={()=>removePricingOption(opt.id)} disabled={pricingOptions.length===1} className="text-muted-foreground hover:text-destructive disabled:opacity-20 transition-colors"><X size={15}/></button>
+                  <div key={opt.id} className="space-y-1.5">
+                    <div className={`grid gap-2 items-center ${form.is_fancall ? 'grid-cols-[1fr_100px_110px_80px_130px_32px]' : 'grid-cols-[1fr_100px_110px_130px_32px]'}`}>
+                      <Input placeholder='e.g. "POB only"' value={opt.label} onChange={e=>updatePricingOption(opt.id,'label',e.target.value)}/>
+                      <Input type="number" placeholder="€" value={opt.price_eur} onChange={e=>updatePricingOption(opt.id,'price_eur',e.target.value)}/>
+                      <Input type="number" placeholder="₩" value={opt.price_krw||''} onChange={e=>updatePricingOption(opt.id,'price_krw',e.target.value)}/>
+                      {form.is_fancall && <Input type="number" placeholder="0" min="0" value={opt.entries||''} onChange={e=>updatePricingOption(opt.id,'entries',e.target.value)} title="Entries per item"/>}
+                      <Select options={ITEM_TYPES} value={opt.weight_category||'photocard'} onChange={e=>{updatePricingOption(opt.id,'weight_category',e.target.value); updatePricingOption(opt.id,'weight_variant_id','')}}/>
+                      <button onClick={()=>removePricingOption(opt.id)} disabled={pricingOptions.length===1} className="text-muted-foreground hover:text-destructive disabled:opacity-20 transition-colors"><X size={15}/></button>
+                    </div>
+                    <div className="pl-1">
+                      <WeightVariantPicker
+                        itemType={opt.weight_category || 'photocard'}
+                        groupId={orderType === 'group' ? (form.group_id || null) : null}
+                        value={opt.weight_variant_id || ''}
+                        onChange={v => updatePricingOption(opt.id, 'weight_variant_id', v)}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>

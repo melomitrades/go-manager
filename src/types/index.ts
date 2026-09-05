@@ -111,10 +111,32 @@ export interface OrderItem {
   amount_claimed: number
   price_eur: number | null
   weight_g: number | null
+  // Set when this item's pricing option was configured with a weight variant (see
+  // WeightVariant below) instead of the box's legacy per-item-type weight. NULL on every item
+  // created before the weight-variants feature shipped — those keep resolving their weight the
+  // old way, untouched.
+  weight_variant_id: string | null
   created_at: string
   // Joined
   member?: Member
   joiner?: Profile
+  variant?: WeightVariant
+}
+
+// ── Weight Variants ───────────────────────────────────────
+// A named weight profile a GOM can pick or create per pricing option (e.g. "Ver A — 300g",
+// "Lightstick ver — 480g"). Global and reusable: group_id NULL means it's available to every
+// group; a group_id scopes it to that group's picker. weight_g is nullable — a GOM can name a
+// variant at order-creation time and fill in its actual gram weight later, once the item has
+// been physically weighed, from the Boxes page's "Confirm weights" panel. Editing weight_g
+// updates every order item that references this variant, past and future.
+export interface WeightVariant {
+  id: string
+  group_id: string | null
+  item_type: string // 'photocard' | 'album' | 'photobook' | 'custom'
+  label: string
+  weight_g: number | null
+  created_at: string
 }
 
 // ── Boxes ─────────────────────────────────────────────────
@@ -260,8 +282,18 @@ export interface PCPack {
   session_id: string
   name: string
   sort_order: number
+  // Optional link to the shared weight-variant library (see WeightVariant above) — lets a pack
+  // be named from an existing (or newly-created) "Ver A"-style variant instead of retyping a
+  // version name that also lives in Orders/Boxes. Purely a naming convenience: nothing about the
+  // sort algorithm, inclusions, or ownership tracking reads this — a pack with no linked variant
+  // (the common case for existing/old data) behaves exactly as before.
+  weight_variant_id: string | null
   created_at: string
   items?: PCItem[]
+  // Joined for display only, when the session-detail API includes them (label/weight_g of the
+  // linked weight_variant_id, if any).
+  variant_label?: string | null
+  variant_weight_g?: number | null
 }
 
 export interface PCItem {
@@ -273,9 +305,14 @@ export interface PCItem {
   // packaged as one option, e.g. "Mai + Jungeun") instead of one option per real group member.
   // Set once at creation — there's no way to flip it afterward.
   is_unit: boolean
+  // Same optional weight-variant naming link as PCPack.weight_variant_id above, but for an
+  // individual item within a pack (e.g. "Photocard", "Lenticular").
+  weight_variant_id: string | null
   created_at: string
   quantities?: PCItemQuantity[]
   units?: PCItemUnit[]
+  variant_label?: string | null
+  variant_weight_g?: number | null
 }
 
 // A combo of several real members packaged as one sortable option for a single unit-tagged

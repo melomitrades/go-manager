@@ -34,7 +34,7 @@ export default function JoinerBoxesPage() {
     )
   }
 
-  function ItemBreakdown({ items, emsAmt, joinerWeight, label, det }: { items: any[]; emsAmt: number; joinerWeight: number; label: string; det: any }) {
+  function ItemBreakdown({ items, emsAmt, joinerWeight, label, det, boxRatePerGram }: { items: any[]; emsAmt: number; joinerWeight: number; label: string; det: any; boxRatePerGram: number }) {
     if (!items?.length) return null
     const isEms = label === 'EMS'
     const colour = isEms ? 'text-blue-600' : 'text-purple-600'
@@ -71,7 +71,10 @@ export default function JoinerBoxesPage() {
     const totalGroupWeight = Object.values(groups).reduce((s, g) => s + g.weight_g, 0)
     const totalGroupPcs = Object.values(groups).reduce((s, g) => s + g.qty + g.inclusions, 0)
     const useWeight = totalGroupWeight > 0
-    const joinerItemRate = useWeight ? (joinerWeight > 0 ? emsAmt / joinerWeight : 0) : 0
+    // Use the box's true blended rate (fee total / total weight across all joiners), not a
+    // back-calculation of this joiner's locked share over their current live weight — that
+    // back-calc drifts from any configured weight type whenever claims change after publish.
+    const joinerItemRate = useWeight ? boxRatePerGram : 0
     const ratePerPc = !useWeight && totalGroupPcs > 0 ? emsAmt / totalGroupPcs : 0
 
     return (
@@ -123,6 +126,11 @@ export default function JoinerBoxesPage() {
                 const emsAmt = mine?.ems_amount_eur ?? mine?.ems_share_eur ?? 0
                 const customsAmt = mine?.customs_amount_eur ?? mine?.customs_share_eur ?? 0
                 const joinerWeight = mine?.weight_g || 0
+                // True box-wide rate (fee total / active weight across all joiners) — same
+                // basis the GOM's Boxes page uses, so per-piece prices shown here match it.
+                const activeWeight = det?.totalWeightActive ?? det?.totalWeight ?? 0
+                const emsRatePerGram = activeWeight > 0 ? parseFloat(box.ems_total_eur || 0) / activeWeight : 0
+                const customsRatePerGram = activeWeight > 0 ? parseFloat(box.customs_total_eur || 0) / activeWeight : 0
 
                 return (
                   <Card key={box.id}>
@@ -185,12 +193,12 @@ export default function JoinerBoxesPage() {
 
                             {/* EMS breakdown */}
                             {emsRequested && mine.items?.length > 0 && (
-                              <ItemBreakdown items={mine.items} emsAmt={emsAmt} joinerWeight={joinerWeight} label="EMS" det={det}/>
+                              <ItemBreakdown items={mine.items} emsAmt={emsAmt} joinerWeight={joinerWeight} label="EMS" det={det} boxRatePerGram={emsRatePerGram}/>
                             )}
 
                             {/* Customs breakdown */}
                             {customsRequested && mine.items?.length > 0 && (
-                              <ItemBreakdown items={mine.items} emsAmt={customsAmt} joinerWeight={joinerWeight} label="Customs" det={det}/>
+                              <ItemBreakdown items={mine.items} emsAmt={customsAmt} joinerWeight={joinerWeight} label="Customs" det={det} boxRatePerGram={customsRatePerGram}/>
                             )}
                           </div>
                         )}
