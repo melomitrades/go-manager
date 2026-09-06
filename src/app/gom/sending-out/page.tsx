@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Plus, Send, Pencil, Trash2, ToggleLeft, ToggleRight,
-  Package, CreditCard, Truck, CheckCircle2, Check, SkipForward, ArrowLeft, Image as ImageIcon, Settings2,
+  Package, CreditCard, Truck, CheckCircle2, Check, SkipForward, ArrowLeft, Image as ImageIcon, Settings2, RotateCcw,
 } from 'lucide-react'
 import { Button, Card, CardHeader, CardContent, Badge, Modal, Input, Select, FormField, PageHeader, EmptyState, Checkbox } from '@/components/ui'
 import { formatEur, formatDate } from '@/lib/utils'
@@ -63,9 +63,21 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
       if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Could not finish packing'); setBusy(false); return }
       setBusy(false); onDone(); return
     }
+    if (action === 'reset') {
+      if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Could not reset packing'); setBusy(false); return }
+      await load()
+      setIndex(0)
+      setBusy(false)
+      return
+    }
     await load()
     setIndex(i => Math.min(i + 1, (data?.items?.length || 1) - 1))
     setBusy(false)
+  }
+
+  function handleReset() {
+    if (!confirm('Reset packing progress for this shipment? Every item will need to be confirmed or skipped again.')) return
+    act('reset')
   }
 
   if (loading) return (
@@ -145,9 +157,17 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
         </div>
 
         <div className="flex items-center justify-between pt-2 border-t border-border">
-          <p className="text-xs text-muted-foreground">
-            {progress.confirmed} confirmed · {progress.skipped} skipped · {progress.remaining} remaining
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-muted-foreground">
+              {progress.confirmed} confirmed · {progress.skipped} skipped · {progress.remaining} remaining
+            </p>
+            {(progress.confirmed > 0 || progress.skipped > 0) && (
+              <button onClick={handleReset} disabled={busy} type="button"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive disabled:opacity-50">
+                <RotateCcw size={11} /> Reset progress
+              </button>
+            )}
+          </div>
           <Button size="sm" variant={allDone ? 'default' : 'outline'} disabled={busy} onClick={() => act('finalize')}>
             <CheckCircle2 size={13} /> Mark as Packed
           </Button>

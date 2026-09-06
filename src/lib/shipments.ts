@@ -139,12 +139,41 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
       AND COALESCE(oi.joiner_id, o.personal_joiner_id) = $2
   `, [boxIds, joinerId]).catch(() => [] as any[])
 
+  // Only pull in sorted photocards once the GOM has LOCKED the sorting session's results
+  // (pc_sorting_sessions.locked_at) — the same "this is final, ready to physically deal with"
+  // gate the order_items query above applies via o.status='at_gom'. Before a session is locked,
+  // the GOM can still rerun the sort — which deletes every pc_assignments row for that session
+  // and reinserts fresh ones with brand-new ids — or hand-edit quantities/inclusions. Pulling
+  // assignments into a packing checklist before that settles is what produced "ghost" sorted
+  // items: an item added to the checklist (and maybe already confirmed) from a sort that was
+  // later rerun, left behind once the rerun produced a different id for what was conceptually
+  // the same item.
   const pcAssignments = await query<any>(`
     SELECT a.id
     FROM pc_assignments a
     JOIN pc_sorting_sessions s ON s.id = a.session_id
-    WHERE s.box_id = ANY($1::uuid[]) AND a.joiner_id = $2
+    WHERE s.box_id = ANY($1::uuid[]) AND a.joiner_id = $2 AND s.locked_at IS NOT NULL
   `, [boxIds, joinerId]).catch(() => [] as any[])
+
+  const validOrderItemIds = orderItems.map(r => r.id)
+  const validPcAssignmentIds = pcAssignments.map(r => r.id)
+
+  // Prune any shipment_items row whose source no longer matches the current valid set — the
+  // claim was edited/unclaimed, the order moved off At-GOM, or (the case behind the "sorted
+  // items" bug) a sort was rerun (or a locked session got unlocked again) after this joiner's
+  // assignment was already added to the checklist. This function used to only ever INSERT, so a
+  // stale row lingered forever — showing as a blank "Sorted item" once its join target vanished
+  // — sitting right alongside the freshly-inserted replacement. Deleting it here means the
+  // checklist self-heals the next time it's opened instead of accumulating ghosts.
+  await query(
+    `DELETE FROM shipment_items
+     WHERE shipment_id = $1
+       AND (
+         (source_type = 'order_item' AND NOT (source_id = ANY($2::uuid[])))
+         OR (source_type = 'pc_assignment' AND NOT (source_id = ANY($3::uuid[])))
+       )`,
+    [shipmentId, validOrderItemIds, validPcAssignmentIds]
+  ).catch(err => console.error('[shipments prune]', err))
 
   const rows: { source_type: string; source_id: string }[] = [
     ...orderItems.map(r => ({ source_type: 'order_item', source_id: r.id })),
@@ -159,6 +188,29 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
      ON CONFLICT (shipment_id, source_type, source_id) DO NOTHING`,
     [shipmentId, rows.map(r => r.source_type), rows.map(r => r.source_id)]
   )
+}
+
+// Wipe a shipment's packing progress back to a clean slate — every checklist item's
+// confirmed/skipped flag cleared. If the shipment had already been finalized as 'packed', its
+// status reverts to 'pending' too (packed_at cleared), since a "packed" status is meaningless
+// once the confirmations behind it are gone. A shipment further along than that (payment
+// requested/complete, shipped, complete) keeps its status untouched — the GOM already has a
+// fully free-form status dropdown for those cases, and silently rolling back a shipment that's
+// already been paid for or shipped would be more surprising than helpful.
+export async function resetShipmentPacking(shipmentId: string) {
+  await ensureShipmentsSchema()
+  await query(
+    `UPDATE shipment_items SET confirmed=false, skipped=false, confirmed_at=NULL WHERE shipment_id=$1`,
+    [shipmentId]
+  )
+  const shipment = await queryOne<any>('SELECT * FROM shipments WHERE id=$1', [shipmentId])
+  if (shipment?.status === 'packed') {
+    return queryOne(
+      `UPDATE shipments SET status='pending', packed_at=NULL, updated_at=now() WHERE id=$1 RETURNING *`,
+      [shipmentId]
+    )
+  }
+  return shipment
 }
 
 // Full checklist for the Pack wizard: shipment_items joined back out to their display details,

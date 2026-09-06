@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
-import { ensureShipmentsSchema, getFormBoxIds, buildShipmentItems, getShipmentChecklist } from '@/lib/shipments'
+import { ensureShipmentsSchema, getFormBoxIds, buildShipmentItems, getShipmentChecklist, resetShipmentPacking } from '@/lib/shipments'
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
@@ -61,6 +61,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
     const row = await queryOne('UPDATE shipments SET status=$1, packed_at=now(), updated_at=now() WHERE id=$2 RETURNING *', ['packed', shipment.id])
     return NextResponse.json(row)
+  }
+
+  // Reset a packing session: clear every checklist item's confirmed/skipped state so the GOM
+  // can walk through the box again from scratch (e.g. after a mis-pack, or after a PC Sorter
+  // rerun changed what's supposed to be included). Rolls the shipment back to 'pending' only if
+  // it had already been marked 'packed' — see resetShipmentPacking for why a shipment further
+  // along the pipeline is left alone.
+  if (action === 'reset') {
+    const row = await resetShipmentPacking(shipment.id)
+    return NextResponse.json({ ok: true, shipment: row })
   }
 
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
