@@ -216,6 +216,17 @@ export async function resetShipmentPacking(shipmentId: string) {
 // Full checklist for the Pack wizard: shipment_items joined back out to their display details,
 // plus a map of order_id -> preview image (fetched once per distinct order, not per item, since
 // preview_image_url is a multi-MB base64 blob).
+//
+// Claimed order items are returned one step per item, in shipment_items insertion order, exactly
+// as before. Sorted photocards are returned AFTER every order item, grouped into one step PER
+// ALBUM VERSION (pack) rather than one per individual assignment — a joiner's inclusions for a
+// pack are physically handed over together, not counted out one photocard at a time, and
+// stepping through every single assignment individually was both tedious and (per
+// pc_assignments.id changing on every sort rerun — see buildShipmentItems) the shape of the
+// "ghost item" bug. Each group step's `item_ids` carries every underlying shipment_items id it
+// represents, so confirming/skipping the step acts on all of them at once; `members` carries one
+// entry per distinct (item, member) combination in the pack with a `count`, for a "member pills
+// with quantity" display instead of a flat list.
 export async function getShipmentChecklist(shipmentId: string) {
   const items = await query<any>('SELECT * FROM shipment_items WHERE shipment_id=$1 ORDER BY created_at', [shipmentId])
   if (items.length === 0) return { items: [] as any[], previewImages: {} as Record<string, string> }
@@ -236,7 +247,7 @@ export async function getShipmentChecklist(shipmentId: string) {
       WHERE oi.id = ANY($1::uuid[])
     `, [orderItemIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
     pcAssignmentIds.length ? query<any>(`
-      SELECT a.id, a.is_repeat, a.is_random, a.is_guaranteed,
+      SELECT a.id, a.pack_id, a.is_repeat, a.is_random, a.is_guaranteed,
         pk.name as pack_name, it.name as item_name, COALESCE(m.name, u.name) as member_name
       FROM pc_assignments a
       JOIN pc_sorting_sessions s ON s.id = a.session_id
@@ -255,11 +266,12 @@ export async function getShipmentChecklist(shipmentId: string) {
     if (r.preview_image_url && !previewImages[r.order_id]) previewImages[r.order_id] = r.preview_image_url
   }
 
-  const out = items.map(it => {
-    if (it.source_type === 'order_item') {
+  const orderOut = items
+    .filter(it => it.source_type === 'order_item')
+    .map(it => {
       const d = orderById.get(it.source_id)
       return {
-        id: it.id, source_type: it.source_type, source_id: it.source_id,
+        id: it.id, source_type: it.source_type, item_ids: [it.id],
         confirmed: it.confirmed, skipped: it.skipped,
         label: d?.description || d?.item_type || 'Item',
         member_name: d?.member_name || null,
@@ -269,21 +281,53 @@ export async function getShipmentChecklist(shipmentId: string) {
         order_id: d?.order_id || null,
         has_preview: !!d?.preview_image_url,
       }
-    }
-    const d = pcById.get(it.source_id)
-    return {
-      id: it.id, source_type: it.source_type, source_id: it.source_id,
-      confirmed: it.confirmed, skipped: it.skipped,
-      label: d?.item_name || 'Sorted item',
-      member_name: d?.member_name || null,
-      sub_label: d?.pack_name || '',
-      amount_claimed: 1,
-      price_eur: null,
-      order_id: null,
-      has_preview: false,
-      is_repeat: !!d?.is_repeat, is_random: !!d?.is_random, is_guaranteed: !!d?.is_guaranteed,
-    }
-  })
+    })
 
-  return { items: out, previewImages }
+  type PcMember = { member_name: string; item_name: string; count: number; is_repeat: boolean; is_random: boolean; is_guaranteed: boolean }
+  type PcGroup = {
+    pack_id: string; pack_name: string; item_ids: string[]; created_at: any
+    confirmed_count: number; skipped_count: number; total: number
+    members: Map<string, PcMember>
+  }
+  const groups = new Map<string, PcGroup>()
+  for (const it of items) {
+    if (it.source_type !== 'pc_assignment') continue
+    const d = pcById.get(it.source_id)
+    const packId = d?.pack_id || 'unknown'
+    if (!groups.has(packId)) {
+      groups.set(packId, {
+        pack_id: packId, pack_name: d?.pack_name || 'Sorted items', item_ids: [], created_at: it.created_at,
+        confirmed_count: 0, skipped_count: 0, total: 0, members: new Map(),
+      })
+    }
+    const g = groups.get(packId)!
+    g.item_ids.push(it.id)
+    g.total += 1
+    if (it.confirmed) g.confirmed_count += 1
+    if (it.skipped) g.skipped_count += 1
+
+    const memberName = d?.member_name || 'Random'
+    const itemName = d?.item_name || 'Item'
+    const memberKey = `${itemName}|${memberName}|${!!d?.is_repeat}|${!!d?.is_random}|${!!d?.is_guaranteed}`
+    if (!g.members.has(memberKey)) {
+      g.members.set(memberKey, { member_name: memberName, item_name: itemName, count: 0, is_repeat: !!d?.is_repeat, is_random: !!d?.is_random, is_guaranteed: !!d?.is_guaranteed })
+    }
+    g.members.get(memberKey)!.count += 1
+  }
+
+  const pcOut = [...groups.values()]
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    .map(g => ({
+      id: `pack:${g.pack_id}`, source_type: 'pc_assignment_group', item_ids: g.item_ids,
+      confirmed: g.total > 0 && g.confirmed_count === g.total,
+      skipped: g.total > 0 && g.skipped_count === g.total,
+      label: g.pack_name,
+      member_name: null,
+      sub_label: `${g.total} sorted item${g.total === 1 ? '' : 's'}`,
+      members: [...g.members.values()],
+      amount_claimed: g.total,
+      price_eur: null, order_id: null, has_preview: false,
+    }))
+
+  return { items: [...orderOut, ...pcOut], previewImages }
 }

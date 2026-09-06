@@ -37,16 +37,21 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const shipment = await queryOne<any>('SELECT * FROM shipments WHERE id=$1', [params.id])
   if (!shipment) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const { action, item_id } = await req.json()
+  const { action, item_id, item_ids } = await req.json()
+  // A "pack" checklist step can now represent several underlying shipment_items rows at once
+  // (every sorted photocard in one album-version group — see getShipmentChecklist), so
+  // confirm/skip/unconfirm accept either a single item_id (order-item steps) or an item_ids
+  // array (grouped pc-assignment steps) and apply to all of them together.
+  const ids: string[] = Array.isArray(item_ids) && item_ids.length ? item_ids : (item_id ? [item_id] : [])
 
   if (action === 'confirm' || action === 'skip' || action === 'unconfirm') {
-    if (!item_id) return NextResponse.json({ error: 'item_id required' }, { status: 400 })
+    if (!ids.length) return NextResponse.json({ error: 'item_id required' }, { status: 400 })
     const confirmed = action === 'confirm'
     const skipped = action === 'skip'
     await query(
       `UPDATE shipment_items SET confirmed=$1, skipped=$2, confirmed_at=CASE WHEN $1 OR $2 THEN now() ELSE NULL END
-       WHERE id=$3 AND shipment_id=$4`,
-      [confirmed, skipped, item_id, shipment.id]
+       WHERE id = ANY($3::uuid[]) AND shipment_id=$4`,
+      [confirmed, skipped, ids, shipment.id]
     )
     return NextResponse.json({ ok: true })
   }

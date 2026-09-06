@@ -53,11 +53,11 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
 
   useEffect(() => { load() }, [load])
 
-  async function act(action: string, item_id?: string) {
+  async function act(action: string, item_ids?: string[]) {
     setBusy(true); setError('')
     const res = await fetch(`/api/shipments/${shipment.id}/pack`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, item_id }),
+      body: JSON.stringify({ action, item_ids }),
     })
     if (action === 'finalize') {
       if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Could not finish packing'); setBusy(false); return }
@@ -121,8 +121,8 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
           )}
           <CardContent className="space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge className={current.source_type === 'pc_assignment' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-secondary text-muted-foreground border border-border'}>
-                {current.source_type === 'pc_assignment' ? '🎴 Sorted item' : 'Claimed item'}
+              <Badge className={current.source_type !== 'order_item' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-secondary text-muted-foreground border border-border'}>
+                {current.source_type !== 'order_item' ? '🎴 Sorted items' : 'Claimed item'}
               </Badge>
               {current.is_guaranteed && <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200">✓ Guaranteed</Badge>}
               {current.is_repeat && <Badge className="bg-secondary text-muted-foreground border border-border">2nd copy</Badge>}
@@ -131,12 +131,32 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
               {current.skipped && <Badge className="bg-amber-50 text-amber-700 border border-amber-200">Skipped</Badge>}
             </div>
             <p className="font-display font-semibold text-lg">{current.label}</p>
-            {current.member_name && <p className="text-sm text-muted-foreground">{current.member_name}</p>}
-            {current.sub_label && <p className="text-xs text-muted-foreground">{current.sub_label}</p>}
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {current.amount_claimed > 1 && <span>×{current.amount_claimed}</span>}
-              {current.price_eur && <span className="font-mono">{formatEur(current.price_eur)}</span>}
-            </div>
+            {current.source_type === 'pc_assignment_group' ? (
+              <>
+                {current.sub_label && <p className="text-xs text-muted-foreground">{current.sub_label}</p>}
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {(current.members || []).map((m: any, i: number) => (
+                    <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-medium">
+                      {m.member_name}
+                      {m.item_name && <span className="opacity-60 font-normal">· {m.item_name}</span>}
+                      <span className="font-semibold">×{m.count}</span>
+                      {m.is_guaranteed && <span className="opacity-70">✓</span>}
+                      {m.is_repeat && <span className="opacity-70 font-normal">(2nd)</span>}
+                      {m.is_random && <span className="opacity-70 font-normal">(random)</span>}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                {current.member_name && <p className="text-sm text-muted-foreground">{current.member_name}</p>}
+                {current.sub_label && <p className="text-xs text-muted-foreground">{current.sub_label}</p>}
+                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  {current.amount_claimed > 1 && <span>×{current.amount_claimed}</span>}
+                  {current.price_eur && <span className="font-mono">{formatEur(current.price_eur)}</span>}
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -147,10 +167,10 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
             <ArrowLeft size={13} /> Back
           </Button>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => act('skip', current.id)}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => act('skip', current.item_ids)}>
               <SkipForward size={13} /> Skip
             </Button>
-            <Button size="sm" disabled={busy} onClick={() => act('confirm', current.id)}>
+            <Button size="sm" disabled={busy} onClick={() => act('confirm', current.item_ids)}>
               <Check size={13} /> Confirm in box
             </Button>
           </div>
