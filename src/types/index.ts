@@ -223,26 +223,66 @@ export interface AddyItem {
   shop?: Shop
 }
 
-// ── Sending Out ───────────────────────────────────────────
-export type ShippingStatus = 'unpacked' | 'packing' | 'sorting' | 'sent'
-export type WeightType = 'letter' | 'package'
+// ── Shipping Forms + Shipments ─────────────────────────────
+// A GOM opens one or more box-scoped "shipping forms" at once (e.g. one covering EMS box FR1+FR2,
+// another covering EMS box IT1). A joiner with an At-GOM claim in one of a form's boxes submits it,
+// creating a "shipment" — one per (form, joiner) — which then moves through packing, payment and
+// shipping. Replaces the old single-global-toggle `sending_out` table (left in place, unused).
+export type ShipmentStatus = 'pending' | 'packed' | 'payment_requested' | 'payment_complete' | 'shipped' | 'complete'
+export type ShippingType = 'stamped_letter' | 'tracked_letter' | 'package' | 'inpost_mondial' | 'vinted_go' | 'vinted'
 
-export interface SendingOut {
+export interface ShippingForm {
   id: string
-  order_id: string
-  joiner_id: string | null
-  courier: string | null
-  address: string | null
-  status: ShippingStatus
-  weight_type: WeightType | null
-  weight_g: number | null
-  claims_picture_url: string | null
-  shipping_deadline: string | null
-  notes: string | null
+  title: string
+  form_open: boolean
+  deadline: string | null
+  created_by: string | null
   created_at: string
   updated_at: string
-  order?: Order
+  boxes?: { id: string; label: string | null }[]
+  shipment_count?: number
+}
+
+export interface Shipment {
+  id: string
+  form_id: string
+  joiner_id: string
+  full_name: string | null
+  email: string | null
+  phone: string | null
+  address: string | null
+  shipping_type: ShippingType | null
+  status: ShipmentStatus
+  price_eur: number | null
+  payment_info: string | null
+  paid: boolean
+  paid_at: string | null
+  proof_url: string | null
+  proof_submitted: boolean
+  proof_submitted_at: string | null
+  tracking_code: string | null
+  notes: string | null
+  packed_at: string | null
+  payment_requested_at: string | null
+  shipped_at: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
   joiner?: Profile
+  form_title?: string
+}
+
+// One row per claimed order_item or sorted pc_assignment belonging to a shipment's joiner,
+// scoped to the shipment's form's boxes — the packing wizard's one-by-one checklist.
+export interface ShipmentItem {
+  id: string
+  shipment_id: string
+  source_type: 'order_item' | 'pc_assignment'
+  source_id: string
+  confirmed: boolean
+  skipped: boolean
+  confirmed_at: string | null
+  created_at: string
 }
 
 // ── PC Sorter ─────────────────────────────────────────────

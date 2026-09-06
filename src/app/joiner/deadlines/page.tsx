@@ -103,19 +103,22 @@ export default function JoinerDeadlinesPage() {
         }
       }
 
-      // Shipping form deadline — only show if form is open
-      const [shippingDl, shippingOpen] = await Promise.all([
-        fetch('/api/settings?key=sending_form_deadline').then(r => r.json()).catch(() => ({ value: '' })),
-        fetch('/api/settings?key=sending_form_open').then(r => r.json()).catch(() => ({ value: 'true' })),
+      // Shipping form deadlines — one per open form this joiner is eligible for (several can be
+      // open at once, each covering different boxes), plus deadlines for shipments already
+      // submitted while still waiting on payment.
+      const [shippingForms, shipments] = await Promise.all([
+        fetch('/api/shipping-forms?viewAs=joiner').then(r => r.json()).catch(() => []),
+        fetch('/api/shipments?viewAs=joiner').then(r => r.json()).catch(() => []),
       ])
-      const formIsOpen = shippingOpen.value !== 'false'
-      const deadlinePassed = shippingDl.value && new Date(shippingDl.value) < new Date()
-      if (shippingDl.value && formIsOpen && !deadlinePassed) {
+      const submittedFormIds = new Set((Array.isArray(shipments) ? shipments : []).map((s: any) => s.form_id))
+      for (const f of (Array.isArray(shippingForms) ? shippingForms : [])) {
+        if (!f.deadline || !f.form_open || submittedFormIds.has(f.id)) continue
+        if (new Date(f.deadline) < new Date()) continue
         deadlines.push({
-          id: 'shipping-form', type: 'shipping',
-          label: 'Shipping Form',
+          id: `shipping-form-${f.id}`, type: 'shipping',
+          label: f.title,
           sublabel: 'Submit your shipping info before this date',
-          deadline: shippingDl.value,
+          deadline: f.deadline,
         })
       }
 

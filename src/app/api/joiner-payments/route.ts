@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
+import { ensureShipmentsSchema } from '@/lib/shipments'
 
 // Previously every CREATE TABLE here ran unconditionally on every request, and only the middle
 // ALTER block was actually gated by jpMigDone — this endpoint is polled/hit constantly (payments
@@ -13,6 +14,7 @@ import { query, queryOne } from '@/lib/db'
 async function ensureTables() {
   if (jpMigDone) return
   jpMigDone = true
+  await ensureShipmentsSchema()
   await query(`CREATE TABLE IF NOT EXISTS order_joiner_paid (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
@@ -102,7 +104,7 @@ export async function GET(req: NextRequest) {
       ORDER BY ojp.paid ASC NULLS FIRST
     `).catch(() => [] as any[])
 
-    const [emsRows, customsRows] = await Promise.all([
+    const [emsRows, customsRows, shippingRows] = await Promise.all([
       query(`
         SELECT bjs.id, bjs.joiner_id, bjs.ems_paid as paid, bjs.proof_submitted,
           NULL as full_name, p.display_name as joiner_name, p.username as joiner_username,
@@ -123,12 +125,23 @@ export async function GET(req: NextRequest) {
         JOIN profiles p ON p.id = bjs.joiner_id
         WHERE bjs.customs_proof_url IS NOT NULL
       `).catch(() => [] as any[]),
+      query(`
+        SELECT sh.id, sh.joiner_id, sh.paid, sh.proof_submitted,
+          NULL as full_name, p.display_name as joiner_name, p.username as joiner_username,
+          concat(f.title, ' — Shipping') as label, sh.price_eur as amount_eur,
+          NULL as deadline, 'shipping' as type, NULL::uuid as box_id, sh.id as shipment_id
+        FROM shipments sh
+        JOIN profiles p ON p.id = sh.joiner_id
+        LEFT JOIN shipping_forms f ON f.id = sh.form_id
+        WHERE sh.proof_url IS NOT NULL
+      `).catch(() => [] as any[]),
     ])
 
     const all = [
       ...(rows as any[]).map(r => ({ ...r, amount_eur: parseFloat(r.amount_eur) || 0 })),
       ...(emsRows as any[]).map(r => ({ ...r, amount_eur: parseFloat(r.amount_eur) || 0 })),
       ...(customsRows as any[]).map(r => ({ ...r, amount_eur: parseFloat(r.amount_eur) || 0 })),
+      ...(shippingRows as any[]).map(r => ({ ...r, amount_eur: parseFloat(r.amount_eur) || 0 })),
     ].sort((a, b) => (a.paid === b.paid ? 0 : a.paid ? 1 : -1))
     return NextResponse.json(all)
   }
@@ -253,6 +266,36 @@ export async function GET(req: NextRequest) {
     for (const arr of perBox) items.push(...arr)
   } catch (e) { console.error('box shares error', e) }
 
+  // 3. Shipment payments — only once a GOM has actually entered a price and requested it
+  try {
+    const rows = await query(`
+      SELECT sh.id, sh.price_eur as amount_eur, sh.payment_info, sh.paid, sh.paid_at,
+        sh.proof_submitted, f.title as form_title
+      FROM shipments sh
+      LEFT JOIN shipping_forms f ON f.id = sh.form_id
+      WHERE sh.joiner_id = $1 AND sh.price_eur IS NOT NULL
+      ORDER BY sh.payment_requested_at DESC NULLS LAST
+    `, [userId])
+
+    for (const row of rows as any[]) {
+      const amt = parseFloat(row.amount_eur) || 0
+      if (amt <= 0) continue
+      items.push({
+        id: `shipping-${row.id}`,
+        type: 'shipping',
+        label: `${row.form_title || 'Shipment'} — Shipping`,
+        amount_eur: amt,
+        deadline: null,
+        payment_info: row.payment_info || null,
+        paid: row.paid || false,
+        paid_at: row.paid_at,
+        proof_url: null,
+        proof_submitted: row.proof_submitted || false,
+        shipment_id: row.id,
+      })
+    }
+  } catch (e) { console.error('shipment payment error', e) }
+
   return NextResponse.json(items)
 }
 
@@ -263,9 +306,21 @@ export async function PATCH(req: NextRequest) {
   const userId = user.id
   await ensureTables()
 
-  const { type, order_id, box_id, paid, proof_url, full_name, validated_by_gom, joiner_id: targetJoinerId } = await req.json()
+  const { type, order_id, box_id, shipment_id, paid, proof_url, full_name, validated_by_gom, joiner_id: targetJoinerId } = await req.json()
 
-  if (type === 'order' && order_id) {
+  if (type === 'shipping' && shipment_id) {
+    if (validated_by_gom && ['gom', 'admin'].includes(user.role)) {
+      // GOM validating this joiner's shipment payment — advance the shipment's own status too,
+      // so the Sending Out page and the Payments page never disagree about where things stand.
+      await query(`UPDATE shipments SET paid=true, paid_at=now(), status='payment_complete', updated_at=now() WHERE id=$1`, [shipment_id])
+    } else {
+      // Joiner submitting proof — status stays 'payment_requested' until the GOM validates above.
+      await query(`
+        UPDATE shipments SET proof_url=$2, proof_submitted=true, proof_submitted_at=now(), updated_at=now()
+        WHERE id=$1 AND joiner_id=$3
+      `, [shipment_id, proof_url ?? null, userId])
+    }
+  } else if (type === 'order' && order_id) {
     if (validated_by_gom && ['gom', 'admin'].includes(user.role)) {
       // GOM validating a specific joiner's payment
       if (targetJoinerId) {

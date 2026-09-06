@@ -16,7 +16,12 @@ export async function GET(req: NextRequest) {
   const joiner_id = searchParams.get('joiner_id')
   const order_id = searchParams.get('order_id')
   const box_id = searchParams.get('box_id')
+  const shipment_id = searchParams.get('shipment_id')
 
+  if (type === 'shipping' && shipment_id) {
+    const row = await queryOne('SELECT proof_url FROM shipments WHERE id=$1', [shipment_id])
+    return NextResponse.json({ proof_url: (row as any)?.proof_url || null })
+  }
   if (type === 'order' && order_id && joiner_id) {
     const row = await queryOne('SELECT proof_url FROM order_joiner_paid WHERE order_id=$1 AND joiner_id=$2', [order_id, joiner_id])
     return NextResponse.json({ proof_url: (row as any)?.proof_url || null })

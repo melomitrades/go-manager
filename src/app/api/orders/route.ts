@@ -161,10 +161,6 @@ export async function POST(req: NextRequest) {
     await query('INSERT INTO fancalls (order_id, shop_id) VALUES ($1,$2)', [order.id, shop_id])
   }
 
-  if (status === 'at_gom') {
-    await query(`INSERT INTO sending_out (order_id, status) VALUES ($1, 'unpacked') ON CONFLICT DO NOTHING`, [order.id])
-  }
-
   return NextResponse.json(order, { status: 201 })
 }
 
@@ -189,10 +185,6 @@ export async function PATCH(req: NextRequest) {
   const isStatusOnly = status && !type && !shop_id && items === undefined && deadline === undefined && ordered_at === undefined && !notes
   if (isStatusOnly) {
     const order = await queryOne(`UPDATE orders SET status=$1, addy_country=$2, updated_at=now() WHERE id=$3 RETURNING *`, [status, addy_country, id])
-    if (status === 'at_gom') {
-      const exists = await queryOne('SELECT id FROM sending_out WHERE order_id=$1', [id])
-      if (!exists) await query(`INSERT INTO sending_out (order_id, status) VALUES ($1, 'unpacked')`, [id])
-    }
     const shopRow = order ? await queryOne('SELECT s.name FROM shops s JOIN orders o ON o.shop_id=s.id WHERE o.id=$1', [id]).catch(() => null) : null
     await notifyJoiners(id, status, (shopRow as any)?.name || null)
     if (addy_country && ['KR','CN','JP'].includes(addy_country)) {
@@ -233,11 +225,6 @@ export async function PATCH(req: NextRequest) {
         [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.version_name || null, item.claim_group_id || null, item.weight_variant_id || null]
       )
     }
-  }
-
-  if (status === 'at_gom') {
-    const exists = await queryOne('SELECT id FROM sending_out WHERE order_id=$1', [id])
-    if (!exists) await query(`INSERT INTO sending_out (order_id, status) VALUES ($1, 'unpacked')`, [id])
   }
 
   if (status) {

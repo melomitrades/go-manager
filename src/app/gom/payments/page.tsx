@@ -170,7 +170,7 @@ export default function GomPaymentsPage() {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: item.type, order_id: item.order_id, box_id: item.box_id,
+        type: item.type, order_id: item.order_id, box_id: item.box_id, shipment_id: item.shipment_id,
         joiner_id: item.joiner_id, paid: true, validated_by_gom: true,
       }),
     })
@@ -196,6 +196,7 @@ export default function GomPaymentsPage() {
     const params = new URLSearchParams({ type: item.type, joiner_id: item.joiner_id })
     if (item.order_id) params.set('order_id', item.order_id)
     if (item.box_id) params.set('box_id', item.box_id)
+    if (item.shipment_id) params.set('shipment_id', item.shipment_id)
     const res = await fetch('/api/joiner-payments/proof?' + params).then(r => r.json()).catch(() => ({}))
     setProofCache(prev => ({ ...prev, [key]: res.proof_url || null }))
     setLoadingProof(null)
@@ -451,7 +452,7 @@ export default function GomPaymentsPage() {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2">
-                                  <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${item.type === 'order' ? 'bg-sky-50 text-sky-700 border-sky-200' : item.type === 'ems' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-violet-50 text-violet-700 border-violet-200'}`}>{item.type}</span>
+                                  <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${item.type === 'order' ? 'bg-sky-50 text-sky-700 border-sky-200' : item.type === 'ems' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : item.type === 'shipping' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-violet-50 text-violet-700 border-violet-200'}`}>{item.type}</span>
                                   <p className="text-sm truncate">{item.label}</p>
                                 </div>
                               </div>

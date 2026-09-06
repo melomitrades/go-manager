@@ -5,9 +5,15 @@ import { Button, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { formatEur, formatDate } from '@/lib/utils'
 
 const TYPE_COLORS: Record<string, string> = {
-  order:   'bg-sky-50 text-sky-700 border-sky-200',
-  ems:     'bg-emerald-50 text-emerald-700 border-emerald-200',
-  customs: 'bg-violet-50 text-violet-700 border-violet-200',
+  order:    'bg-sky-50 text-sky-700 border-sky-200',
+  ems:      'bg-emerald-50 text-emerald-700 border-emerald-200',
+  customs:  'bg-violet-50 text-violet-700 border-violet-200',
+  shipping: 'bg-amber-50 text-amber-700 border-amber-200',
+}
+const BOX_TYPE_STYLES: Record<string, { badge: string; card: string; text: string }> = {
+  ems:      { badge: 'bg-blue-100 text-blue-700 border-blue-200', card: 'border-blue-200 bg-blue-50/40', text: 'text-blue-700' },
+  customs:  { badge: 'bg-purple-100 text-purple-700 border-purple-200', card: 'border-purple-200 bg-purple-50/40', text: 'text-purple-700' },
+  shipping: { badge: 'bg-amber-100 text-amber-700 border-amber-200', card: 'border-amber-200 bg-amber-50/40', text: 'text-amber-700' },
 }
 
 export default function JoinerPaymentsPage() {
@@ -30,7 +36,7 @@ export default function JoinerPaymentsPage() {
   useEffect(() => { fetchData() }, [fetchData])
 
   const orderItems = items.filter(i => i.type === 'order')
-  const boxItems = items.filter(i => i.type === 'ems' || i.type === 'customs')
+  const boxItems = items.filter(i => i.type === 'ems' || i.type === 'customs' || i.type === 'shipping')
   const unpaidItems = orderItems.filter(i => !i.paid)
   const paidItems = orderItems.filter(i => i.paid)
   // Items with proof submitted but not yet validated by GOM
@@ -67,6 +73,7 @@ export default function JoinerPaymentsPage() {
           type: item.type,
           order_id: item.order_id || null,
           box_id: item.box_id || null,
+          shipment_id: item.shipment_id || null,
           paid: false,
           proof_url: proof,
           full_name: fullName.trim(),
@@ -232,14 +239,14 @@ export default function JoinerPaymentsPage() {
           </div>
         )}
 
-        {/* ── EMS / Customs section ───────────────────────────── */}
+        {/* ── EMS / Customs / Shipping section ──────────────────── */}
         {boxItems.length > 0 && (
           <div className="space-y-2">
-            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">EMS & Customs</p>
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">EMS, Customs & Shipping</p>
             {boxItems.map(item => {
-              const isEms = item.type === 'ems'
-              const colour = isEms ? 'border-blue-200 bg-blue-50/40' : 'border-purple-200 bg-purple-50/40'
-              const textColour = isEms ? 'text-blue-700' : 'text-purple-700'
+              const style = BOX_TYPE_STYLES[item.type] || BOX_TYPE_STYLES.customs
+              const colour = style.card
+              const textColour = style.text
               const isPending = !item.paid && (item.proof_submitted || item.proof_url)
               const isSelectable = !item.paid && !item.proof_submitted && !item.proof_url
               const isSel = selected.has(item.id)
@@ -257,7 +264,7 @@ export default function JoinerPaymentsPage() {
                     {item.paid && <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0 mt-1"><Check size={10} className="text-white"/></div>}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${isEms ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-purple-100 text-purple-700 border-purple-200'}`}>{item.type.toUpperCase()}</span>
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${style.badge}`}>{item.type.toUpperCase()}</span>
                         {isPending && <span className="text-xs text-amber-600 font-semibold">⏳ Awaiting validation</span>}
                         {item.paid && <span className="text-xs text-emerald-600 font-semibold">✓ Validated</span>}
                       </div>
