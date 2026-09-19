@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
-import { Send, Check, Printer, ChevronDown, ChevronUp, PackageCheck, AlertTriangle } from 'lucide-react'
-import { Button, Card, CardContent, FormField, Input, Select, PageHeader, Badge, EmptyState } from '@/components/ui'
+import { Send, Check, Printer, ChevronDown, ChevronUp, PackageCheck, AlertTriangle, Image as ImageIcon } from 'lucide-react'
+import { Button, Card, CardContent, FormField, Input, Select, PageHeader, Badge, EmptyState, Modal } from '@/components/ui'
 import { formatDate } from '@/lib/utils'
 
 const SHIPPING_TYPES = [
@@ -34,6 +34,11 @@ export default function JoinerShippingPage() {
   const [forms, setForms] = useState<any[]>([])
   const [shipments, setShipments] = useState<any[]>([])
   const [overrides, setOverrides] = useState<any[]>([])
+  // "Your items" per shipment (loaded lazily on first expand) + the order preview pop-up.
+  const [claimsOpen, setClaimsOpen] = useState<Record<string, boolean>>({})
+  const [claims, setClaims] = useState<Record<string, any>>({})
+  const [claimsLoading, setClaimsLoading] = useState<string | null>(null)
+  const [previewOrder, setPreviewOrder] = useState<{ id: string; title: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [openFormId, setOpenFormId] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, any>>({})
@@ -74,6 +79,17 @@ export default function JoinerShippingPage() {
     })
     setSaving(null); setOpenFormId(null)
     await fetchData()
+  }
+
+  async function toggleClaims(shipmentId: string) {
+    const open = !claimsOpen[shipmentId]
+    setClaimsOpen(o => ({ ...o, [shipmentId]: open }))
+    if (open && !claims[shipmentId]) {
+      setClaimsLoading(shipmentId)
+      const res = await fetch(`/api/shipments/${shipmentId}/pack`).then(r => r.json()).catch(() => null)
+      setClaims(c => ({ ...c, [shipmentId]: res?.items || [] }))
+      setClaimsLoading(null)
+    }
   }
 
   async function markReceived(id: string) {
@@ -210,6 +226,59 @@ export default function JoinerShippingPage() {
                       A payment of {sh.price_eur != null ? `${sh.price_eur}€` : ''} has been requested for this shipment — submit proof on your Payments page.
                     </div>
                   )}
+                  <button onClick={() => toggleClaims(sh.id)} className="flex items-center gap-1 text-xs font-semibold text-primary hover:underline pt-1">
+                    {claimsOpen[sh.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />} Your items
+                  </button>
+                  {claimsOpen[sh.id] && (
+                    <div className="space-y-2">
+                      {claimsLoading === sh.id && <p className="text-xs text-muted-foreground">Loading…</p>}
+                      {claimsLoading !== sh.id && (claims[sh.id] || []).length === 0 && (
+                        <p className="text-xs text-muted-foreground">Nothing to show yet — your claimed items appear here once they&apos;re at your GOM.</p>
+                      )}
+                      {(claims[sh.id] || []).map((step: any) => (
+                        <div key={step.id} className="rounded-xl border border-border bg-secondary/30 px-3 py-2.5 space-y-1.5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold">{step.label}</p>
+                              {step.sub_label && <p className="text-xs text-muted-foreground">{step.sub_label}</p>}
+                            </div>
+                            {step.has_preview && step.order_id && (
+                              <Button variant="outline" size="sm" onClick={() => setPreviewOrder({ id: step.order_id, title: step.label })}>
+                                <ImageIcon size={13} /> Preview
+                              </Button>
+                            )}
+                          </div>
+                          {step.source_type === 'pc_assignment_group' ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {(step.members || []).map((m: any, i: number) => (
+                                <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-medium">
+                                  {m.member_name}
+                                  {m.item_name && <span className="opacity-60 font-normal">· {m.item_name}</span>}
+                                  <span className="font-semibold">×{m.count}</span>
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="space-y-1">
+                              {(step.lines || []).map((line: any) => (
+                                <div key={line.id} className="flex items-center justify-between gap-3 text-xs">
+                                  <span>
+                                    <span className="font-medium">{line.label}</span>
+                                    {line.version_name ? <span className="text-muted-foreground"> · {line.version_name}</span> : null}
+                                    {line.member_name ? <span className="text-muted-foreground"> · {line.member_name}</span> : null}
+                                    {line.override_member_id && (
+                                      <Badge className="ml-1.5 bg-amber-50 text-amber-700 border border-amber-200">changed from {line.claimed_member_name || 'your claim'}</Badge>
+                                    )}
+                                  </span>
+                                  {line.amount_claimed > 1 && <span className="font-semibold text-muted-foreground">×{line.amount_claimed}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex items-center gap-2 pt-1">
                     <Button variant="outline" size="sm" onClick={() => handlePrint(sh)}><Printer size={13} /> Print label</Button>
                     {sh.status === 'shipped' && (
@@ -225,6 +294,12 @@ export default function JoinerShippingPage() {
           }
         </div>
       </div>
+
+      {previewOrder && (
+        <Modal open onClose={() => setPreviewOrder(null)} title={previewOrder.title} size="lg">
+          <img src={`/api/orders/${previewOrder.id}/preview`} alt="Order preview" className="w-full max-h-[70vh] object-contain rounded-xl bg-secondary/40" />
+        </Modal>
+      )}
     </div>
   )
 }

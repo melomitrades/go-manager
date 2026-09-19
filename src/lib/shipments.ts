@@ -210,7 +210,12 @@ export async function joinerEligibleForBoxes(joinerId: string, boxIds: string[])
 // only genuinely new items get inserted.
 export async function buildShipmentItems(shipmentId: string, joinerId: string, boxIds: string[]) {
   await ensureShipmentsSchema()
-  if (boxIds.length === 0) return
+  if (boxIds.length === 0) {
+    // A form with no boxes selected covers nothing — drop any checklist rows left over from
+    // when it still had some, instead of leaving them behind.
+    await query('DELETE FROM shipment_items WHERE shipment_id=$1', [shipmentId]).catch(() => {})
+    return
+  }
 
   const [orderItems, pcAssignments] = await Promise.all([query<any>(`
     SELECT oi.id
@@ -311,11 +316,20 @@ export async function resetShipmentPacking(shipmentId: string) {
 // entry per distinct (item, member) combination in the pack with a `count`, for a "member pills
 // with quantity" display instead of a flat list.
 export async function getShipmentChecklist(shipmentId: string) {
-  const items = await query<any>('SELECT * FROM shipment_items WHERE shipment_id=$1 ORDER BY created_at', [shipmentId])
-  if (items.length === 0) return { items: [] as any[], previewImages: {} as Record<string, string> }
+  const [allItems, formBoxRows] = await Promise.all([
+    query<any>('SELECT * FROM shipment_items WHERE shipment_id=$1 ORDER BY created_at', [shipmentId]),
+    query<{ box_id: string }>(
+      'SELECT box_id FROM shipping_form_boxes WHERE form_id = (SELECT form_id FROM shipments WHERE id=$1)', [shipmentId]
+    ).catch(() => [] as any[]),
+  ])
+  const boxIds: string[] = formBoxRows.map((r: any) => r.box_id)
+  if (allItems.length === 0) return { items: [] as any[], previewImages: {} as Record<string, string> }
+  // `items` is narrowed below (after the source queries) to rows that are actually inside this
+  // shipping form's selected boxes — see the box-scope comment further down.
+  let items = allItems
 
-  const orderItemIds = items.filter(i => i.source_type === 'order_item').map(i => i.source_id)
-  const pcAssignmentIds = items.filter(i => i.source_type === 'pc_assignment').map(i => i.source_id)
+  const orderItemIds = allItems.filter(i => i.source_type === 'order_item').map(i => i.source_id)
+  const pcAssignmentIds = allItems.filter(i => i.source_type === 'pc_assignment').map(i => i.source_id)
 
   // One parallel round for everything the checklist needs. NOTE: preview images are deliberately
   // NOT selected here — preview_image_url is a multi-MB base64 blob, and this query used to pull
@@ -336,7 +350,8 @@ export async function getShipmentChecklist(shipmentId: string) {
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
       WHERE oi.id = ANY($1::uuid[])
-    `, [orderItemIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
+        AND EXISTS (SELECT 1 FROM box_orders bo WHERE bo.order_id = o.id AND bo.box_id = ANY($2::uuid[]))
+    `, [orderItemIds, boxIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
     pcAssignmentIds.length ? query<any>(`
       SELECT a.id, a.pack_id, a.is_repeat, a.is_random, a.is_guaranteed,
         pk.name as pack_name, it.name as item_name, COALESCE(m.name, u.name) as member_name
@@ -346,8 +361,8 @@ export async function getShipmentChecklist(shipmentId: string) {
       LEFT JOIN pc_items it ON it.id = a.item_id
       LEFT JOIN members m ON m.id = a.member_id
       LEFT JOIN pc_item_units u ON u.id = a.member_id
-      WHERE a.id = ANY($1::uuid[])
-    `, [pcAssignmentIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
+      WHERE a.id = ANY($1::uuid[]) AND s.box_id = ANY($2::uuid[])
+    `, [pcAssignmentIds, boxIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
     // Group rosters for the "change claim" dropdown (via subquery so it needn't wait on orderRows).
     orderItemIds.length ? query<any>(`
       SELECT id, name, group_id FROM members
@@ -364,6 +379,15 @@ export async function getShipmentChecklist(shipmentId: string) {
 
   const orderById = new Map(orderRows.map(r => [r.id, r]))
   const pcById = new Map(pcRows.map(r => [r.id, r]))
+
+  // Box scope, enforced at READ time: a checklist row only shows if its order / sorting session
+  // sits in one of the boxes this shipping form covers (both source queries above filter on the
+  // form's boxes). Stale rows — e.g. left over from before the GOM removed a box from the form,
+  // or from a since-deleted assignment — are simply never displayed, instead of relying solely
+  // on buildShipmentItems having pruned them first.
+  items = allItems.filter(it => it.source_type === 'order_item' ? orderById.has(it.source_id) : pcById.has(it.source_id))
+  if (items.length === 0) return { items: [] as any[], previewImages: {} as Record<string, string> }
+
   const overrideNameById = new Map<string, string>(overrideMemberRows.map((r: any) => [r.id, r.name]))
 
   // Claimed order items are grouped BY ORDER: one checklist step per order, listing every claimed
