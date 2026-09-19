@@ -430,7 +430,12 @@ export async function getShipmentChecklist(shipmentId: string) {
   for (const it of items) {
     if (it.source_type !== 'pc_assignment') continue
     const d = pcById.get(it.source_id)
-    const packId = d?.pack_id || 'unknown'
+    // Group by the pack's NAME (trimmed, case-insensitive), not its id: every PC Sorter session
+    // creates its own pc_packs rows, so "Ver. A" from two different sessions are two different
+    // pack ids that are physically the same album version and should be handed over together.
+    // Falls back to the pack id when a pack somehow has no name.
+    const nameKey = (d?.pack_name || '').trim().toLowerCase().replace(/\s+/g, ' ')
+    const packId = nameKey ? `name:${nameKey}` : (d?.pack_id || 'unknown')
     if (!groups.has(packId)) {
       groups.set(packId, {
         pack_id: packId, pack_name: d?.pack_name || 'Sorted items', item_ids: [], created_at: it.created_at,
