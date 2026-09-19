@@ -32,7 +32,15 @@ export async function GET(req: NextRequest) {
   // sort. A session that's closed and has never been sorted still isn't visible at all — it
   // isn't ready for joiners yet. Same rule applies to a gom/admin viewing their own joiner side.
   if (user.role === 'joiner' || (['gom', 'admin'].includes(user.role) && viewAsJoiner)) {
-    return NextResponse.json((sessions as any[]).filter(s => s.form_open || s.sort_run_at))
+    // A joiner with no inclusions in a session (none assigned, or a total of 0) has nothing to
+    // sort or receive from it, so the session isn't shown to them at all — this list also feeds
+    // the joiner Deadlines page, so it drops off there too.
+    const withInclusions = await query<{ session_id: string }>(
+      `SELECT session_id FROM pc_pack_inclusions WHERE joiner_id=$1 GROUP BY session_id HAVING COALESCE(SUM(inclusions_assigned),0) > 0`,
+      [user.id]
+    ).catch(() => [] as { session_id: string }[])
+    const mine = new Set(withInclusions.map(r => r.session_id))
+    return NextResponse.json((sessions as any[]).filter(s => (s.form_open || s.sort_run_at) && mine.has(s.id)))
   }
   return NextResponse.json(sessions)
 }
