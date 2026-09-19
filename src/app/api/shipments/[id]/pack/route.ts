@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
-import { ensureShipmentsSchema, getFormBoxIds, buildShipmentItems, getShipmentChecklist, resetShipmentPacking } from '@/lib/shipments'
+import { ensureShipmentsSchema, getFormBoxIds, buildShipmentItems, getShipmentChecklist, resetShipmentPacking, setClaimOverride } from '@/lib/shipments'
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const shipment = await queryOne<any>('SELECT * FROM shipments WHERE id=$1', [params.id])
   if (!shipment) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const { action, item_id, item_ids } = await req.json()
+  const { action, item_id, item_ids, member_id, reason } = await req.json()
   // A "pack" checklist step can now represent several underlying shipment_items rows at once
   // (every sorted photocard in one album-version group — see getShipmentChecklist), so
   // confirm/skip/unconfirm accept either a single item_id (order-item steps) or an item_ids
@@ -54,6 +54,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       [confirmed, skipped, ids, shipment.id]
     )
     return NextResponse.json({ ok: true })
+  }
+
+  // Override (or, with no member_id, revert) which member a claimed order item is packed as —
+  // for claims that couldn't be guaranteed (not enough copies bought). Only touches this
+  // shipment's checklist row; the order's own claim is left as the joiner made it. The joiner
+  // sees a warning on Shipping / Orders / Deadlines (see /api/claim-overrides).
+  if (action === 'override_claim') {
+    if (!item_id) return NextResponse.json({ error: 'item_id required' }, { status: 400 })
+    const result: any = await setClaimOverride(shipment.id, item_id, member_id || null, typeof reason === 'string' ? reason.trim().slice(0, 500) : null)
+    if (result.error) return NextResponse.json({ error: result.error }, { status: result.status || 400 })
+    return NextResponse.json(result)
   }
 
   if (action === 'finalize') {

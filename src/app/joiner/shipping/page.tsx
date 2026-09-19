@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
-import { Send, Check, Printer, ChevronDown, ChevronUp, PackageCheck } from 'lucide-react'
+import { Send, Check, Printer, ChevronDown, ChevronUp, PackageCheck, AlertTriangle } from 'lucide-react'
 import { Button, Card, CardContent, FormField, Input, Select, PageHeader, Badge, EmptyState } from '@/components/ui'
 import { formatDate } from '@/lib/utils'
 
@@ -33,16 +33,19 @@ const emptyForm = { shipping_type: '', full_name: '', address: '', email: '', ph
 export default function JoinerShippingPage() {
   const [forms, setForms] = useState<any[]>([])
   const [shipments, setShipments] = useState<any[]>([])
+  const [overrides, setOverrides] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [openFormId, setOpenFormId] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, any>>({})
   const [saving, setSaving] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
-    const [f, sh] = await Promise.all([
+    const [f, sh, ov] = await Promise.all([
       fetch('/api/shipping-forms?viewAs=joiner').then(r => r.json()).catch(() => []),
       fetch('/api/shipments?viewAs=joiner').then(r => r.json()).catch(() => []),
+      fetch('/api/claim-overrides').then(r => r.json()).catch(() => []),
     ])
+    setOverrides(Array.isArray(ov) ? ov : [])
     setForms(Array.isArray(f) ? f : [])
     setShipments(Array.isArray(sh) ? sh : [])
     setLoading(false)
@@ -187,6 +190,21 @@ export default function JoinerShippingPage() {
                     </div>
                     <Badge className={`${STATUS_COLORS[sh.status] || STATUS_COLORS.pending} flex-shrink-0`}>{STATUS_LABELS[sh.status] || sh.status}</Badge>
                   </div>
+                  {overrides.filter(o => o.shipment_id === sh.id).length > 0 && (
+                    <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-xl px-3 py-2.5 text-xs text-amber-900 dark:text-amber-100 space-y-1.5">
+                      <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle size={13} /> Your GOM changed part of your claim</p>
+                      {overrides.filter(o => o.shipment_id === sh.id).map(o => (
+                        <div key={o.id}>
+                          <p>
+                            {o.item_label ? `${o.item_label}: ` : ''}
+                            <span className="line-through opacity-70">{o.original_member_name || 'your claim'}</span> → <span className="font-semibold">{o.new_member_name}</span>
+                            <span className="opacity-70"> (not enough copies were bought to guarantee your original claim)</span>
+                          </p>
+                          {o.override_reason && <p className="italic opacity-80">“{o.override_reason}”</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {sh.status === 'payment_requested' && (
                     <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
                       A payment of {sh.price_eur != null ? `${sh.price_eur}€` : ''} has been requested for this shipment — submit proof on your Payments page.

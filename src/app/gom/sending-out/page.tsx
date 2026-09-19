@@ -43,6 +43,11 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
   const [index, setIndex] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // Claim override panel (only for claimed order items): change which member this claim is
+  // packed as when it couldn't be guaranteed, without touching the order itself.
+  const [overrideOpenFor, setOverrideOpenFor] = useState<string | null>(null)
+  const [overrideMember, setOverrideMember] = useState('')
+  const [overrideReason, setOverrideReason] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -53,25 +58,64 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
 
   useEffect(() => { load() }, [load])
 
-  async function act(action: string, item_ids?: string[]) {
+  async function act(action: 'finalize' | 'reset') {
     setBusy(true); setError('')
     const res = await fetch(`/api/shipments/${shipment.id}/pack`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, item_ids }),
+      body: JSON.stringify({ action }),
     })
     if (action === 'finalize') {
       if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Could not finish packing'); setBusy(false); return }
       setBusy(false); onDone(); return
     }
-    if (action === 'reset') {
-      if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Could not reset packing'); setBusy(false); return }
-      await load()
-      setIndex(0)
-      setBusy(false)
-      return
-    }
+    if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Could not reset packing'); setBusy(false); return }
     await load()
+    setIndex(0)
+    setBusy(false)
+  }
+
+  // Confirm/skip/unconfirm update the checklist step LOCALLY first — no waiting on a round trip
+  // plus a full checklist rebuild (buildShipmentItems re-derives the sorted-items groups from
+  // scratch every time) before the GOM can move to the next item. The save happens in the
+  // background; a failure rolls back by reloading from the server and surfacing an error,
+  // instead of blocking every single tap on that round trip up front.
+  function markStep(step: any, action: 'confirm' | 'skip' | 'unconfirm') {
+    setError('')
+    const confirmed = action === 'confirm'
+    const skipped = action === 'skip'
+    setData((prev: any) => {
+      if (!prev) return prev
+      const items = prev.items.map((it: any) => it.id === step.id ? { ...it, confirmed, skipped } : it)
+      const confirmedCount = items.filter((i: any) => i.confirmed).length
+      const skippedCount = items.filter((i: any) => i.skipped).length
+      return { ...prev, items, progress: { total: items.length, confirmed: confirmedCount, skipped: skippedCount, remaining: items.length - confirmedCount - skippedCount } }
+    })
     setIndex(i => Math.min(i + 1, (data?.items?.length || 1) - 1))
+    fetch(`/api/shipments/${shipment.id}/pack`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, item_ids: step.item_ids }),
+    }).then(res => {
+      if (!res.ok) throw new Error()
+    }).catch(() => {
+      setError('That change failed to save — reloading the checklist')
+      load()
+    })
+  }
+
+  async function saveOverride(step: any, memberId: string | null) {
+    setBusy(true); setError('')
+    const res = await fetch(`/api/shipments/${shipment.id}/pack`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'override_claim', item_id: step.id, member_id: memberId, reason: overrideReason }),
+    })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError(j.error || 'Could not change the claim'); setBusy(false); return
+    }
+    // Quiet refresh (no spinner / no reset of the current step) so the card updates in place.
+    const fresh = await fetch(`/api/shipments/${shipment.id}/pack`).then(r => r.json()).catch(() => null)
+    if (fresh) setData(fresh)
+    setOverrideOpenFor(null); setOverrideMember(''); setOverrideReason('')
     setBusy(false)
   }
 
@@ -149,7 +193,18 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
               </>
             ) : (
               <>
-                {current.member_name && <p className="text-sm text-muted-foreground">{current.member_name}</p>}
+                {current.override_member_id ? (
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold">{current.member_name}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                      <Badge className="bg-amber-50 text-amber-700 border border-amber-200">Claim changed</Badge>
+                      <span className="text-muted-foreground">Joiner claimed <span className="line-through">{current.claimed_member_name || '—'}</span></span>
+                    </div>
+                    {current.override_reason && <p className="text-xs text-muted-foreground italic">“{current.override_reason}”</p>}
+                  </div>
+                ) : (
+                  current.member_name && <p className="text-sm text-muted-foreground">{current.member_name}</p>
+                )}
                 {current.sub_label && <p className="text-xs text-muted-foreground">{current.sub_label}</p>}
                 <div className="flex items-center gap-3 text-xs text-muted-foreground">
                   {current.amount_claimed > 1 && <span>×{current.amount_claimed}</span>}
@@ -160,6 +215,48 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
           </CardContent>
         </Card>
 
+        {current.source_type === 'order_item' && (
+          <div className="space-y-2">
+            {overrideOpenFor !== current.id ? (
+              !['shipped', 'complete'].includes(data?.shipment?.status) && (
+                <Button variant="ghost" size="sm" onClick={() => { setOverrideOpenFor(current.id); setOverrideMember(current.override_member_id || ''); setOverrideReason(current.override_reason || '') }}>
+                  <Pencil size={13} /> {current.override_member_id ? 'Edit claim change' : 'Change claim (not guaranteed)'}
+                </Button>
+              )
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50/60 dark:bg-amber-900/10 dark:border-amber-800 p-3 space-y-2">
+                <p className="text-xs text-amber-800 dark:text-amber-200">
+                  Pack a different member for this claim. The joiner&apos;s original claim ({current.claimed_member_name || '—'}) is kept on the order and they&apos;ll see a warning on their Shipping, Orders and Deadlines pages.
+                </p>
+                <FormField label="Pack instead">
+                  <Select
+                    options={(current.group_members || []).map((m: any) => ({ value: m.id, label: m.name }))}
+                    placeholder="Choose a member…"
+                    value={overrideMember}
+                    onChange={e => setOverrideMember(e.target.value)}
+                  />
+                </FormField>
+                <FormField label="Reason (shown to the joiner, optional)">
+                  <Input placeholder="e.g. Not enough copies bought to secure this member" value={overrideReason} onChange={e => setOverrideReason(e.target.value)} />
+                </FormField>
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    {current.override_member_id && (
+                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => saveOverride(current, null)}>
+                        <RotateCcw size={13} /> Revert to original
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setOverrideOpenFor(null)}>Cancel</Button>
+                    <Button size="sm" disabled={busy || !overrideMember} onClick={() => saveOverride(current, overrideMember)}>Save change</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {error && <p className="text-xs text-destructive">{error}</p>}
 
         <div className="flex items-center justify-between gap-2">
@@ -167,10 +264,10 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
             <ArrowLeft size={13} /> Back
           </Button>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => act('skip', current.item_ids)}>
+            <Button variant="outline" size="sm" onClick={() => markStep(current, 'skip')}>
               <SkipForward size={13} /> Skip
             </Button>
-            <Button size="sm" disabled={busy} onClick={() => act('confirm', current.item_ids)}>
+            <Button size="sm" onClick={() => markStep(current, 'confirm')}>
               <Check size={13} /> Confirm in box
             </Button>
           </div>

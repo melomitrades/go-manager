@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { Calendar, Clock } from 'lucide-react'
+import { Calendar, Clock, AlertTriangle } from 'lucide-react'
 import { Card, CardContent, PageHeader, EmptyState, StatusBadge, Badge } from '@/components/ui'
 import { formatDateTime } from '@/lib/utils'
 
@@ -36,6 +36,11 @@ const TYPE_LABELS: Record<string, { label: string; color: string }> = {
 export default function JoinerDeadlinesPage() {
   const [items, setItems] = useState<DeadlineItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [overrides, setOverrides] = useState<any[]>([])
+
+  useEffect(() => {
+    fetch('/api/claim-overrides').then(r => r.json()).then(d => setOverrides(Array.isArray(d) ? d : [])).catch(() => {})
+  }, [])
 
   useEffect(() => {
     async function load() {
@@ -135,6 +140,20 @@ export default function JoinerDeadlinesPage() {
     <div className="flex flex-col h-full">
       <PageHeader title="Deadlines" subtitle="All upcoming deadlines sorted by urgency" />
       <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-3">
+        {overrides.length > 0 && (
+          <Card className="border-2 border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/10">
+            <CardContent className="py-4 space-y-1.5 text-sm text-amber-900 dark:text-amber-100">
+              <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle size={14} /> Your GOM changed {overrides.length === 1 ? 'a claim' : `${overrides.length} claims`}</p>
+              {overrides.map(o => (
+                <p key={o.id} className="text-xs">
+                  {[o.shop_name, o.form_title].filter(Boolean).join(' · ')}{o.item_label ? ` — ${o.item_label}` : ''}:{' '}
+                  <span className="line-through opacity-70">{o.original_member_name || 'your claim'}</span> → <span className="font-semibold">{o.new_member_name}</span>
+                  {o.override_reason ? ` (“${o.override_reason}”)` : ''}
+                </p>
+              ))}
+            </CardContent>
+          </Card>
+        )}
         {loading
           ? <div className="flex justify-center py-16"><div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>
           : items.length === 0

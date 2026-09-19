@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { ShoppingBag } from 'lucide-react'
+import { ShoppingBag, AlertTriangle } from 'lucide-react'
 import { Card, Table, Th, Td, Tr, PageHeader, EmptyState, StatusBadge, Badge } from '@/components/ui'
 import { formatDate } from '@/lib/utils'
 import { OrderDetail } from '@/components/shared/OrderDetail'
@@ -9,6 +9,7 @@ import type { Order } from '@/types'
 export default function JoinerOrdersPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
+  const [changedOrderIds, setChangedOrderIds] = useState<Set<string>>(new Set())
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -19,6 +20,13 @@ export default function JoinerOrdersPage() {
       setOrders(sorted)
       setLoading(false)
     })
+  }, [])
+
+  // Orders where the GOM changed one of this joiner's claims while packing (see /api/claim-overrides).
+  useEffect(() => {
+    fetch('/api/claim-overrides').then(r => r.json()).then(d => {
+      setChangedOrderIds(new Set((Array.isArray(d) ? d : []).map((o: any) => o.order_id)))
+    }).catch(() => {})
   }, [])
 
   return (
@@ -47,7 +55,12 @@ export default function JoinerOrdersPage() {
                         onClick={() => setSelectedOrderId(o.id)}
                         className="cursor-pointer hover:bg-primary/[0.04]"
                       >
-                        <Td className="font-semibold">{o.shop?.name || '—'}</Td>
+                        <Td className="font-semibold">
+                          {o.shop?.name || '—'}
+                          {changedOrderIds.has(o.id) && (
+                            <Badge className="ml-2 bg-amber-50 text-amber-700 border border-amber-200 align-middle"><AlertTriangle size={10} className="inline mr-1" />Claim changed</Badge>
+                          )}
+                        </Td>
                         <Td className="text-muted-foreground">{(o.group as any)?.name || '—'}</Td>
                         <Td className="text-muted-foreground">{o.round_number ? o.round_number : '—'}</Td>
                         <Td><StatusBadge status={o.status} /></Td>
