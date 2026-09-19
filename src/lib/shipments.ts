@@ -212,7 +212,7 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
   await ensureShipmentsSchema()
   if (boxIds.length === 0) return
 
-  const orderItems = await query<any>(`
+  const [orderItems, pcAssignments] = await Promise.all([query<any>(`
     SELECT oi.id
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
@@ -220,7 +220,7 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
     WHERE bo.box_id = ANY($1::uuid[])
       AND o.status = 'at_gom'
       AND COALESCE(oi.joiner_id, o.personal_joiner_id) = $2
-  `, [boxIds, joinerId]).catch(() => [] as any[])
+  `, [boxIds, joinerId]).catch(() => [] as any[]),
 
   // Only pull in sorted photocards once the GOM has LOCKED the sorting session's results
   // (pc_sorting_sessions.locked_at) — the same "this is final, ready to physically deal with"
@@ -231,12 +231,12 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
   // items: an item added to the checklist (and maybe already confirmed) from a sort that was
   // later rerun, left behind once the rerun produced a different id for what was conceptually
   // the same item.
-  const pcAssignments = await query<any>(`
+  query<any>(`
     SELECT a.id
     FROM pc_assignments a
     JOIN pc_sorting_sessions s ON s.id = a.session_id
     WHERE s.box_id = ANY($1::uuid[]) AND a.joiner_id = $2 AND s.locked_at IS NOT NULL
-  `, [boxIds, joinerId]).catch(() => [] as any[])
+  `, [boxIds, joinerId]).catch(() => [] as any[])])
 
   const validOrderItemIds = orderItems.map(r => r.id)
   const validPcAssignmentIds = pcAssignments.map(r => r.id)
@@ -317,11 +317,18 @@ export async function getShipmentChecklist(shipmentId: string) {
   const orderItemIds = items.filter(i => i.source_type === 'order_item').map(i => i.source_id)
   const pcAssignmentIds = items.filter(i => i.source_type === 'pc_assignment').map(i => i.source_id)
 
-  const [orderRows, pcRows] = await Promise.all([
+  // One parallel round for everything the checklist needs. NOTE: preview images are deliberately
+  // NOT selected here — preview_image_url is a multi-MB base64 blob, and this query used to pull
+  // it once per order ITEM row (so N claims from one order = N copies) and ship it all to the
+  // browser before the wizard could render anything. Now we only ask whether an order HAS one
+  // (`has_preview`); the wizard loads the actual image lazily, one step at a time, from
+  // GET /api/orders/[id]/preview (browser-cached).
+  const [orderRows, pcRows, groupMemberRows, overrideMemberRows] = await Promise.all([
     orderItemIds.length ? query<any>(`
       SELECT oi.id, oi.description, oi.item_type, oi.amount_claimed, oi.price_eur, oi.version_name,
         oi.member_id as claimed_member_id, o.group_id,
-        m.name as member_name, o.id as order_id, o.round_number, o.preview_image_url,
+        m.name as member_name, o.id as order_id, o.round_number,
+        (o.preview_image_url IS NOT NULL AND o.preview_image_url <> '') AS has_preview,
         s.name as shop_name, g.name as group_name
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
@@ -341,49 +348,77 @@ export async function getShipmentChecklist(shipmentId: string) {
       LEFT JOIN pc_item_units u ON u.id = a.member_id
       WHERE a.id = ANY($1::uuid[])
     `, [pcAssignmentIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
+    // Group rosters for the "change claim" dropdown (via subquery so it needn't wait on orderRows).
+    orderItemIds.length ? query<any>(`
+      SELECT id, name, group_id FROM members
+      WHERE group_id IN (
+        SELECT o.group_id FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE oi.id = ANY($1::uuid[])
+      )
+      ORDER BY sort_order, name
+    `, [orderItemIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
+    query<any>(`
+      SELECT id, name FROM members
+      WHERE id IN (SELECT override_member_id FROM shipment_items WHERE shipment_id=$1 AND override_member_id IS NOT NULL)
+    `, [shipmentId]).catch(() => [] as any[]),
   ])
 
   const orderById = new Map(orderRows.map(r => [r.id, r]))
   const pcById = new Map(pcRows.map(r => [r.id, r]))
-  const previewImages: Record<string, string> = {}
-  for (const r of orderRows) {
-    if (r.preview_image_url && !previewImages[r.order_id]) previewImages[r.order_id] = r.preview_image_url
-  }
-
-  // Members for the "override claim" dropdown (each order's own group roster) and the names of
-  // any override members already set.
-  const groupIds = [...new Set(orderRows.map(r => r.group_id).filter(Boolean))] as string[]
-  const overrideIds = [...new Set(items.map(i => i.override_member_id).filter(Boolean))] as string[]
-  const [groupMemberRows, overrideMemberRows] = await Promise.all([
-    groupIds.length ? query<any>(`SELECT id, name, group_id FROM members WHERE group_id = ANY($1::uuid[]) ORDER BY sort_order, name`, [groupIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
-    overrideIds.length ? query<any>(`SELECT id, name FROM members WHERE id = ANY($1::uuid[])`, [overrideIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
-  ])
   const overrideNameById = new Map<string, string>(overrideMemberRows.map((r: any) => [r.id, r.name]))
 
-  const orderOut = items
-    .filter(it => it.source_type === 'order_item')
-    .map(it => {
-      const d = orderById.get(it.source_id)
-      const overridden = !!it.override_member_id
-      return {
-        id: it.id, source_type: it.source_type, item_ids: [it.id],
-        confirmed: it.confirmed, skipped: it.skipped,
-        label: d?.description || d?.item_type || 'Item',
-        // member_name is what should physically be packed: the override when there is one,
-        // otherwise the joiner's original claim.
-        member_name: (overridden ? overrideNameById.get(it.override_member_id) : null) || d?.member_name || null,
-        claimed_member_id: d?.claimed_member_id || null,
-        claimed_member_name: d?.member_name || null,
-        override_member_id: it.override_member_id || null,
-        override_reason: it.override_reason || null,
-        group_members: groupMemberRows.filter((m: any) => m.group_id === d?.group_id).map((m: any) => ({ id: m.id, name: m.name })),
-        sub_label: [d?.shop_name, d?.round_number ? `#${d.round_number}` : null, d?.group_name].filter(Boolean).join(' · '),
-        amount_claimed: d?.amount_claimed || 1,
-        price_eur: d?.price_eur || null,
-        order_id: d?.order_id || null,
-        has_preview: !!d?.preview_image_url,
-      }
+  // Claimed order items are grouped BY ORDER: one checklist step per order, listing every claimed
+  // line the joiner has in it (e.g. 3 POBs from the same order show up together in one pop-up
+  // instead of three separate steps). Each line keeps its own shipment_items id so a single line
+  // can still have its claim member changed; confirm/skip acts on the whole order step at once via
+  // `item_ids`, same as the sorted-photocard pack groups below.
+  type OrderGroup = { order_id: string; item_ids: string[]; created_at: any; confirmed_count: number; skipped_count: number; lines: any[]; d0: any }
+  const orderGroups = new Map<string, OrderGroup>()
+  for (const it of items) {
+    if (it.source_type !== 'order_item') continue
+    const d = orderById.get(it.source_id)
+    const orderId = d?.order_id || `unknown:${it.id}`
+    if (!orderGroups.has(orderId)) {
+      orderGroups.set(orderId, { order_id: orderId, item_ids: [], created_at: it.created_at, confirmed_count: 0, skipped_count: 0, lines: [], d0: d })
+    }
+    const g = orderGroups.get(orderId)!
+    g.item_ids.push(it.id)
+    if (it.confirmed) g.confirmed_count += 1
+    if (it.skipped) g.skipped_count += 1
+    const overridden = !!it.override_member_id
+    g.lines.push({
+      id: it.id,
+      label: d?.description || d?.item_type || 'Item',
+      version_name: d?.version_name || null,
+      // member_name is what should physically be packed: the override when there is one,
+      // otherwise the joiner's original claim.
+      member_name: (overridden ? overrideNameById.get(it.override_member_id) : null) || d?.member_name || null,
+      claimed_member_id: d?.claimed_member_id || null,
+      claimed_member_name: d?.member_name || null,
+      override_member_id: it.override_member_id || null,
+      override_reason: it.override_reason || null,
+      group_members: groupMemberRows.filter((m: any) => m.group_id === d?.group_id).map((m: any) => ({ id: m.id, name: m.name })),
+      amount_claimed: d?.amount_claimed || 1,
+      price_eur: d?.price_eur || null,
     })
+  }
+
+  const orderOut = [...orderGroups.values()].map(g => {
+    const d = g.d0
+    const total = g.item_ids.length
+    return {
+      id: `order:${g.order_id}`, source_type: 'order_item_group', item_ids: g.item_ids,
+      confirmed: total > 0 && g.confirmed_count === total,
+      skipped: total > 0 && g.skipped_count === total,
+      label: [d?.shop_name, d?.round_number ? `#${d.round_number}` : null].filter(Boolean).join(' ') || 'Order',
+      member_name: null,
+      sub_label: [d?.group_name, `${total} claimed item${total === 1 ? '' : 's'}`].filter(Boolean).join(' · '),
+      lines: g.lines,
+      amount_claimed: total,
+      price_eur: null,
+      order_id: d?.order_id || null,
+      has_preview: !!d?.has_preview,
+    }
+  })
 
   type PcMember = { member_name: string; item_name: string; count: number; is_repeat: boolean; is_random: boolean; is_guaranteed: boolean }
   type PcGroup = {
@@ -431,5 +466,6 @@ export async function getShipmentChecklist(shipmentId: string) {
       price_eur: null, order_id: null, has_preview: false,
     }))
 
-  return { items: [...orderOut, ...pcOut], previewImages }
+  // previewImages is kept (empty) so existing consumers don't break — images load lazily now.
+  return { items: [...orderOut, ...pcOut], previewImages: {} as Record<string, string> }
 }

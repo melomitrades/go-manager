@@ -58,6 +58,16 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
 
   useEffect(() => { load() }, [load])
 
+  // Warm the browser cache with the NEXT step's preview image while the GOM is looking at the
+  // current one, so stepping forward doesn't wait on an image download.
+  useEffect(() => {
+    const next = data?.items?.[index + 1]
+    if (next?.has_preview && next.order_id) {
+      const img = new window.Image()
+      img.src = `/api/orders/${next.order_id}/preview`
+    }
+  }, [data, index])
+
   async function act(action: 'finalize' | 'reset') {
     setBusy(true); setError('')
     const res = await fetch(`/api/shipments/${shipment.id}/pack`, {
@@ -131,7 +141,6 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
   )
 
   const items: any[] = data?.items || []
-  const previewImages: Record<string, string> = data?.previewImages || {}
   const progress = data?.progress || { total: 0, confirmed: 0, skipped: 0, remaining: 0 }
   const joinerName = shipment.joiner?.display_name || shipment.joiner?.username || 'Joiner'
 
@@ -155,18 +164,19 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
         </div>
 
         <Card>
-          {current.has_preview && current.order_id && previewImages[current.order_id] && (
-            <img src={previewImages[current.order_id]} alt="preview" className="w-full max-h-64 object-contain bg-secondary/40 border-b border-border" />
-          )}
-          {!(current.has_preview && current.order_id && previewImages[current.order_id]) && (
+          {current.has_preview && current.order_id ? (
+            // Loaded lazily, one image at a time, straight from its own cacheable URL — never
+            // embedded in the checklist JSON (see /api/orders/[id]/preview).
+            <img key={current.order_id} src={`/api/orders/${current.order_id}/preview`} alt="preview" className="w-full max-h-64 object-contain bg-secondary/40 border-b border-border" />
+          ) : (
             <div className="w-full h-32 flex items-center justify-center bg-secondary/40 border-b border-border text-muted-foreground/40">
               <ImageIcon size={28} />
             </div>
           )}
           <CardContent className="space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge className={current.source_type !== 'order_item' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-secondary text-muted-foreground border border-border'}>
-                {current.source_type !== 'order_item' ? '🎴 Sorted items' : 'Claimed item'}
+              <Badge className={current.source_type === 'pc_assignment_group' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-secondary text-muted-foreground border border-border'}>
+                {current.source_type === 'pc_assignment_group' ? '🎴 Sorted items' : 'Claimed items'}
               </Badge>
               {current.is_guaranteed && <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200">✓ Guaranteed</Badge>}
               {current.is_repeat && <Badge className="bg-secondary text-muted-foreground border border-border">2nd copy</Badge>}
@@ -193,69 +203,77 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
               </>
             ) : (
               <>
-                {current.override_member_id ? (
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold">{current.member_name}</p>
-                    <div className="flex items-center gap-1.5 flex-wrap text-xs">
-                      <Badge className="bg-amber-50 text-amber-700 border border-amber-200">Claim changed</Badge>
-                      <span className="text-muted-foreground">Joiner claimed <span className="line-through">{current.claimed_member_name || '—'}</span></span>
-                    </div>
-                    {current.override_reason && <p className="text-xs text-muted-foreground italic">“{current.override_reason}”</p>}
-                  </div>
-                ) : (
-                  current.member_name && <p className="text-sm text-muted-foreground">{current.member_name}</p>
-                )}
                 {current.sub_label && <p className="text-xs text-muted-foreground">{current.sub_label}</p>}
-                <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                  {current.amount_claimed > 1 && <span>×{current.amount_claimed}</span>}
-                  {current.price_eur && <span className="font-mono">{formatEur(current.price_eur)}</span>}
+                <div className="space-y-2 pt-1">
+                  {(current.lines || []).map((line: any) => {
+                    const changed = !!line.override_member_id
+                    const editing = overrideOpenFor === line.id
+                    const canEdit = !['shipped', 'complete'].includes(data?.shipment?.status)
+                    return (
+                      <div key={line.id} className="rounded-xl border border-border bg-secondary/30 px-3 py-2.5 space-y-1.5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold">{line.label}{line.version_name ? <span className="font-normal text-muted-foreground"> · {line.version_name}</span> : null}</p>
+                            {line.member_name && <p className="text-sm text-muted-foreground">{line.member_name}</p>}
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground flex-shrink-0">
+                            {line.amount_claimed > 1 && <span className="font-semibold">×{line.amount_claimed}</span>}
+                            {line.price_eur && <span className="font-mono">{formatEur(line.price_eur)}</span>}
+                          </div>
+                        </div>
+                        {changed && (
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                              <Badge className="bg-amber-50 text-amber-700 border border-amber-200">Claim changed</Badge>
+                              <span className="text-muted-foreground">Joiner claimed <span className="line-through">{line.claimed_member_name || '—'}</span></span>
+                            </div>
+                            {line.override_reason && <p className="text-xs text-muted-foreground italic">“{line.override_reason}”</p>}
+                          </div>
+                        )}
+                        {!editing && canEdit && (
+                          <Button variant="ghost" size="sm" onClick={() => { setOverrideOpenFor(line.id); setOverrideMember(line.override_member_id || ''); setOverrideReason(line.override_reason || '') }}>
+                            <Pencil size={13} /> {changed ? 'Edit claim change' : 'Change claim (not guaranteed)'}
+                          </Button>
+                        )}
+                        {editing && (
+                          <div className="rounded-xl border border-amber-200 bg-amber-50/60 dark:bg-amber-900/10 dark:border-amber-800 p-3 space-y-2">
+                            <p className="text-xs text-amber-800 dark:text-amber-200">
+                              Pack a different member for this claim. The joiner&apos;s original claim ({line.claimed_member_name || '—'}) is kept on the order and they&apos;ll see a warning on their Shipping, Orders and Deadlines pages.
+                            </p>
+                            <FormField label="Pack instead">
+                              <Select
+                                options={(line.group_members || []).map((m: any) => ({ value: m.id, label: m.name }))}
+                                placeholder="Choose a member…"
+                                value={overrideMember}
+                                onChange={e => setOverrideMember(e.target.value)}
+                              />
+                            </FormField>
+                            <FormField label="Reason (shown to the joiner, optional)">
+                              <Input placeholder="e.g. Not enough copies bought to secure this member" value={overrideReason} onChange={e => setOverrideReason(e.target.value)} />
+                            </FormField>
+                            <div className="flex items-center justify-between gap-2">
+                              <div>
+                                {changed && (
+                                  <Button variant="ghost" size="sm" disabled={busy} onClick={() => saveOverride(line, null)}>
+                                    <RotateCcw size={13} /> Revert to original
+                                  </Button>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Button variant="outline" size="sm" onClick={() => setOverrideOpenFor(null)}>Cancel</Button>
+                                <Button size="sm" disabled={busy || !overrideMember} onClick={() => saveOverride(line, overrideMember)}>Save change</Button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               </>
             )}
           </CardContent>
         </Card>
-
-        {current.source_type === 'order_item' && (
-          <div className="space-y-2">
-            {overrideOpenFor !== current.id ? (
-              !['shipped', 'complete'].includes(data?.shipment?.status) && (
-                <Button variant="ghost" size="sm" onClick={() => { setOverrideOpenFor(current.id); setOverrideMember(current.override_member_id || ''); setOverrideReason(current.override_reason || '') }}>
-                  <Pencil size={13} /> {current.override_member_id ? 'Edit claim change' : 'Change claim (not guaranteed)'}
-                </Button>
-              )
-            ) : (
-              <div className="rounded-xl border border-amber-200 bg-amber-50/60 dark:bg-amber-900/10 dark:border-amber-800 p-3 space-y-2">
-                <p className="text-xs text-amber-800 dark:text-amber-200">
-                  Pack a different member for this claim. The joiner&apos;s original claim ({current.claimed_member_name || '—'}) is kept on the order and they&apos;ll see a warning on their Shipping, Orders and Deadlines pages.
-                </p>
-                <FormField label="Pack instead">
-                  <Select
-                    options={(current.group_members || []).map((m: any) => ({ value: m.id, label: m.name }))}
-                    placeholder="Choose a member…"
-                    value={overrideMember}
-                    onChange={e => setOverrideMember(e.target.value)}
-                  />
-                </FormField>
-                <FormField label="Reason (shown to the joiner, optional)">
-                  <Input placeholder="e.g. Not enough copies bought to secure this member" value={overrideReason} onChange={e => setOverrideReason(e.target.value)} />
-                </FormField>
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    {current.override_member_id && (
-                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => saveOverride(current, null)}>
-                        <RotateCcw size={13} /> Revert to original
-                      </Button>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={() => setOverrideOpenFor(null)}>Cancel</Button>
-                    <Button size="sm" disabled={busy || !overrideMember} onClick={() => saveOverride(current, overrideMember)}>Save change</Button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
 
         {error && <p className="text-xs text-destructive">{error}</p>}
 
