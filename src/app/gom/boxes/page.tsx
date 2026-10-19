@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Box, Pencil, ChevronDown, ChevronUp, Check, X, Trash2 } from 'lucide-react'
+import { Plus, Box, Pencil, ChevronDown, ChevronUp, Check, X, Trash2, PackageX } from 'lucide-react'
 import { Button, Card, CardHeader, CardContent, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { formatEur, formatKrw } from '@/lib/utils'
+import { MarkLostModal } from '@/components/shared/MarkLostModal'
 
 const ITEM_TYPES = [
   { value: 'photocard', label: '🃏 Photocard' },
@@ -27,6 +28,8 @@ export default function GomBoxesPage() {
   const [excludedJoiners, setExcludedJoiners] = useState<Record<string, Set<string>>>({})
   const [variantWeightInputs, setVariantWeightInputs] = useState<Record<string, string>>({})
   const [savingVariant, setSavingVariant] = useState<string | null>(null)
+  // "Mark claims as lost" for one joiner, scoped to this box's orders.
+  const [lostTarget, setLostTarget] = useState<{ boxId: string; joinerId: string; name: string; key: string } | null>(null)
 
   async function confirmVariantWeight(boxId: string, variantId: string) {
     const raw = variantWeightInputs[variantId]
@@ -469,6 +472,18 @@ export default function GomBoxesPage() {
                                     <span className="font-semibold flex items-center gap-1.5">
                                       {expandedJoiner === `${box.id}-${s.joiner_id}` ? <ChevronUp size={12} className="text-primary"/> : <ChevronDown size={12} className="text-muted-foreground"/>}
                                       {s.display_name || s.username}
+                                      <button
+                                        onClick={e => {
+                                          e.stopPropagation()
+                                          // Pre-select the box payment they owe: EMS first, then customs.
+                                          const type = !s.ems_paid && !s.ems_cancelled ? 'ems' : 'customs'
+                                          setLostTarget({ boxId: box.id, joinerId: s.joiner_id, name: s.display_name || s.username, key: `${type}:${box.id}:${s.joiner_id}` })
+                                        }}
+                                        title="Didn't pay — mark claims as lost"
+                                        className="ml-auto flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md border border-border text-muted-foreground hover:text-red-600 hover:border-red-300 transition-colors"
+                                      >
+                                        <PackageX size={10}/> Lost
+                                      </button>
                                       {(s.customs_excluded || s.ems_cancelled) && (
                                         <span title={[s.ems_cancelled && 'Unpaid EMS share cancelled (claims lost)', s.customs_excluded && 'Excluded from the customs split (claims lost)'].filter(Boolean).join(' · ')}
                                           className="text-[9px] font-bold uppercase px-1 py-0.5 rounded border bg-red-50 text-red-700 border-red-200">lost</span>
@@ -715,6 +730,15 @@ export default function GomBoxesPage() {
           </div>
         </div>
       </Modal>
+      <MarkLostModal
+        open={!!lostTarget}
+        joinerId={lostTarget?.joinerId || null}
+        joinerName={lostTarget?.name}
+        scope={{ box_id: lostTarget?.boxId }}
+        defaultTriggerKey={lostTarget?.key}
+        onClose={() => setLostTarget(null)}
+        onDone={() => { if (lostTarget) loadShares(lostTarget.boxId) }}
+      />
     </div>
   )
 }

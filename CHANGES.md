@@ -336,7 +336,9 @@ belonging to the joiner and become **leftovers** that can be reassigned (or give
 ## How it works
 
 - **Where the button is.** "Lost" on each joiner in an order (Order Detail), "Mark claims lost" on every row of the
-  new **Payments → Unpaid** tab, and "Lost" on unvalidated rows of Payments → Joiner Payment Proofs. GOM/admin only.
+  new **Payments → Unpaid** tab, "Lost" on unvalidated rows of Payments → Joiner Payment Proofs, and "Lost" next to
+  each joiner in a box's Joiner Shares on the **Boxes** page (shows that box's claims, with the unpaid EMS — or customs —
+  pre-selected). GOM/admin only.
 - **It needs an unpaid payment.** The picker first asks which unpaid payment this is about (order, EMS, customs or
   shipping — only payments currently owed and not validated). Then you pick claim lines (or single member rows of a
   line) with a "select all in this order" shortcut, add a note the joiner will see, click **Review** (a real dry run of
