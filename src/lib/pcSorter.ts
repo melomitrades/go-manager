@@ -82,6 +82,10 @@ export async function ensurePcSorterSchema() {
     // version whose ID card set is physically guaranteed to match (see computeGuaranteedUnitClaims
     // below) — never ranked/competed for, unlike is_repeat/is_random.
     `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_guaranteed BOOLEAN NOT NULL DEFAULT false`,
+    // Leftover marker from lost claims (src/lib/lostClaims.ts). Auto-fill and the guaranteed-claim
+    // lookup filter on it, so it must exist before they run — otherwise their query would error,
+    // fall back to "no rows" and auto-fill would wipe every inclusion.
+    `ALTER TABLE order_items ADD COLUMN IF NOT EXISTS lost_claim_id UUID`,
   ])
 
   // Phase 2: depends on pc_packs (and pc_sorting_sessions) from phase 1.
@@ -235,6 +239,7 @@ export async function autoFillInclusions(sessionId: string) {
     LEFT JOIN orders o ON o.id = oi.order_id
     WHERE oi.order_id = ANY($1::uuid[])
       AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
+      AND oi.lost_claim_id IS NULL
       AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
   `, [orderIds]).catch(() => [] as any[])
 
@@ -390,6 +395,7 @@ export async function computeGuaranteedUnitClaims(
     LEFT JOIN orders o ON o.id = oi.order_id
     WHERE oi.order_id = ANY($1::uuid[])
       AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
+      AND oi.lost_claim_id IS NULL
       AND oi.version_name IS NOT NULL
       AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
   `, [orderIds]).catch(() => [] as any[])

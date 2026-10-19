@@ -311,10 +311,13 @@ export default function GomBoxesPage() {
                                   onClick={async () => {
                                     if (shares?.customs_payment_requested || hasMissingVariants) return
                                     const excluded = excludedJoiners[box.id] || new Set()
-                                    const totalW = shares.joiners.filter((j: any) => !excluded.has(j.joiner_id)).reduce((s: number, j: any) => s + (j.weight_g || 0), 0)
+                                    // customs_excluded: joiner lost their claims over unpaid EMS (or has
+                                    // nothing left here) — out of the customs split only.
+                                    const inCustoms = (j: any) => !excluded.has(j.joiner_id) && !j.customs_excluded
+                                    const totalW = shares.joiners.filter(inCustoms).reduce((s: number, j: any) => s + (j.weight_g || 0), 0)
                                     const customsTotal = parseFloat(box.customs_total_eur || 0)
                                     const joiner_shares = shares.joiners
-                                      .filter((j: any) => !excluded.has(j.joiner_id))
+                                      .filter(inCustoms)
                                       .map((j: any) => ({
                                         joiner_id: j.joiner_id,
                                         customs_amount_eur: totalW > 0 ? Math.ceil((customsTotal * j.weight_g / totalW) * 100) / 100 : 0,
@@ -466,6 +469,10 @@ export default function GomBoxesPage() {
                                     <span className="font-semibold flex items-center gap-1.5">
                                       {expandedJoiner === `${box.id}-${s.joiner_id}` ? <ChevronUp size={12} className="text-primary"/> : <ChevronDown size={12} className="text-muted-foreground"/>}
                                       {s.display_name || s.username}
+                                      {(s.customs_excluded || s.ems_cancelled) && (
+                                        <span title={[s.ems_cancelled && 'Unpaid EMS share cancelled (claims lost)', s.customs_excluded && 'Excluded from the customs split (claims lost)'].filter(Boolean).join(' · ')}
+                                          className="text-[9px] font-bold uppercase px-1 py-0.5 rounded border bg-red-50 text-red-700 border-red-200">lost</span>
+                                      )}
                                     </span>
                                     <span className="text-muted-foreground">{s.item_count}</span>
                                     <span className="text-muted-foreground">{s.total_inclusions || 0}</span>
@@ -476,7 +483,7 @@ export default function GomBoxesPage() {
                                       {s.proof_url && !s.ems_paid && <span title="Proof submitted" className="text-amber-500 text-xs">📎</span>}
                                       <PaidBtn paid={s.ems_paid} onClick={(e) => { e.stopPropagation(); togglePaid(box.id, s.joiner_id, 'ems_paid', s.ems_paid) }}/>
                                     </span>
-                                    <span className="font-mono text-sm">{formatEur(s.customs_share_eur)}</span>
+                                    <span className="font-mono text-sm">{s.customs_excluded ? <span className="text-muted-foreground/50" title="Excluded from customs (claims lost)">—</span> : formatEur(s.customs_share_eur)}</span>
                                     <span><PaidBtn paid={s.customs_paid} onClick={(e) => { e.stopPropagation(); togglePaid(box.id, s.joiner_id, 'customs_paid', s.customs_paid) }}/></span>
                                   </div>
                                 {expandedJoiner === `${box.id}-${s.joiner_id}` && s.items?.length > 0 && (

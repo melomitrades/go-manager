@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { X, Check, Clock, ShoppingBag, Users } from 'lucide-react'
+import { X, Check, Clock, ShoppingBag, Users, PackageX, PackageOpen } from 'lucide-react'
 import { StatusBadge, Badge } from '@/components/ui'
 import { formatEur, formatKrw, formatDate } from '@/lib/utils'
+import { MarkLostModal, LostBadge } from './MarkLostModal'
 
 interface OrderDetailProps {
   orderId: string | null
@@ -54,6 +55,13 @@ function groupItems(items: any[]): { label: string; qty: number; price_eur: numb
   return Object.values(groups)
 }
 
+// Member-slot maths (albums bought, leftover calculators) must still count leftover rows from lost
+// claims as "claimed" — they're physically in the order, and they're listed separately as lost-
+// claim leftovers below, so counting them as open slots too would show them twice.
+function countGroups(data: any): any[] {
+  return [...(data?.joiners || []), { items: data?.leftovers || [] }]
+}
+
 function SortResultsList({ results }: { results: any[] }) {
   if (!results || results.length === 0) return null
   return (
@@ -78,6 +86,8 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [sortResults, setSortResults] = useState<any[]>([])
+  const [lostFor, setLostFor] = useState<{ joinerId: string; name: string } | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     if (!orderId) { setData(null); setSortResults([]); return }
@@ -89,7 +99,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
       .then(r => r.json())
       .then(d => setSortResults(Array.isArray(d) ? d : []))
       .catch(() => setSortResults([]))
-  }, [orderId])
+  }, [orderId, reloadKey])
 
   async function togglePaid(joinerId: string, current: boolean) {
     await fetch(`/api/orders/${orderId}`, {
@@ -223,7 +233,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                 const countMemberClaims = (filterFn?: (item: any) => boolean) => {
                   const counts: Record<string, { name: string; count: number }> = {}
                   for (const m of groupMembers) counts[m.id] = { name: m.name, count: 0 }
-                  for (const jg of data.joiners) {
+                  for (const jg of countGroups(data)) {
                     for (const item of jg.items) {
                       if (item.member_id && counts[item.member_id] !== undefined) {
                         if (!filterFn || filterFn(item)) counts[item.member_id].count++
@@ -388,7 +398,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                     for (const vn of versionNames) { verClaimed[vn][m.id] = 0 }
                   }
                   // Pre-group items per joiner per member to detect version by position
-                  for (const jg of data.joiners) {
+                  for (const jg of countGroups(data)) {
                     const byMember: Record<string, any[]> = {}
                     for (const item of jg.items) {
                       if (!item.member_id) continue
@@ -478,7 +488,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                   const fansignBy: Record<string, number> = {}
                   for (const m of groupMembers) { vceBy[m.id] = 0; fansignBy[m.id] = 0 }
 
-                  for (const jg of data.joiners) {
+                  for (const jg of countGroups(data)) {
                     for (const item of jg.items) {
                       if (!item.member_id) continue
                       const label = (item.description || '').toLowerCase()
@@ -546,7 +556,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                 // so 2x Koko for one joiner = 2 rows = count of 2, not 1)
                 const claimedCount: Record<string, number> = {}
                 for (const m of groupMembers) { claimedCount[m.id] = 0 }
-                for (const jg of data.joiners) {
+                for (const jg of countGroups(data)) {
                   for (const item of jg.items) {
                     if (item.member_id && claimedCount[item.member_id] !== undefined) {
                       claimedCount[item.member_id]++
@@ -625,6 +635,14 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                         </div>
                       </div>
                       {jg.joiner_id && (
+                        <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => setLostFor({ joinerId: jg.joiner_id, name })}
+                          title="Mark claims as lost (unpaid)"
+                          className="flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-semibold border border-border text-muted-foreground hover:text-red-600 hover:border-red-300 transition-all"
+                        >
+                          <PackageX size={11} /> Lost
+                        </button>
                         <button
                           onClick={() => togglePaid(jg.joiner_id, jg.paid)}
                           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
@@ -636,6 +654,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                           {jg.paid ? <Check size={11} /> : <Clock size={11} />}
                           {jg.paid ? 'Paid' : 'Unpaid'}
                         </button>
+                        </div>
                       )}
                     </div>
 
@@ -683,6 +702,27 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                 )
               })}
 
+              {/* Leftovers from lost claims */}
+              {(data.leftovers || []).length > 0 && (
+                <div className="border border-red-200 dark:border-red-900 rounded-2xl overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-red-100 dark:border-red-900 bg-red-50/60 dark:bg-red-900/10">
+                    <p className="text-xs font-bold uppercase tracking-widest text-red-700 dark:text-red-300 flex items-center gap-1.5"><PackageOpen size={13} /> Leftovers from lost claims</p>
+                    <a href="/gom/leftovers" className="text-xs font-semibold text-primary hover:underline">Manage →</a>
+                  </div>
+                  <div className="divide-y divide-border/40">
+                    {data.leftovers.map((l: any) => (
+                      <div key={l.id} className="flex items-center justify-between px-4 py-2.5 gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{l.description || 'Item'}{l.member?.name && <span className="text-muted-foreground font-normal"> · {l.member.name}</span>}{l.version_name && <span className="text-muted-foreground font-normal"> · {l.version_name}</span>}</p>
+                          <p className="text-xs text-muted-foreground">Lost by {l.original_joiner_name || '?'} · unpaid {l.trigger_label || '—'}{l.lost_at ? ` · ${formatDate(l.lost_at)}` : ''}</p>
+                        </div>
+                        <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full border bg-background border-border text-muted-foreground flex-shrink-0">available</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Order meta */}
               <OrderMeta order={data.order} />
             </div>
@@ -699,11 +739,37 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                 </div>
               )}
 
+              {/* Claims marked lost because a payment wasn't made */}
+              {(data.myLost || []).length > 0 && (
+                <div className="border border-red-200 dark:border-red-900 rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-red-100 dark:border-red-900 bg-red-50/60 dark:bg-red-900/10">
+                    <p className="text-xs font-bold uppercase tracking-widest text-red-700 dark:text-red-300">Lost claims</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">These are no longer yours and aren&apos;t part of your total. Contact your GOM if you think this is a mistake.</p>
+                  </div>
+                  <div className="divide-y divide-border/40">
+                    {data.myLost.map((l: any) => (
+                      <div key={l.id} className="px-4 py-2.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-medium line-through decoration-red-400/60">{l.description || 'Item'}{l.member_name && <span className="text-muted-foreground font-normal"> · {l.member_name}</span>}{l.version_name && <span className="text-muted-foreground font-normal"> · {l.version_name}</span>}</p>
+                          <LostBadge triggerType={l.trigger_type} triggerLabel={l.trigger_label} />
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Unpaid: {l.trigger_label}{l.trigger_amount_eur != null ? ` (${formatEur(parseFloat(l.trigger_amount_eur))})` : ''} · {formatDate(l.lost_at)}
+                          {l.reason && <span className="block italic mt-0.5">“{l.reason}”</span>}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {data.joiners.length === 0 ? (
+                (data.myLost || []).length > 0 ? null : (
                 <div className="text-center py-12">
                   <ShoppingBag size={28} className="mx-auto mb-2 text-muted-foreground/30" />
                   <p className="text-sm text-muted-foreground">No items found for you in this order.</p>
                 </div>
+                )
               ) : data.joiners.map((jg: any, idx: number) => {
                 const grouped = groupItems(jg.items)
                 const joinerTotal = jg.items.reduce((s: number, i: any) => s + (parseFloat(i.price_eur) || 0) * (i.amount_claimed || 1), 0)
@@ -772,6 +838,18 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
           )}
         </div>
       </div>
+
+      {viewAs === 'gom' && (
+        <MarkLostModal
+          open={!!lostFor}
+          joinerId={lostFor?.joinerId || null}
+          joinerName={lostFor?.name}
+          scope={{ order_id: orderId }}
+          defaultTriggerKey={lostFor ? `order:${orderId}:${lostFor.joinerId}` : null}
+          onClose={() => setLostFor(null)}
+          onDone={() => setReloadKey(k => k + 1)}
+        />
+      )}
     </>
   )
 }

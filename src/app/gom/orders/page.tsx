@@ -179,7 +179,10 @@ export default function GomOrdersPage() {
     setSelectedGroup(g)
 
     // Rebuild pricing options + joiner rows from existing items
-    const existingItems: any[] = (order as any).items || []
+    // Leftover rows from lost claims (lost_claim_id set) aren't anyone's claim anymore — they're
+    // managed from the Leftovers page and preserved server-side on save, so keep them out of the
+    // editable joiner rows entirely.
+    const existingItems: any[] = ((order as any).items || []).filter((it: any) => !it.lost_claim_id)
     if (existingItems.length > 0) {
 
       // ── For multi-version: restore version sections first, then build optMap from those ──

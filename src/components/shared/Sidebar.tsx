@@ -10,7 +10,7 @@ import {
   ShoppingBag, Box, CreditCard, Star, MapPin,
   Send, Music, Settings, LayoutDashboard, Users,
   Calendar, Truck, Package, Sun, Moon, LogOut, ToggleLeft, ToggleRight,
-  Menu, X,
+  Menu, X, PackageOpen,
 } from 'lucide-react'
 
 const GOM_NAV = [
@@ -21,6 +21,7 @@ const GOM_NAV = [
   { href: '/gom/boxes', label: 'Boxes', icon: Box },
   { href: '/gom/pc-sorter', label: 'Sorting', icon: Music },
   { href: '/gom/sending-out', label: 'Sending Out', icon: Send },
+  { href: '/gom/leftovers', label: 'Leftovers', icon: PackageOpen },
   { href: '/gom/fancalls', label: 'Fancalls', icon: Star },
   { href: '/gom/settings', label: 'Settings', icon: Settings },
 ]
@@ -32,6 +33,7 @@ const JOINER_NAV = [
   { href: '/joiner/boxes', label: 'Boxes', icon: Package },
   { href: '/joiner/payments', label: 'Payments', icon: CreditCard },
   { href: '/joiner/pc-sorter', label: 'Sorting', icon: Music },
+  { href: '/joiner/leftovers', label: 'Leftovers', icon: PackageOpen },
 ]
 
 const ADMIN_NAV = [

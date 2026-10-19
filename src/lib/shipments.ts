@@ -102,6 +102,9 @@ export async function ensureShipmentsSchema() {
     query(`ALTER TABLE shipment_items ADD COLUMN IF NOT EXISTS original_member_id UUID REFERENCES members(id) ON DELETE SET NULL`),
     query(`ALTER TABLE shipment_items ADD COLUMN IF NOT EXISTS override_reason TEXT`),
     query(`ALTER TABLE shipment_items ADD COLUMN IF NOT EXISTS overridden_at TIMESTAMPTZ`),
+    // Leftover marker from lost claims (see src/lib/lostClaims.ts) — the checklist queries below
+    // filter on it, so it has to exist before they run, whichever module migrates first.
+    query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS lost_claim_id UUID`),
   ]).catch(err => console.error('[shipments migration]', err))
 }
 
@@ -193,6 +196,7 @@ export async function joinerEligibleForBoxes(joinerId: string, boxIds: string[])
         JOIN box_orders bo ON bo.order_id = o.id
         WHERE bo.box_id = ANY($2::uuid[])
           AND COALESCE(oi.joiner_id, o.personal_joiner_id) = $1
+          AND oi.lost_claim_id IS NULL
       )
       OR EXISTS (
         SELECT 1 FROM pc_assignments a
@@ -225,6 +229,7 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
     WHERE bo.box_id = ANY($1::uuid[])
       AND o.status = 'at_gom'
       AND COALESCE(oi.joiner_id, o.personal_joiner_id) = $2
+      AND oi.lost_claim_id IS NULL
   `, [boxIds, joinerId]).catch(() => [] as any[]),
 
   // Only pull in sorted photocards once the GOM has LOCKED the sorting session's results

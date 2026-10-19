@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Pencil, Trash2, Check, Eye, X, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react'
+import { Plus, Pencil, Trash2, Check, Eye, X, TrendingUp, TrendingDown, RefreshCw, PackageX } from 'lucide-react'
 import { Button, Card, Badge, Table, Th, Td, Tr, Modal, Input, Select, FormField, PageHeader, EmptyState } from '@/components/ui'
 import { formatEur, formatKrw, formatDate } from '@/lib/utils'
+import { MarkLostModal, PaymentTypeChip, type LostScope } from '@/components/shared/MarkLostModal'
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -26,7 +27,22 @@ export default function GomPaymentsPage() {
   const [orders, setOrders]       = useState<any[]>([])
   const [joinerItems, setJoinerItems] = useState<any[]>([])
   const [loading, setLoading]     = useState(true)
-  const [activeTab, setActiveTab] = useState<'payments' | 'joiner-proofs'>('payments')
+  const [activeTab, setActiveTab] = useState<'payments' | 'joiner-proofs' | 'unpaid'>('payments')
+  // "Unpaid" tab: every payment a joiner currently owes, with the "Mark claims lost" shortcut.
+  const [unpaid, setUnpaid] = useState<any[] | null>(null)
+  const [unpaidSearch, setUnpaidSearch] = useState('')
+  const [overdueOnly, setOverdueOnly] = useState(false)
+  const [lostTarget, setLostTarget] = useState<{ joinerId: string; name: string; scope: LostScope; key: string } | null>(null)
+  const fetchUnpaid = useCallback(async () => {
+    setUnpaid(null)
+    const rows = await fetch('/api/joiner-payments/unpaid').then(r => r.json()).catch(() => [])
+    setUnpaid(Array.isArray(rows) ? rows : [])
+  }, [])
+  function openLost(item: { type: string; joiner_id: string; order_id?: string | null; box_id?: string | null; shipment_id?: string | null }, name: string) {
+    const ref = item.type === 'order' ? item.order_id : item.type === 'shipping' ? item.shipment_id : item.box_id
+    const scope: LostScope = item.type === 'order' ? { order_id: item.order_id } : item.type === 'shipping' ? { shipment_id: item.shipment_id } : { box_id: item.box_id }
+    setLostTarget({ joinerId: item.joiner_id, name, scope, key: `${item.type}:${ref}:${item.joiner_id}` })
+  }
   const [proofsLoading, setProofsLoading] = useState(false)
   const [previewProof, setPreviewProof]   = useState<string | null>(null)
   const [proofFilter, setProofFilter]     = useState<'all' | 'pending' | 'validated'>('all')
@@ -217,10 +233,14 @@ export default function GomPaymentsPage() {
 
       {/* Tabs */}
       <div className="flex border-b border-border px-4 sm:px-6 overflow-x-auto">
-        {(['payments', 'joiner-proofs'] as const).map(tab => (
-          <button key={tab} onClick={() => { setActiveTab(tab); if (tab === 'joiner-proofs') fetchJoinerItems() }}
+        {(['payments', 'joiner-proofs', 'unpaid'] as const).map(tab => (
+          <button key={tab} onClick={() => { setActiveTab(tab); if (tab === 'joiner-proofs') fetchJoinerItems(); if (tab === 'unpaid' && unpaid === null) fetchUnpaid() }}
             className={`px-5 py-3 text-sm font-semibold border-b-2 -mb-px transition-all whitespace-nowrap ${activeTab === tab ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-            {tab === 'payments' ? 'GOM Payments' : (
+            {tab === 'payments' ? 'GOM Payments' : tab === 'unpaid' ? (
+              <>Unpaid{unpaid && unpaid.filter(u => u.overdue).length > 0 && (
+                <span className="ml-1.5 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{unpaid.filter(u => u.overdue).length}</span>
+              )}</>
+            ) : (
               <>Joiner Payment Proofs{joinerItemsLoaded && pendingProofCount > 0 && (
                 <span className="ml-1.5 bg-primary text-primary-foreground text-xs px-1.5 py-0.5 rounded-full">{pendingProofCount}</span>
               )}</>
@@ -352,6 +372,60 @@ export default function GomPaymentsPage() {
               )
         )}
 
+        {/* ── UNPAID TAB ─────────────────────────────────────────────────── */}
+        {activeTab === 'unpaid' && (
+          unpaid === null
+            ? <div className="flex justify-center py-16"><div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"/></div>
+            : (() => {
+              const q = unpaidSearch.toLowerCase()
+              const rows = unpaid.filter(u => (!overdueOnly || u.overdue) && (!q || u.joiner_name.toLowerCase().includes(q) || u.label.toLowerCase().includes(q)))
+              const byJoiner: Record<string, any[]> = {}
+              for (const u of rows) (byJoiner[u.joiner_id] ||= []).push(u)
+              return (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input type="text" placeholder="Search joiner or payment…" value={unpaidSearch} onChange={e => setUnpaidSearch(e.target.value)}
+                      className="pl-3 pr-3 py-2 text-xs border border-border rounded-xl bg-background focus:outline-none focus:ring-2 focus:ring-primary/25 w-56"/>
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground cursor-pointer">
+                      <input type="checkbox" checked={overdueOnly} onChange={e => setOverdueOnly(e.target.checked)} className="accent-primary"/> Overdue only
+                    </label>
+                    <button onClick={fetchUnpaid} className="ml-auto text-muted-foreground hover:text-foreground p-1" title="Refresh"><RefreshCw size={13}/></button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Everything joiners currently owe. If someone won&apos;t pay, “Mark claims lost” releases their claims as leftovers.</p>
+                  {Object.keys(byJoiner).length === 0 ? (
+                    <div className="text-center py-10 text-sm text-muted-foreground">Nothing unpaid{overdueOnly ? ' and overdue' : ''} 🎉</div>
+                  ) : Object.entries(byJoiner).map(([jid, list]) => (
+                    <div key={jid} className="border border-border rounded-2xl overflow-hidden">
+                      <div className="flex items-center justify-between px-4 py-3 bg-secondary/30 border-b border-border">
+                        <p className="font-bold text-sm">{list[0].joiner_name}</p>
+                        <p className="text-sm font-semibold tabular-nums">{formatEur(list.reduce((s: number, u: any) => s + u.amount_eur, 0))}</p>
+                      </div>
+                      <div className="divide-y divide-border/50">
+                        {list.map((u: any) => (
+                          <div key={u.key} className="flex items-center gap-3 px-4 py-2.5">
+                            <PaymentTypeChip type={u.type}/>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm truncate">{u.label}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {u.deadline ? <span className={u.overdue ? 'text-red-600 font-semibold' : ''}>{u.overdue ? 'Overdue since ' : 'Due '}{formatDate(u.deadline)}</span> : 'No deadline'}
+                                {u.proof_submitted && <span className="ml-2 text-amber-600">📎 proof sent — check the proofs tab</span>}
+                              </p>
+                            </div>
+                            <span className="text-sm font-semibold tabular-nums">{formatEur(u.amount_eur)}</span>
+                            <button onClick={() => openLost(u, u.joiner_name)}
+                              className="text-xs border border-border text-muted-foreground px-2.5 py-1 rounded-lg font-semibold hover:text-red-600 hover:border-red-300 transition-colors flex items-center gap-1 flex-shrink-0">
+                              <PackageX size={11}/> Mark claims lost
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()
+        )}
+
         {/* ── JOINER PROOFS TAB ─────────────────────────────────────────── */}
         {activeTab === 'joiner-proofs' && (
           <div className="space-y-4">
@@ -461,10 +535,16 @@ export default function GomPaymentsPage() {
                                 {item.paid ? (
                                   <span className="text-xs font-bold text-emerald-600 w-16 text-right">✓ Paid</span>
                                 ) : true ? (
+                                  <>
+                                  <button onClick={() => openLost(item, joinerName)} title="Didn't pay — mark claims as lost"
+                                    className="text-xs border border-border text-muted-foreground px-2 py-1 rounded-lg font-semibold hover:text-red-600 hover:border-red-300 transition-colors flex items-center gap-1">
+                                    <PackageX size={10}/> Lost
+                                  </button>
                                   <button onClick={() => validateJoinerPayment(item)}
                                     className="text-xs bg-emerald-500 text-white px-2.5 py-1 rounded-lg font-semibold hover:bg-emerald-600 transition-colors flex items-center gap-1 w-20 justify-center">
                                     <Check size={10}/> Validate
                                   </button>
+                                  </>
                                 ) : (
                                   <span className="text-xs text-muted-foreground/40 w-20 text-right">no proof</span>
                                 )}
@@ -481,6 +561,16 @@ export default function GomPaymentsPage() {
           </div>
         )}
       </div>
+
+      <MarkLostModal
+        open={!!lostTarget}
+        joinerId={lostTarget?.joinerId || null}
+        joinerName={lostTarget?.name}
+        scope={lostTarget?.scope || {}}
+        defaultTriggerKey={lostTarget?.key}
+        onClose={() => setLostTarget(null)}
+        onDone={() => { fetchUnpaid(); if (joinerItemsLoaded) fetchJoinerItems(true) }}
+      />
 
       {/* ── ADD / EDIT MODAL ─────────────────────────────────────────────── */}
       {modalOpen && (

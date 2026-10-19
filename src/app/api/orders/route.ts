@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureWeightVariantsSchema } from '@/lib/weightVariants'
+import { ensureLostClaimsSchema } from '@/lib/lostClaims'
 
 async function notifyJoiners(orderId: string, status: string, shopName: string | null) {
   const statusLabels: Record<string, string> = {
@@ -28,6 +29,9 @@ async function ensureOrderColumns() {
   if (migrationsDone) return
   migrationsDone = true
   await ensureWeightVariantsSchema()
+  // order_items.lost_claim_id (leftover rows from lost claims) is read by GET and protected by
+  // PATCH below, so the column must exist before either runs.
+  await ensureLostClaimsSchema()
   // Idempotent backfill — belongs in the once-per-cold-start gate below, not run unconditionally
   // on every request (it used to fire outside the gate on every single GET/POST/PATCH).
   query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
@@ -112,7 +116,11 @@ export async function GET(req: NextRequest) {
   const params: any[] = []
   let i = 1
   if (filterByJoiner) {
-    sql += ` AND (o.id IN (SELECT order_id FROM order_items WHERE joiner_id = $${i}) OR o.personal_joiner_id = $${i})`
+    // Also keep orders where this joiner only has LOST claims left, so the "Lost — unpaid" badge
+    // stays visible to them (restored claims are back in order_items and match the first branch).
+    sql += ` AND (o.id IN (SELECT order_id FROM order_items WHERE joiner_id = $${i}) OR o.personal_joiner_id = $${i}
+      OR o.id IN (SELECT lc.order_id FROM lost_claims lc JOIN lost_claim_batches lb ON lb.id = lc.batch_id
+                  WHERE lc.original_joiner_id = $${i} AND lc.status <> 'restored' AND lb.restored_at IS NULL))`
     params.push(user.id); i++
   }
   if (status) { sql += ` AND o.status = $${i++}`; params.push(status) }
@@ -170,6 +178,7 @@ export async function PATCH(req: NextRequest) {
   const user = session.user as any
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+  await ensureOrderColumns()
   const body = await req.json()
   const { id, shop_id, group_id, round_number, is_fancall, is_vce_fansign, is_multi_version, version_names, version_options, status, notes, type, items, deadline, ordered_at, joiner_id: personal_joiner_id, preview_image_url, hide_leftovers, payment_info, albums_bought } = body
   const addy_country = ADDY_MAP[status] || null
@@ -217,7 +226,10 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (items !== undefined) {
-    await query('DELETE FROM order_items WHERE order_id=$1', [id])
+    // Leftover rows (claims marked lost — joiner cleared, lost_claim_id set) are never part of the
+    // edit form (gom/orders/page.tsx filters them out), so they must survive this rewrite with
+    // their ids intact: reassigning or restoring a leftover finds its row by lost_claim_id.
+    await query('DELETE FROM order_items WHERE order_id=$1 AND lost_claim_id IS NULL', [id])
     for (const item of (items || [])) {
       await query(
         `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, version_name, claim_group_id, weight_variant_id)

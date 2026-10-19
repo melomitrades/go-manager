@@ -221,7 +221,14 @@ export default function JoinerShippingPage() {
                       ))}
                     </div>
                   )}
-                  {sh.status === 'payment_requested' && (
+                  {sh.lost_claims_note && (
+                    <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl px-3 py-2 text-xs text-red-800 dark:text-red-200">
+                      {String(sh.lost_claims_note).startsWith('All')
+                        ? `Your claims in this shipment were marked as lost (payment not received), so there is nothing left to ship${sh.payment_cancelled ? ' and the shipping payment was cancelled' : ''}.`
+                        : 'Some of your claims were marked as lost (payment not received) and won’t be in this package. See My Orders.'}
+                    </div>
+                  )}
+                  {sh.status === 'payment_requested' && !sh.payment_cancelled && (
                     <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
                       A payment of {sh.price_eur != null ? `${sh.price_eur}€` : ''} has been requested for this shipment — submit proof on your Payments page.
                     </div>

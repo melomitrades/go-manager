@@ -435,6 +435,7 @@ export default function GomPcSorterPage() {
       if (!order) { results.push({ order: { id: oid }, amount: -1 }); continue } // -1 = "can't tell, order not loaded"
       const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
       const relevant = (order.items || []).filter((it: any) => {
+        if (it.lost_claim_id) return false // leftover from a lost claim — nobody's inclusion anymore
         const jid = it.joiner_id || order.personal_joiner_id
         if (jid !== joinerId) return false
         if (versions && !versions.includes(it.version_name)) return false

@@ -171,7 +171,7 @@ export default function JoinerBoxesPage() {
                                   <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">EMS</p>
                                   <p className="text-lg font-bold text-blue-700">{formatEur(emsAmt)}</p>
                                   {box.ems_deadline && <p className="text-xs text-amber-600 mt-1 font-semibold">Due {new Date(box.ems_deadline).toLocaleDateString()}</p>}
-                                  <div className="mt-2"><StatusBadge paid={mine.ems_paid}/></div>
+                                  <div className="mt-2">{mine.ems_cancelled ? <span className="text-xs font-semibold text-red-600">Cancelled — claims lost</span> : <StatusBadge paid={mine.ems_paid}/>}</div>
                                 </div>
                               )}
                               {customsRequested && (
@@ -179,7 +179,7 @@ export default function JoinerBoxesPage() {
                                   <p className="text-xs font-semibold text-purple-600 uppercase tracking-wide mb-1">Customs</p>
                                   <p className="text-lg font-bold text-purple-700">{formatEur(customsAmt)}</p>
                                   {box.customs_deadline && <p className="text-xs text-amber-600 mt-1 font-semibold">Due {new Date(box.customs_deadline).toLocaleDateString()}</p>}
-                                  <div className="mt-2"><StatusBadge paid={mine.customs_paid}/></div>
+                                  <div className="mt-2">{mine.customs_cancelled || mine.customs_excluded ? <span className="text-xs font-semibold text-red-600">{mine.customs_cancelled ? 'Cancelled — claims lost' : 'Not included — claims lost'}</span> : <StatusBadge paid={mine.customs_paid}/>}</div>
                                 </div>
                               )}
                               {emsRequested && customsRequested && (

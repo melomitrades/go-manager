@@ -545,7 +545,13 @@ export default function GomSendingOutPage() {
                               <p className="font-semibold text-sm">{joinerName}</p>
                               <Badge className="bg-secondary text-muted-foreground border border-border text-xs">{sh.form_title || 'No form'}</Badge>
                               <Badge className={STATUS_COLORS[sh.status] || STATUS_COLORS.pending}>{STATUS_OPTIONS.find(s => s.value === sh.status)?.label || sh.status}</Badge>
+                              {sh.lost_claims_note && (
+                                <Badge className="bg-red-50 text-red-700 border border-red-200 text-xs" title={sh.lost_claims_note}>⚠ Lost claims</Badge>
+                              )}
                             </div>
+                            {sh.lost_claims_note && (
+                              <p className="text-xs text-red-700 dark:text-red-300 mt-0.5">{sh.lost_claims_note}{sh.payment_cancelled ? ' · shipping payment cancelled' : ''}</p>
+                            )}
                             <p className="text-xs text-muted-foreground mt-0.5">
                               {sh.shipping_type && shippingLabel(sh.shipping_type)}
                               {sh.price_eur != null && <span className="ml-2 font-mono">{formatEur(sh.price_eur)}</span>}

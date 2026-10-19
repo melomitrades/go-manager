@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
+import { ensureLostClaimsSchema, getMyLostClaims } from '@/lib/lostClaims'
 
 // Schema migrations only need to run once per cold start — previously these 6 ALTERs plus the
 // order_joiner_paid CREATE TABLE ran unconditionally on every single order view, which is by far
@@ -10,6 +11,7 @@ let migDone = false
 async function ensureOrderDetailSchema() {
   if (migDone) return
   migDone = true
+  await ensureLostClaimsSchema()
   await Promise.all([
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS inclusions_count INTEGER DEFAULT 0').catch(() => {}),
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS entries_count INTEGER DEFAULT 0').catch(() => {}),
@@ -79,9 +81,29 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const paidMap: Record<string, any> = {}
   paidRows.forEach((p: any) => { paidMap[p.joiner_id] = p })
 
+  // Leftover rows (claims marked lost) belong to nobody — keep them out of the per-joiner groups
+  // and hand them back separately, with who lost them and the current status.
+  const leftoverRows = items.filter((i: any) => i.lost_claim_id)
+  const claimItems = items.filter((i: any) => !i.lost_claim_id)
+  let leftovers: any[] = []
+  if (isGom && leftoverRows.length) {
+    leftovers = await query(`
+      SELECT lc.id AS lost_claim_id, lc.status, COALESCE(p.display_name, p.username) AS original_joiner_name,
+        b.id AS batch_id, b.trigger_label, b.reason, b.lost_at
+      FROM lost_claims lc
+      JOIN lost_claim_batches b ON b.id = lc.batch_id
+      LEFT JOIN profiles p ON p.id = lc.original_joiner_id
+      WHERE lc.id = ANY($1::uuid[])
+    `, [leftoverRows.map((r: any) => r.lost_claim_id)]).catch(() => [] as any[])
+    const infoById = new Map(leftovers.map((l: any) => [l.lost_claim_id, l]))
+    leftovers = leftoverRows.map((r: any) => ({ ...r, ...(infoById.get(r.lost_claim_id) || {}) }))
+  }
+  // Joiner view: their own lost claims in this order, for the "Lost — unpaid" badges.
+  const myLost = !isGom ? (await getMyLostClaims(user.id, params.id).catch(() => ({ claims: [] as any[] }))).claims : []
+
   // Group by joiner
   const byJoiner: Record<string, any> = {}
-  for (const item of items) {
+  for (const item of claimItems) {
     const key = item.joiner_id || '__none__'
     if (!byJoiner[key]) {
       byJoiner[key] = {
@@ -100,7 +122,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const totalPrice = items.reduce((s: number, i: any) => s + (parseFloat(i.price_eur) || 0) * (i.amount_claimed || 1), 0)
   const totalKrw = items.reduce((s: number, i: any) => s + (parseFloat(i.price_krw) || 0) * (i.amount_claimed || 1), 0)
 
-  return NextResponse.json({ order, joiners, totalItems, totalPrice, totalKrw })
+  return NextResponse.json({ order, joiners, totalItems, totalPrice, totalKrw, leftovers, myLost })
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {

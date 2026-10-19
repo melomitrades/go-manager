@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query } from '@/lib/db'
+import { getPaidLostAmounts } from '@/lib/lostClaims'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,5 +28,16 @@ export async function GET(req: NextRequest) {
     WHERE ojp.paid = true
   `).catch(() => [])
 
-  return NextResponse.json((rows as any[]).map(r => ({ ...r, amount_eur: parseFloat(r.amount_eur) || 0 })))
+  // Money already paid for claims that were later marked lost (e.g. order paid, EMS not) left
+  // order_items with the claim — add it back so the covering maths still counts what was really
+  // collected. Merged into the same (order, joiner) row when one exists.
+  const out = (rows as any[]).map(r => ({ ...r, amount_eur: parseFloat(r.amount_eur) || 0 }))
+  for (const l of await getPaidLostAmounts() as any[]) {
+    const amt = parseFloat(l.amount_eur) || 0
+    if (amt <= 0) continue
+    const existing = out.find(r => r.order_id === l.order_id && r.joiner_id === l.joiner_id)
+    if (existing) existing.amount_eur += amt
+    else out.push({ order_id: l.order_id, joiner_id: l.joiner_id, paid: true, amount_eur: amt })
+  }
+  return NextResponse.json(out)
 }

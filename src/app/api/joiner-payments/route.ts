@@ -6,6 +6,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureShipmentsSchema } from '@/lib/shipments'
+import { ensureLostClaimsSchema } from '@/lib/lostClaims'
 
 // Previously every CREATE TABLE here ran unconditionally on every request, and only the middle
 // ALTER block was actually gated by jpMigDone — this endpoint is polled/hit constantly (payments
@@ -15,6 +16,9 @@ async function ensureTables() {
   if (jpMigDone) return
   jpMigDone = true
   await ensureShipmentsSchema()
+  // ems_cancelled / customs_cancelled / payment_cancelled (set when claims are marked lost) are
+  // read below.
+  await ensureLostClaimsSchema()
   await query(`CREATE TABLE IF NOT EXISTS order_joiner_paid (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
@@ -223,7 +227,7 @@ export async function GET(req: NextRequest) {
         `, [box.id]).catch(() => [] as any[]) as Promise<any[]>,
         query('SELECT item_type, custom_label, weight_g FROM box_item_types WHERE box_id=$1', [box.id]).catch(() => [] as any[]) as Promise<any[]>,
         queryOne(
-          'SELECT ems_paid, customs_paid, ems_amount_eur, customs_amount_eur, proof_url, proof_submitted, customs_proof_url, customs_proof_submitted FROM box_joiner_shares WHERE box_id=$1 AND joiner_id=$2',
+          'SELECT ems_paid, customs_paid, ems_amount_eur, customs_amount_eur, proof_url, proof_submitted, customs_proof_url, customs_proof_submitted, ems_cancelled, customs_cancelled FROM box_joiner_shares WHERE box_id=$1 AND joiner_id=$2',
           [box.id, userId]
         ).catch(() => null) as Promise<any>,
       ])
@@ -250,12 +254,14 @@ export async function GET(req: NextRequest) {
 
       // Use the saved published amount only — this is locked when GOM clicks "Ask EMS/Customs"
       // Never recompute from weights here (that causes amount drift when orders change)
-      if (box.ems_payment_requested && share?.ems_amount_eur != null) {
+      // A share cancelled by a lost-claims batch is no longer owed — it shows on the joiner's
+      // lost claims instead (My Orders), not as a payment to make.
+      if (box.ems_payment_requested && share?.ems_amount_eur != null && !share?.ems_cancelled) {
         const emsAmt = parseFloat(share.ems_amount_eur)
         if (emsAmt > 0.01) out.push({ id: `ems-${box.id}`, type: 'ems', label: `${boxLabel} — EMS`, amount_eur: emsAmt, deadline: box.ems_deadline, payment_info: box.payment_info || null, paid: share?.ems_paid || false, proof_url: share?.proof_url || null, proof_submitted: share?.proof_submitted || false, box_id: box.id })
       }
 
-      if (box.customs_payment_requested && share?.customs_amount_eur != null) {
+      if (box.customs_payment_requested && share?.customs_amount_eur != null && !share?.customs_cancelled) {
         const customsAmt = parseFloat(share.customs_amount_eur)
         if (customsAmt > 0.01) out.push({ id: `customs-${box.id}`, type: 'customs', label: `${boxLabel} — Customs`, amount_eur: customsAmt, deadline: box.customs_deadline, payment_info: box.payment_info || null, paid: share?.customs_paid || false, proof_url: share?.customs_proof_url || null, proof_submitted: share?.customs_proof_submitted || false, box_id: box.id })
       }
@@ -273,7 +279,7 @@ export async function GET(req: NextRequest) {
         sh.proof_submitted, f.title as form_title
       FROM shipments sh
       LEFT JOIN shipping_forms f ON f.id = sh.form_id
-      WHERE sh.joiner_id = $1 AND sh.price_eur IS NOT NULL
+      WHERE sh.joiner_id = $1 AND sh.price_eur IS NOT NULL AND NOT COALESCE(sh.payment_cancelled, false)
       ORDER BY sh.payment_requested_at DESC NULLS LAST
     `, [userId])
 

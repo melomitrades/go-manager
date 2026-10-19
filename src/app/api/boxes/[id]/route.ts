@@ -3,12 +3,14 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureWeightVariantsSchema } from '@/lib/weightVariants'
+import { ensureLostClaimsSchema } from '@/lib/lostClaims'
 
 let migDone = false
 async function ensureTables() {
   if (migDone) return
   migDone = true
   await ensureWeightVariantsSchema()
+  await ensureLostClaimsSchema()
   await Promise.all([
     query(`CREATE TABLE IF NOT EXISTS box_joiner_shares (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -95,6 +97,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       WHERE oi.order_id = ANY($1::uuid[])
         AND (oi.joiner_id IS NOT NULL OR (oi.joiner_id IS NULL AND o.personal_joiner_id IS NOT NULL AND o.type = 'personal'))
         AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
+        -- leftovers from lost claims belong to nobody (and must not fall back to a personal
+        -- order's joiner) until they're reassigned
+        AND oi.lost_claim_id IS NULL
     `, [orderIds]).catch(() => [] as any[])
 
   const joinerMap: Record<string, {
@@ -171,7 +176,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }
 
   const shares = await query(
-    'SELECT joiner_id, ems_paid, customs_paid, excluded, ems_amount_eur, customs_amount_eur, proof_url, proof_submitted, proof_submitted_at, customs_proof_url, customs_proof_submitted, customs_proof_submitted_at FROM box_joiner_shares WHERE box_id=$1',
+    'SELECT joiner_id, ems_paid, customs_paid, excluded, ems_cancelled, customs_cancelled, customs_excluded, ems_amount_eur, customs_amount_eur, proof_url, proof_submitted, proof_submitted_at, customs_proof_url, customs_proof_submitted, customs_proof_submitted_at FROM box_joiner_shares WHERE box_id=$1',
     [params.id]
   ).catch(() => [] as any[]) as any[]
   const paidMap: Record<string, any> = {}
@@ -180,6 +185,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   // Total weight excluding excluded joiners (for correct fraction)
   const totalWeightActive = Object.values(joinerMap).reduce((s, j) => {
     return (paidMap[j.joiner_id]?.excluded) ? s : s + j.weight_g
+  }, 0)
+  // Customs can exclude more joiners than EMS: someone who lost their claims over an unpaid EMS
+  // share (or has nothing left in the box) is out of the customs split only — see lostClaims.ts.
+  const totalWeightCustoms = Object.values(joinerMap).reduce((s, j) => {
+    const sh = paidMap[j.joiner_id]
+    return (sh?.excluded || sh?.customs_excluded) ? s : s + j.weight_g
   }, 0)
   const totalWeight = Object.values(joinerMap).reduce((s, j) => s + j.weight_g, 0)
   const joinerCount = Object.keys(joinerMap).length
@@ -190,14 +201,19 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const joiners = Object.values(joinerMap).map(j => {
     const isExcluded = paidMap[j.joiner_id]?.excluded || false
     const fraction = (!isExcluded && totalWeightActive > 0) ? j.weight_g / totalWeightActive : 0
+    const customsExcluded = isExcluded || !!paidMap[j.joiner_id]?.customs_excluded
+    const customsFraction = (!customsExcluded && totalWeightCustoms > 0) ? j.weight_g / totalWeightCustoms : 0
     const ems_share_eur = parseFloat(b.ems_total_eur || 0) * fraction
-    const customs_share_eur = parseFloat(b.customs_total_eur || 0) * fraction
+    const customs_share_eur = parseFloat(b.customs_total_eur || 0) * customsFraction
     return {
-      ...j, fraction, ems_share_eur, customs_share_eur,
+      ...j, fraction, customs_fraction: customsFraction, ems_share_eur, customs_share_eur,
       ems_share_krw: parseFloat(b.ems_total_krw || 0) * fraction,
-      customs_share_krw: parseFloat(b.customs_total_krw || 0) * fraction,
+      customs_share_krw: parseFloat(b.customs_total_krw || 0) * customsFraction,
       total_share_eur: ems_share_eur + customs_share_eur,
-      total_share_krw: (parseFloat(b.ems_total_krw || 0) + parseFloat(b.customs_total_krw || 0)) * fraction,
+      total_share_krw: parseFloat(b.ems_total_krw || 0) * fraction + parseFloat(b.customs_total_krw || 0) * customsFraction,
+      customs_excluded: !!paidMap[j.joiner_id]?.customs_excluded,
+      ems_cancelled: !!paidMap[j.joiner_id]?.ems_cancelled,
+      customs_cancelled: !!paidMap[j.joiner_id]?.customs_cancelled,
       ems_paid: paidMap[j.joiner_id]?.ems_paid || false,
       customs_paid: paidMap[j.joiner_id]?.customs_paid || false,
       excluded: isExcluded,

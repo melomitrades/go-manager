@@ -307,3 +307,88 @@ app self-migrates its schema at runtime — no manual SQL required.
   own claims when viewed as a joiner), computed with the exact same `computeGuaranteedUnitClaims` function the
   sort itself uses at run time — so what the form hides can never disagree with what the sort would actually
   pre-assign.
+
+# Lost claims + Leftovers
+
+When a joiner doesn't pay, the GOM can now mark their claims as **lost**. Lost claims stop
+belonging to the joiner and become **leftovers** that can be reassigned (or given back).
+
+## Files
+
+**New:**
+- `src/lib/lostClaims.ts` — schema (self-migrating), mark-lost transaction, dry-run preview, restore, reassign, leftover requests, unpaid-payments list
+- `src/app/api/lost-claims/route.ts` — mark lost (POST, with `dry_run`), restore / reassign (PATCH), the caller's own lost claims (GET)
+- `src/app/api/lost-claims/candidates/route.ts` — a joiner's claims + relevant unpaid payments for the picker
+- `src/app/api/joiner-payments/unpaid/route.ts` — every unpaid joiner payment (GOM)
+- `src/app/api/leftovers/manage/route.ts`, `available/route.ts`, `requests/route.ts` — GOM/joiner leftovers data and requests
+- `src/components/shared/MarkLostModal.tsx` — the "Mark claims as lost" picker (+ `LostBadge`, `PaymentTypeChip`)
+- `src/components/shared/LeftoverBoard.tsx` — the combined leftovers list (by order / by member), shared by both pages
+- `src/lib/leftoverSlots.ts` — open-slot maths (moved out of `/api/leftovers`) + the pricing options a slot can be claimed with
+- `src/app/api/leftovers/slot-options/route.ts` — those pricing options for one slot
+- `src/app/gom/leftovers/page.tsx`, `src/app/joiner/leftovers/page.tsx` — the new Leftovers pages
+
+**Edited:** `api/orders/route.ts`, `api/orders/[id]/route.ts`, `api/boxes/[id]/route.ts`,
+`api/joiner-payments/route.ts`, `api/joiner-payments/all-paid/route.ts`, `api/leftovers/route.ts`,
+`lib/shipments.ts`, `lib/pcSorter.ts`, `components/shared/OrderDetail.tsx`, `components/shared/Sidebar.tsx`,
+`gom/orders`, `gom/payments`, `gom/boxes`, `gom/pc-sorter`, `gom/sending-out`, `joiner/orders`,
+`joiner/boxes`, `joiner/shipping` pages.
+
+## How it works
+
+- **Where the button is.** "Lost" on each joiner in an order (Order Detail), "Mark claims lost" on every row of the
+  new **Payments → Unpaid** tab, and "Lost" on unvalidated rows of Payments → Joiner Payment Proofs. GOM/admin only.
+- **It needs an unpaid payment.** The picker first asks which unpaid payment this is about (order, EMS, customs or
+  shipping — only payments currently owed and not validated). Then you pick claim lines (or single member rows of a
+  line) with a "select all in this order" shortcut, add a note the joiner will see, click **Review** (a real dry run of
+  the same database transaction, rolled back, showing exactly what will change) and confirm.
+- **Order claims.** The rows stay in the order (so member counts and albums-bought maths still see the item) but their
+  joiner is cleared and they're tagged as a leftover (`order_items.lost_claim_id`). They drop out of the joiner's order
+  payment, EMS/customs weight, packing checklist and PC Sorter auto-fill. The order edit form doesn't show leftover rows,
+  and saving the order no longer deletes them (their ids stay stable for reassign/restore).
+- **Sorted photocards.** For each sorting session that counts an affected order, the joiner's inclusions are recomputed
+  without the lost claims (same rules as auto-fill, incl. the claim_group dedupe). The difference comes off their
+  inclusions, and for each removed inclusion one card of every item in the pack is released — the most recently
+  assigned first; for a lost version-specific claim, the matching guaranteed unit card is released first. Cards go back
+  into stock and are listed as leftovers. Locked sessions are edited in place without unlocking or re-running the sort.
+  Losing one member row of a claim that still has other rows doesn't release inclusions (the claim still exists).
+- **EMS / customs.** Unpaid EMS → that joiner's EMS share is cancelled, they're removed from the box's customs split
+  (new `customs_excluded` flag, separate from the existing EMS+customs `excluded`), and an unpaid customs share there is
+  cancelled. A joiner left with nothing in a box is removed the same way. Unpaid customs → that customs share is
+  cancelled. Published amounts of other joiners never change. Cancelled shares disappear from the joiner's Payments.
+- **Shipping.** Lost claims fall out of the packing checklist. A shipment left with nothing to pack gets flagged
+  ("⚠ Lost claims" on Sending Out, a note on the joiner's Shipping page) and its unpaid shipping payment is cancelled.
+  Nothing is deleted.
+- **Paid money stays counted.** If the order was already paid, that amount still counts as collected in the Payments
+  covering maths.
+- **Joiner side.** A "Claims lost — payment not received" card on My Orders (each claim with "Lost — unpaid EMS/…",
+  which payment, its amount, the date and the GOM's note), a "Lost claims" badge on the order row, the same list inside
+  the order, and "Cancelled — claims lost" on Boxes. The joiner gets a notification.
+- **Leftovers page (GOM).** *Leftovers* is one combined list of lost order claims, open member slots and released
+  sorted cards. A **By order / By member** toggle switches the grouping (sorted cards group under their sorting session
+  in the order view), and chips filter by kind. Each lost item shows who lost it, which payment and why. Tabs:
+  *Requests* (Accept / Decline) and *History* (every mark-lost action, with **Restore**).
+- **Leftovers page (joiner).** The same combined list, with the same order/member toggle, and **Request** on each item
+  (+ optional note). For an open slot, the joiner picks which of the order's pricing options they want, so they see the
+  price before asking. Joiners never see who lost a leftover or why. Their requests show as waiting / accepted / declined.
+- **Accepting puts it straight into their claims.** Accepting a request is automatic: a lost claim moves into the
+  joiner's order; an open slot becomes a new claim row in the order (that member, the pricing option they picked, its
+  price/weight/version; a line's "Inclusions" number is divided per member, so "4 POBs + 4 inclusions" gives 1); a
+  sorted card is added to their sorting results if still in stock. Their order payment goes up by itself. When the last
+  copy of a leftover/slot is given, the other pending requests for it are declined automatically with a notification.
+- **Direct give.** The GOM can still give a leftover without a request (Reassign on lost items, **Give** on an open
+  slot with a pricing-option picker) — the GOM giving it counts as accepted.
+- **Not changed automatically:** PC Sorter inclusions (re-run auto-fill if the order is in a session), and EMS/customs
+  shares that were already published for that box (add the new owner's share on the Boxes page).
+- **Restore.** Gives back everything from that batch that's still a leftover, re-adds the inclusions and the released
+  cards still in stock, and undoes the EMS/customs/shipping cancellations (unless another active batch for the same
+  joiner set them too). Anything already reassigned stays with its new owner; the result says how many were skipped.
+
+## Notes
+- Schema self-migrates on first use (new tables `lost_claim_batches`, `lost_claims`, `lost_pc_items`,
+  `lost_pc_inclusions`, `leftover_requests`; new columns on `order_items`, `box_joiner_shares`, `shipments`). The
+  migrations run sequentially — running these CREATE TABLEs in parallel deadlocked on a fresh database in testing.
+- `order_items.lost_claim_id` is also added by `shipments.ts`/`pcSorter.ts` before their queries filter on it, so a
+  cold start that hits Sorting or Sending Out first can never make auto-fill silently see "no claims".
+- Verified against a real Postgres 16 with the app's own code (dry run changes nothing; partial vs full loss; PC release
+  incl. guaranteed unit cards; EMS/customs/shipping effects; request → reassign; restore with a reassigned item skipped;
+  order resave keeps leftover rows), plus a full `next build` and the GOM/joiner pages in a browser.
