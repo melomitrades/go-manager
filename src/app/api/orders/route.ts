@@ -225,10 +225,18 @@ export async function PATCH(req: NextRequest) {
     if (!exists) await query(`INSERT INTO addy_items (country, order_id, arrived_at) VALUES ($1,$2,now())`, [addy_country, id])
   }
 
+  let keptOverrides: any[] = []
   if (items !== undefined) {
     // Leftover rows (claims marked lost — joiner cleared, lost_claim_id set) are never part of the
     // edit form (gom/orders/page.tsx filters them out), so they must survive this rewrite with
     // their ids intact: reassigning or restoring a leftover finds its row by lost_claim_id.
+    // Claim changes ("packed as another member") live on the rows about to be rewritten — remember
+    // them and put each back on the matching new row (same joiner, member, option, version, price),
+    // so a change survives saving the order as long as that claim is still there.
+    keptOverrides = await query(
+      `SELECT joiner_id, member_id, description, version_name, price_eur, override_member_id, override_reason, overridden_at
+       FROM order_items WHERE order_id=$1 AND lost_claim_id IS NULL AND override_member_id IS NOT NULL ORDER BY created_at`, [id]
+    ).catch(() => [] as any[])
     await query('DELETE FROM order_items WHERE order_id=$1 AND lost_claim_id IS NULL', [id])
     for (const item of (items || [])) {
       await query(
@@ -236,6 +244,22 @@ export async function PATCH(req: NextRequest) {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [id, item.member_id || null, item.joiner_id || null, item.pricing_type || 'custom', item.description || null, item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.version_name || null, item.claim_group_id || null, item.weight_variant_id || null]
       )
+    }
+  }
+
+  if (items !== undefined) {
+    for (const k of keptOverrides) {
+      await query(`
+        UPDATE order_items SET override_member_id=$7, override_reason=$8, overridden_at=$9
+        WHERE id = (
+          SELECT id FROM order_items
+          WHERE order_id=$1 AND lost_claim_id IS NULL AND override_member_id IS NULL
+            AND joiner_id IS NOT DISTINCT FROM $2::uuid AND member_id IS NOT DISTINCT FROM $3::uuid
+            AND description IS NOT DISTINCT FROM $4 AND version_name IS NOT DISTINCT FROM $5
+            AND price_eur IS NOT DISTINCT FROM $6::numeric
+          ORDER BY created_at LIMIT 1
+        )`, [id, k.joiner_id, k.member_id, k.description, k.version_name, k.price_eur, k.override_member_id, k.override_reason, k.overridden_at]
+      ).catch(err => console.error('[orders] keep override', err))
     }
   }
 

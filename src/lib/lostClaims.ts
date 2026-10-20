@@ -436,7 +436,7 @@ export async function getLoseCandidates(joinerId: string, scope: Scope) {
         o.status AS order_status, ${ORDER_LABEL_SQL} AS order_label, COALESCE(ojp.paid, false) AS order_paid
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
-      LEFT JOIN members m ON m.id = oi.member_id
+      LEFT JOIN members m ON m.id = COALESCE(oi.override_member_id, oi.member_id)
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
       LEFT JOIN order_joiner_paid ojp ON ojp.order_id = o.id AND ojp.joiner_id = $2
@@ -634,7 +634,7 @@ export async function markClaimsLost(input: MarkLostInput) {
       JOIN orders o ON o.id = oi.order_id
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
-      LEFT JOIN members m ON m.id = oi.member_id
+      LEFT JOIN members m ON m.id = COALESCE(oi.override_member_id, oi.member_id)
       WHERE oi.id = ANY($1::uuid[]) AND oi.lost_claim_id IS NULL
       FOR UPDATE OF oi
     `, [ids])
@@ -661,7 +661,7 @@ export async function markClaimsLost(input: MarkLostInput) {
       const lc = (await q(`
         INSERT INTO lost_claims (batch_id, order_id, original_joiner_id, original_item_joiner_id, member_id, description, version_name, item_type, price_eur, price_krw, amount_claimed, inclusions_count, claim_group_id, order_was_paid)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id
-      `, [batch.id, r.order_id, joinerId, r.joiner_id, r.member_id, r.description, r.version_name, r.item_type || null,
+      `, [batch.id, r.order_id, joinerId, r.joiner_id, r.override_member_id || r.member_id, r.description, r.version_name, r.item_type || null,
           r.price_eur, r.price_krw ?? null, r.amount_claimed || 1, parseInt(r.inclusions_count) || 0, r.claim_group_id || null, paidOrders.has(r.order_id)]))[0]
       await q(`UPDATE order_items SET joiner_id = NULL, lost_claim_id = $1 WHERE id = $2`, [lc.id, r.id])
     }

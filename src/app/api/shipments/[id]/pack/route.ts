@@ -57,8 +57,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   // Override (or, with no member_id, revert) which member a claimed order item is packed as —
-  // for claims that couldn't be guaranteed (not enough copies bought). Only touches this
-  // shipment's checklist row; the order's own claim is left as the joiner made it. The joiner
+  // for claims that couldn't be guaranteed (not enough copies bought). Stored on the claim
+  // (order_items.override_member_id), shared with the Orders detail panel; the joiner's original
+  // member_id is kept. The joiner
   // sees a warning on Shipping / Orders / Deadlines (see /api/claim-overrides).
   if (action === 'override_claim') {
     if (!item_id) return NextResponse.json({ error: 'item_id required' }, { status: 400 })

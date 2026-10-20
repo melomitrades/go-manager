@@ -12,8 +12,15 @@ interface OrderDetailProps {
 }
 
 // Group items with the same description+price into one consolidated line
-function groupItems(items: any[]): { label: string; qty: number; price_eur: number | null; price_krw: number | null; members: string[]; inclusions_count: number; entries_count: number }[] {
-  const groups: Record<string, { label: string; qty: number; price_eur: number | null; price_krw: number | null; members: string[]; inclusions_count: number; entries_count: number }> = {}
+// Name of the member a claim will actually be packed as — the GOM's change if there is one
+// ("Winter (was Karina)"), otherwise the joiner's original claim.
+function packedMemberName(item: any): string | null {
+  if (item.override_member?.name) return `${item.override_member.name} (was ${item.member?.name || '?'})`
+  return item.member?.name || null
+}
+
+function groupItems(items: any[]): { label: string; qty: number; price_eur: number | null; price_krw: number | null; members: string[]; inclusions_count: number; entries_count: number; rows: any[] }[] {
+  const groups: Record<string, { label: string; qty: number; price_eur: number | null; price_krw: number | null; members: string[]; inclusions_count: number; entries_count: number; rows: any[] }> = {}
   const seenClaimsByGroup: Record<string, Set<string>> = {}
   for (const item of items) {
     const label = item.description || item.member?.name || 'Item'
@@ -21,10 +28,11 @@ function groupItems(items: any[]): { label: string; qty: number; price_eur: numb
     const priceKrw = item.price_krw ? parseFloat(item.price_krw) : null
     const key = `${label}__${price ?? 'null'}`
     if (!groups[key]) {
-      groups[key] = { label, qty: 0, price_eur: price, price_krw: priceKrw, members: [], inclusions_count: 0, entries_count: 0 }
+      groups[key] = { label, qty: 0, price_eur: price, price_krw: priceKrw, members: [], inclusions_count: 0, entries_count: 0, rows: [] }
       seenClaimsByGroup[key] = new Set()
     }
     groups[key].qty += item.amount_claimed || 1
+    groups[key].rows.push(item)
     // inclusions_count is a per-claim-LINE total, not per-row — when one claim is split across
     // several members it's saved onto every resulting row identically (by design; see
     // gom/orders/page.tsx's handleSave). Two genuinely separate claims can still land in this
@@ -41,14 +49,15 @@ function groupItems(items: any[]): { label: string; qty: number; price_eur: numb
       }
     }
     groups[key].entries_count += item.entries_count || 0
-    if (item.member?.name) {
-      const existing = groups[key].members.find((m: string) => m === item.member.name || m.startsWith(item.member.name + ' ×'))
+    const mName = packedMemberName(item)
+    if (mName) {
+      const existing = groups[key].members.find((m: string) => m === mName || m.startsWith(mName + ' ×'))
       if (!existing) {
-        groups[key].members.push(item.member.name)
+        groups[key].members.push(mName)
       } else {
         const idx = groups[key].members.indexOf(existing)
         const count = existing.includes(' ×') ? parseInt(existing.split(' ×')[1]) + 1 : 2
-        groups[key].members[idx] = `${item.member.name} ×${count}`
+        groups[key].members[idx] = `${mName} ×${count}`
       }
     }
   }
@@ -58,8 +67,10 @@ function groupItems(items: any[]): { label: string; qty: number; price_eur: numb
 // Member-slot maths (albums bought, leftover calculators) must still count leftover rows from lost
 // claims as "claimed" — they're physically in the order, and they're listed separately as lost-
 // claim leftovers below, so counting them as open slots too would show them twice.
+// A claim the GOM changed to another member counts as that member here (it's what gets packed).
 function countGroups(data: any): any[] {
-  return [...(data?.joiners || []), { items: data?.leftovers || [] }]
+  const eff = (items: any[]) => (items || []).map((i: any) => (i.override_member_id ? { ...i, member_id: i.override_member_id } : i))
+  return [...(data?.joiners || []).map((j: any) => ({ ...j, items: eff(j.items) })), { items: eff(data?.leftovers || []) }]
 }
 
 function SortResultsList({ results }: { results: any[] }) {
@@ -88,6 +99,31 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
   const [sortResults, setSortResults] = useState<any[]>([])
   const [lostFor, setLostFor] = useState<{ joinerId: string; name: string } | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  // "Change claim" — pack a claim as another member (shared with the Sending Out packing wizard).
+  const [changeFor, setChangeFor] = useState<{ row: any; joinerName: string } | null>(null)
+  const [changeMember, setChangeMember] = useState('')
+  const [changeReason, setChangeReason] = useState('')
+  const [changeBusy, setChangeBusy] = useState(false)
+  const [changeError, setChangeError] = useState('')
+
+  function openChange(row: any, joinerName: string) {
+    setChangeFor({ row, joinerName })
+    setChangeMember(row.override_member_id || '')
+    setChangeReason(row.override_reason || '')
+    setChangeError('')
+  }
+  async function saveChange(memberId: string | null) {
+    if (!changeFor) return
+    setChangeBusy(true); setChangeError('')
+    const res = await fetch('/api/claim-overrides', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order_item_id: changeFor.row.id, member_id: memberId, reason: changeReason }),
+    })
+    setChangeBusy(false)
+    if (!res.ok) { const j = await res.json().catch(() => ({})); setChangeError(j.error || 'Could not change the claim'); return }
+    setChangeFor(null)
+    setReloadKey(k => k + 1)
+  }
 
   useEffect(() => {
     if (!orderId) { setData(null); setSortResults([]); return }
@@ -667,8 +703,22 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                               {g.qty > 1 && <span className="text-primary font-bold mr-1.5">×{g.qty}</span>}
                               {g.label}
                             </p>
-                            {g.members.length > 0 && (
-                              <p className="text-xs text-muted-foreground mt-0.5">{g.members.join(', ')}</p>
+                            {g.rows.some((r: any) => r.member_id) && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {g.rows.filter((r: any) => r.member_id).map((r: any) => {
+                                  const changed = !!r.override_member_id
+                                  return (
+                                    <button key={r.id} onClick={() => openChange(r, name)}
+                                      title={changed ? `Changed from ${r.member?.name || '?'}${r.override_reason ? ` — “${r.override_reason}”` : ''}. Click to edit.` : 'Change claim (not guaranteed)'}
+                                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${changed
+                                        ? 'bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-900/20 dark:text-amber-200 dark:border-amber-700'
+                                        : 'bg-background text-muted-foreground border-border hover:border-primary/40 hover:text-primary'}`}>
+                                      {changed ? <><span className="line-through opacity-60 mr-1">{r.member?.name}</span>{r.override_member?.name}</> : r.member?.name}
+                                      {(r.amount_claimed || 1) > 1 && ` ×${r.amount_claimed}`}
+                                    </button>
+                                  )
+                                })}
+                              </div>
                             )}
                             {g.entries_count > 0 && (
                               <p className="text-xs font-semibold text-rose-600 mt-0.5">🎟 {g.entries_count} {g.entries_count === 1 ? 'entry' : 'entries'}</p>
@@ -838,6 +888,45 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
           )}
         </div>
       </div>
+
+      {viewAs === 'gom' && changeFor && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/35 backdrop-blur-sm" onClick={() => setChangeFor(null)} />
+          <div className="relative bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4">
+            <div>
+              <h3 className="font-display font-semibold text-lg">Change claim</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {changeFor.joinerName} · {changeFor.row.description || 'Item'}{changeFor.row.version_name ? ` · ${changeFor.row.version_name}` : ''} — claimed <strong>{changeFor.row.member?.name || '?'}</strong>
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Pack as</p>
+              <select value={changeMember} onChange={e => setChangeMember(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25">
+                <option value="">Choose a member…</option>
+                {(data?.order?.group?.members || []).filter((m: any) => m.id !== changeFor.row.member_id).map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+            </div>
+            <input value={changeReason} onChange={e => setChangeReason(e.target.value)} maxLength={500}
+              placeholder="Reason (shown to the joiner), e.g. not enough copies bought"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25" />
+            <p className="text-xs text-muted-foreground">The joiner&apos;s original claim is kept. This change shows in packing (Sending Out) and on the joiner&apos;s Orders, Shipping and Deadlines pages, and counts in the leftover maths.</p>
+            {changeError && <p className="text-sm text-red-600">{changeError}</p>}
+            <div className="flex justify-between gap-2">
+              {changeFor.row.override_member_id
+                ? <button onClick={() => saveChange(null)} disabled={changeBusy} className="text-xs font-semibold text-muted-foreground hover:text-foreground">Revert to {changeFor.row.member?.name || 'original'}</button>
+                : <span />}
+              <div className="flex gap-2">
+                <button onClick={() => setChangeFor(null)} className="px-3.5 py-2 rounded-xl border border-border text-sm font-semibold">Cancel</button>
+                <button onClick={() => saveChange(changeMember)} disabled={changeBusy || !changeMember}
+                  className="px-3.5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-50">{changeBusy ? 'Saving…' : 'Save change'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {viewAs === 'gom' && (
         <MarkLostModal

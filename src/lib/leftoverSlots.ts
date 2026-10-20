@@ -11,7 +11,8 @@ import { query } from './db'
 // bought — neither is a copy that's actually guaranteed to exist.
 // Multi-version orders (with albums bought per version) and VCE/Fansign orders are computed per
 // version. Leftover rows from lost claims still count as claimed here: they're listed separately
-// as lost-claim leftovers, so counting them as open slots too would show them twice.
+// as lost-claim leftovers, so counting them as open slots too would show them twice. A claim the
+// GOM changed to another member (order_items.override_member_id) counts as that member.
 // ============================================================
 
 export interface SlotMember { id: string; name: string; leftover: number }
@@ -25,7 +26,7 @@ export async function computeOpenSlots(orderId?: string | null): Promise<SlotOrd
       s.name AS shop_name, g.id AS group_id, g.name AS group_name,
       (SELECT json_agg(json_build_object('id', m.id, 'name', m.name) ORDER BY m.sort_order NULLS LAST, m.name)
          FROM members m WHERE m.group_id = g.id) AS group_members,
-      (SELECT json_agg(json_build_object('member_id', oi.member_id, 'description', oi.description, 'version_name', oi.version_name))
+      (SELECT json_agg(json_build_object('member_id', COALESCE(oi.override_member_id, oi.member_id), 'description', oi.description, 'version_name', oi.version_name))
          FROM order_items oi WHERE oi.order_id = o.id) AS items
     FROM orders o
     LEFT JOIN shops s ON s.id = o.shop_id

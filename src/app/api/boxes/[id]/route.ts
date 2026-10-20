@@ -90,7 +90,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       FROM order_items oi
       LEFT JOIN orders o ON o.id = oi.order_id
       LEFT JOIN profiles p ON p.id = COALESCE(oi.joiner_id, o.personal_joiner_id)
-      LEFT JOIN members m ON m.id = oi.member_id
+      LEFT JOIN members m ON m.id = COALESCE(oi.override_member_id, oi.member_id)
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
       LEFT JOIN weight_variants wv ON wv.id = oi.weight_variant_id

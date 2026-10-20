@@ -105,76 +105,99 @@ export async function ensureShipmentsSchema() {
     // Leftover marker from lost claims (see src/lib/lostClaims.ts) — the checklist queries below
     // filter on it, so it has to exist before they run, whichever module migrates first.
     query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS lost_claim_id UUID`),
+    // Claim-member override now lives on the CLAIM itself (one shared change, set from the
+    // Orders detail panel or from the packing wizard). member_id stays the joiner's original
+    // claim; override_member_id is what actually gets packed. Leftover maths (Albums Bought,
+    // guaranteed slots) count the overridden member.
+    query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS override_member_id UUID REFERENCES members(id) ON DELETE SET NULL`),
+    query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS override_reason TEXT`),
+    query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS overridden_at TIMESTAMPTZ`),
   ]).catch(err => console.error('[shipments migration]', err))
+
+  // Carry over overrides made while packing before they moved to order_items (shipment_items
+  // columns above are kept for history but no longer read). Only fills claims without one yet.
+  await query(`
+    UPDATE order_items oi SET override_member_id = si.override_member_id, override_reason = si.override_reason, overridden_at = si.overridden_at
+    FROM shipment_items si
+    WHERE si.source_type = 'order_item' AND si.source_id = oi.id AND si.override_member_id IS NOT NULL AND oi.override_member_id IS NULL
+  `).catch(err => console.error('[shipments migration] override carry-over', err))
 }
 
 // Statuses after which the physical package is gone / done, so a claim can no longer be changed.
 const OVERRIDE_LOCKED_STATUSES = ['shipped', 'complete']
 
-// Set (or clear, when memberId is null / equals the original claim) the packing-time override of
-// one order-item claim on a shipment's checklist. Returns { ok } or { error, status }.
-export async function setClaimOverride(shipmentId: string, shipmentItemId: string, memberId: string | null, reason: string | null) {
+// Set (or clear, when memberId is null / equals the original claim) which member a claimed order
+// item is actually packed as. Stored on the claim itself, so the Orders detail panel and the
+// packing wizard always show the same change. Returns { ok } or { error, status }.
+export async function setOrderItemOverride(orderItemId: string, memberId: string | null, reason: string | null) {
   await ensureShipmentsSchema()
-  const shipment = await queryOne<any>('SELECT status FROM shipments WHERE id=$1', [shipmentId])
-  if (!shipment) return { error: 'Shipment not found', status: 404 }
-  if (OVERRIDE_LOCKED_STATUSES.includes(shipment.status)) {
-    return { error: 'Packing is closed for this shipment (already shipped) — claims can no longer be changed', status: 400 }
-  }
-
   const item = await queryOne<any>(
-    `SELECT si.id, si.source_type, oi.member_id AS claimed_member_id, o.group_id
-     FROM shipment_items si
-     LEFT JOIN order_items oi ON oi.id = si.source_id AND si.source_type = 'order_item'
-     LEFT JOIN orders o ON o.id = oi.order_id
-     WHERE si.id=$1 AND si.shipment_id=$2`,
-    [shipmentItemId, shipmentId]
+    `SELECT oi.id, oi.member_id AS claimed_member_id, oi.joiner_id, o.group_id
+     FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE oi.id=$1`,
+    [orderItemId]
   )
-  if (!item) return { error: 'Checklist item not found', status: 404 }
-  if (item.source_type !== 'order_item') return { error: 'Only claimed order items can be overridden', status: 400 }
+  if (!item) return { error: 'Claim not found', status: 404 }
+  const shipped = await queryOne<any>(
+    `SELECT 1 AS x FROM shipment_items si JOIN shipments sh ON sh.id = si.shipment_id
+     WHERE si.source_type='order_item' AND si.source_id=$1 AND sh.status = ANY($2::text[]) LIMIT 1`,
+    [orderItemId, OVERRIDE_LOCKED_STATUSES]
+  )
+  if (shipped) return { error: 'This claim was already shipped — it can no longer be changed', status: 400 }
 
   if (!memberId || memberId === item.claimed_member_id) {
-    await query(
-      `UPDATE shipment_items SET override_member_id=NULL, original_member_id=NULL, override_reason=NULL, overridden_at=NULL WHERE id=$1`,
-      [shipmentItemId]
-    )
+    await query(`UPDATE order_items SET override_member_id=NULL, override_reason=NULL, overridden_at=NULL WHERE id=$1`, [orderItemId])
     return { ok: true, cleared: true }
   }
-
   const member = await queryOne<any>('SELECT id, group_id FROM members WHERE id=$1', [memberId])
   if (!member) return { error: 'Member not found', status: 404 }
   if (item.group_id && member.group_id !== item.group_id) return { error: "That member isn't in this order's group", status: 400 }
 
   await query(
-    `UPDATE shipment_items
-     SET override_member_id=$1, original_member_id=$2, override_reason=$3, overridden_at=now()
-     WHERE id=$4`,
-    [memberId, item.claimed_member_id, reason || null, shipmentItemId]
+    `UPDATE order_items SET override_member_id=$1, override_reason=$2, overridden_at=now() WHERE id=$3`,
+    [memberId, reason || null, orderItemId]
   )
+  if (item.joiner_id) {
+    await query(`INSERT INTO notifications (user_id, order_id, message)
+      SELECT $1, oi.order_id, 'Your GOM changed one of your claims (not enough copies to guarantee it). See My Orders.' FROM order_items oi WHERE oi.id=$2`,
+      [item.joiner_id, orderItemId]).catch(() => {})
+  }
   return { ok: true, cleared: false }
 }
 
-// Every active claim override on a joiner's shipments, for the joiner-facing warnings (Shipping
-// banner, Orders badge, Deadlines notice). Reads the snapshot original where present.
+// Packing wizard entry point: a checklist row id → its claim.
+export async function setClaimOverride(shipmentId: string, shipmentItemId: string, memberId: string | null, reason: string | null) {
+  await ensureShipmentsSchema()
+  const item = await queryOne<any>(
+    `SELECT si.source_type, si.source_id FROM shipment_items si WHERE si.id=$1 AND si.shipment_id=$2`,
+    [shipmentItemId, shipmentId]
+  )
+  if (!item) return { error: 'Checklist item not found', status: 404 }
+  if (item.source_type !== 'order_item') return { error: 'Only claimed order items can be overridden', status: 400 }
+  return setOrderItemOverride(item.source_id, memberId, reason)
+}
+
+// Every active claim change on a joiner's claims, for the joiner-facing warnings (Shipping
+// banner per shipment, Orders badge, Deadlines notice). shipment_id is set when the claim is on
+// one of the joiner's shipments' packing lists.
 export async function getJoinerClaimOverrides(joinerId: string) {
   await ensureShipmentsSchema()
   return query<any>(`
-    SELECT si.id, si.shipment_id, si.override_reason, si.overridden_at,
+    SELECT DISTINCT ON (oi.id) oi.id, sh.id AS shipment_id, oi.override_reason, oi.overridden_at,
       sh.status AS shipment_status, f.title AS form_title,
       o.id AS order_id, o.round_number, s.name AS shop_name,
       oi.description AS item_label,
-      COALESCE(om.name, cm.name) AS original_member_name,
+      cm.name AS original_member_name,
       nm.name AS new_member_name
-    FROM shipment_items si
-    JOIN shipments sh ON sh.id = si.shipment_id
-    LEFT JOIN shipping_forms f ON f.id = sh.form_id
-    JOIN order_items oi ON oi.id = si.source_id
+    FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
     LEFT JOIN shops s ON s.id = o.shop_id
-    LEFT JOIN members om ON om.id = si.original_member_id
     LEFT JOIN members cm ON cm.id = oi.member_id
-    LEFT JOIN members nm ON nm.id = si.override_member_id
-    WHERE sh.joiner_id = $1 AND si.source_type = 'order_item' AND si.override_member_id IS NOT NULL
-    ORDER BY si.overridden_at DESC
+    LEFT JOIN members nm ON nm.id = oi.override_member_id
+    LEFT JOIN shipment_items si ON si.source_type = 'order_item' AND si.source_id = oi.id
+    LEFT JOIN shipments sh ON sh.id = si.shipment_id AND sh.joiner_id = $1
+    LEFT JOIN shipping_forms f ON f.id = sh.form_id
+    WHERE COALESCE(oi.joiner_id, o.personal_joiner_id) = $1 AND oi.override_member_id IS NOT NULL AND oi.lost_claim_id IS NULL
+    ORDER BY oi.id, sh.created_at DESC NULLS LAST
   `, [joinerId]).catch(() => [] as any[])
 }
 
@@ -342,16 +365,18 @@ export async function getShipmentChecklist(shipmentId: string) {
   // browser before the wizard could render anything. Now we only ask whether an order HAS one
   // (`has_preview`); the wizard loads the actual image lazily, one step at a time, from
   // GET /api/orders/[id]/preview (browser-cached).
-  const [orderRows, pcRows, groupMemberRows, overrideMemberRows] = await Promise.all([
+  const [orderRows, pcRows, groupMemberRows] = await Promise.all([
     orderItemIds.length ? query<any>(`
       SELECT oi.id, oi.description, oi.item_type, oi.amount_claimed, oi.price_eur, oi.version_name,
         oi.member_id as claimed_member_id, o.group_id,
+        oi.override_member_id, oi.override_reason, om.name as override_member_name,
         m.name as member_name, o.id as order_id, o.round_number,
         (o.preview_image_url IS NOT NULL AND o.preview_image_url <> '') AS has_preview,
         s.name as shop_name, g.name as group_name
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
       LEFT JOIN members m ON m.id = oi.member_id
+      LEFT JOIN members om ON om.id = oi.override_member_id
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
       WHERE oi.id = ANY($1::uuid[])
@@ -376,10 +401,6 @@ export async function getShipmentChecklist(shipmentId: string) {
       )
       ORDER BY sort_order, name
     `, [orderItemIds]).catch(() => [] as any[]) : Promise.resolve([] as any[]),
-    query<any>(`
-      SELECT id, name FROM members
-      WHERE id IN (SELECT override_member_id FROM shipment_items WHERE shipment_id=$1 AND override_member_id IS NOT NULL)
-    `, [shipmentId]).catch(() => [] as any[]),
   ])
 
   const orderById = new Map(orderRows.map(r => [r.id, r]))
@@ -393,7 +414,6 @@ export async function getShipmentChecklist(shipmentId: string) {
   items = allItems.filter(it => it.source_type === 'order_item' ? orderById.has(it.source_id) : pcById.has(it.source_id))
   if (items.length === 0) return { items: [] as any[], previewImages: {} as Record<string, string> }
 
-  const overrideNameById = new Map<string, string>(overrideMemberRows.map((r: any) => [r.id, r.name]))
 
   // Claimed order items are grouped BY ORDER: one checklist step per order, listing every claimed
   // line the joiner has in it (e.g. 3 POBs from the same order show up together in one pop-up
@@ -413,18 +433,18 @@ export async function getShipmentChecklist(shipmentId: string) {
     g.item_ids.push(it.id)
     if (it.confirmed) g.confirmed_count += 1
     if (it.skipped) g.skipped_count += 1
-    const overridden = !!it.override_member_id
+    const overridden = !!d?.override_member_id
     g.lines.push({
       id: it.id,
       label: d?.description || d?.item_type || 'Item',
       version_name: d?.version_name || null,
       // member_name is what should physically be packed: the override when there is one,
       // otherwise the joiner's original claim.
-      member_name: (overridden ? overrideNameById.get(it.override_member_id) : null) || d?.member_name || null,
+      member_name: (overridden ? d?.override_member_name : null) || d?.member_name || null,
       claimed_member_id: d?.claimed_member_id || null,
       claimed_member_name: d?.member_name || null,
-      override_member_id: it.override_member_id || null,
-      override_reason: it.override_reason || null,
+      override_member_id: d?.override_member_id || null,
+      override_reason: d?.override_reason || null,
       group_members: groupMemberRows.filter((m: any) => m.group_id === d?.group_id).map((m: any) => ({ id: m.id, name: m.name })),
       amount_claimed: d?.amount_claimed || 1,
       price_eur: d?.price_eur || null,

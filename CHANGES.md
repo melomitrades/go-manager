@@ -397,3 +397,30 @@ belonging to the joiner and become **leftovers** that can be reassigned (or give
 - Verified against a real Postgres 16 with the app's own code (dry run changes nothing; partial vs full loss; PC release
   incl. guaranteed unit cards; EMS/customs/shipping effects; request → reassign; restore with a reassigned item skipped;
   order resave keeps leftover rows), plus a full `next build` and the GOM/joiner pages in a browser.
+
+## Follow-up: change claims from the Orders page (2026-10-20)
+
+**What.** In the order detail panel (GOM view), each claimed member shows as a small chip. Click it → **Change claim**:
+pick the member it will be packed as + a reason for the joiner, or **Revert to <original>**. Changed claims show as an
+amber chip "~~Karina~~ Winter"; joiners see "Winter (was Karina)" in their own order view.
+
+**One shared change.** The override moved from the packing checklist row (`shipment_items`) onto the claim itself:
+`order_items.override_member_id`, `override_reason`, `overridden_at` (runtime migration in `ensureShipmentsSchema`).
+`member_id` stays the joiner's original claim. Changing it from Orders or from the Sending Out pack wizard edits the same
+value, so both always agree, and it works before any shipment exists. Existing packing overrides are copied onto their
+claims once on first run (old `shipment_items` override columns are kept but no longer read).
+
+**Behaviour.**
+- `setOrderItemOverride()` in `src/lib/shipments.ts` (the wizard's `setClaimOverride` now calls it): member must be in
+  the order's group; blocked once the claim is on a shipment that's `shipped`/`complete`; no member or the original
+  member clears it. The joiner gets a notification.
+- New `POST /api/claim-overrides` `{ order_item_id, member_id, reason }` (GOM/admin). `GET` unchanged in shape, now reads
+  from the claims (with the shipment, when the claim is on a packing list), so the joiner Orders badge, Shipping banner
+  and Deadlines notice keep working.
+- **Leftover maths use the new member**: Albums Bought panel and leftover calculators in the order view, guaranteed
+  open slots on the Leftovers pages. Boxes item lists and the lost-claims picker/snapshot also show the packed member.
+- **Survives saving the order**: the edit form rewrites claim rows, so before rewriting, changes are remembered and put
+  back on the matching new row (same joiner, member, option, version, price). Renaming the option or removing that
+  member from the claim drops the change.
+- Verified on Postgres (override, slot maths, packing checklist, shared edit from packing, revert, order re-save,
+  shipped lock) and in the browser (Orders panel chips + dialog).

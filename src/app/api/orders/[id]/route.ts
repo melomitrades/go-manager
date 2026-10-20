@@ -65,10 +65,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     query(`
       SELECT oi.*,
         row_to_json(p) as joiner,
-        row_to_json(m) as member
+        row_to_json(m) as member,
+        row_to_json(om) as override_member
       FROM order_items oi
       LEFT JOIN profiles p ON p.id = oi.joiner_id
       LEFT JOIN members m ON m.id = oi.member_id
+      LEFT JOIN members om ON om.id = oi.override_member_id
       WHERE oi.order_id = $1
       ${isGom ? '' : 'AND oi.joiner_id = $2'}
       ORDER BY p.display_name NULLS LAST, m.sort_order NULLS LAST, m.name
