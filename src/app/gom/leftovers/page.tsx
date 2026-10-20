@@ -155,7 +155,7 @@ export default function GomLeftoversPage() {
               <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} className="accent-primary" /> Also show reassigned / restored
             </label>
             {entries.length === 0 ? (
-              <EmptyState icon={PackageOpen} title="No leftovers" description="Lost claims (from Payments → Unpaid or an order's Lost button), open member slots and released sorted cards show up here." />
+              <EmptyState icon={PackageOpen} title="No leftovers" description="Lost claims (from Payments → Unpaid or an order's Lost button), guaranteed album copies nobody claimed, and released sorted cards show up here." />
             ) : (
               <LeftoverBoard entries={entries} isGom renderAction={e => (
                 <div className="flex items-center gap-2 flex-shrink-0">

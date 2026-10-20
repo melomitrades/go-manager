@@ -25,7 +25,8 @@ export interface LeftoverEntry {
   member?: any
 }
 
-export function buildEntries(claims: any[], pcs: any[], slots: any[]): LeftoverEntry[] {
+// forJoiner: joiners just see "leftovers" — no lost-claim / open-slot distinction in the wording.
+export function buildEntries(claims: any[], pcs: any[], slots: any[], forJoiner = false): LeftoverEntry[] {
   const out: LeftoverEntry[] = []
   for (const c of claims) out.push({
     kind: 'claim', key: `c:${c.id}`, groupId: c.order_id, groupLabel: c.order_label || 'Order',
@@ -36,8 +37,12 @@ export function buildEntries(claims: any[], pcs: any[], slots: any[]): LeftoverE
   })
   for (const o of slots) for (const sec of o.sections || []) for (const m of sec.members || []) out.push({
     kind: 'slot', key: `s:${o.id}:${m.id}:${sec.versionLabel || ''}`, groupId: o.id, groupLabel: o.label || 'Order',
-    memberName: m.name, title: `Open slot${sec.versionLabel ? ' · ' + sec.versionLabel : ''}${m.leftover > 1 ? ` ×${m.leftover}` : ''}`,
-    detail: sec.type === 'album' ? 'unclaimed album slot' : 'unclaimed member', status: 'open', raw: m, order: o, section: sec, member: m,
+    memberName: m.name,
+    title: forJoiner
+      ? `${sec.versionLabel || 'Album'}${m.leftover > 1 ? ` ×${m.leftover}` : ''}`
+      : `Open slot${sec.versionLabel ? ' · ' + sec.versionLabel : ''}${m.leftover > 1 ? ` ×${m.leftover}` : ''}`,
+    detail: forJoiner ? 'choose your option when requesting' : 'guaranteed album copy nobody claimed',
+    status: 'open', raw: m, order: o, section: sec, member: m,
   })
   for (const p of pcs) out.push({
     kind: 'pc', key: `p:${p.id}`, groupId: `session:${p.session_id}`, groupLabel: `🎴 ${p.session_title || 'Sorting'}`,
@@ -67,7 +72,7 @@ export function LeftoverBoard({ entries, isGom, renderAction }: {
   function changeView(v: 'order' | 'member') { setView(v); try { localStorage.setItem(VIEW_KEY, v) } catch {} }
 
   const groups = useMemo(() => {
-    const visible = entries.filter(e => kinds.has(e.kind))
+    const visible = isGom ? entries.filter(e => kinds.has(e.kind)) : entries
     const map = new Map<string, { id: string; label: string; items: LeftoverEntry[] }>()
     for (const e of visible) {
       const id = view === 'order' ? e.groupId : e.memberName.trim().toLowerCase()
@@ -82,7 +87,7 @@ export function LeftoverBoard({ entries, isGom, renderAction }: {
       : a.groupLabel.localeCompare(b.groupLabel) || (order[a.kind] - order[b.kind]))
     if (view === 'member') list.sort((a, b) => a.label.localeCompare(b.label))
     return list
-  }, [entries, view, kinds])
+  }, [entries, view, kinds, isGom])
 
   const counts = useMemo(() => {
     const c: Record<LeftoverKind, number> = { claim: 0, slot: 0, pc: 0 }
@@ -101,14 +106,14 @@ export function LeftoverBoard({ entries, isGom, renderAction }: {
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        {isGom && <div className="flex flex-wrap gap-1.5">
           {(Object.keys(KIND_STYLE) as LeftoverKind[]).map(k => (
             <button key={k} onClick={() => setKinds(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n.size ? n : prev })}
               className={`text-xs font-semibold px-2.5 py-1 rounded-full border transition-opacity ${KIND_STYLE[k].cls} ${kinds.has(k) ? '' : 'opacity-40'}`}>
               {KIND_STYLE[k].label} · {counts[k]}
             </button>
           ))}
-        </div>
+        </div>}
       </div>
 
       {groups.length === 0 ? (
@@ -122,7 +127,7 @@ export function LeftoverBoard({ entries, isGom, renderAction }: {
           <div className="divide-y divide-border/50">
             {g.items.map(e => (
               <div key={e.key} className={`flex flex-wrap items-center gap-3 px-4 py-3 ${e.status === 'reassigned' || e.status === 'restored' ? 'opacity-60' : ''}`}>
-                <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full border flex-shrink-0 ${KIND_STYLE[e.kind].cls}`}>{KIND_STYLE[e.kind].label}</span>
+                {isGom && <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full border flex-shrink-0 ${KIND_STYLE[e.kind].cls}`}>{KIND_STYLE[e.kind].label}</span>}
                 <div className="flex-1 min-w-[200px]">
                   <p className="text-sm font-semibold">
                     {view === 'order' ? <>{e.memberName} <span className="font-normal text-muted-foreground">· {e.title}</span></> : <>{e.title}</>}

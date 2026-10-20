@@ -3,10 +3,12 @@ import { query } from './db'
 // ============================================================
 // OPEN MEMBER SLOTS — member slots in an order nobody has claimed yet.
 //
-// Same maths as before (moved here from /api/leftovers so the Leftovers pages, slot requests and
-// "give slot" can all share it):
-//  - albums bought set → each member gets floor(bought / group size) slots; unclaimed ones are open
-//  - otherwise → every member is levelled up to the most-claimed member's count
+// Only GUARANTEED slots count — the same "Guaranteed sets" maths as the Albums Bought panel in
+// Orders: with N albums bought for a group of S members, floor(N / S) full sets are guaranteed, so
+// each member has that many guaranteed copies; the ones nobody claimed are open leftovers.
+// Deliberately NOT included: the random remainder (N % S albums, member unknown until opened) and
+// the old "level every member up to the most-claimed one" estimate for orders with no albums
+// bought — neither is a copy that's actually guaranteed to exist.
 // Multi-version orders (with albums bought per version) and VCE/Fansign orders are computed per
 // version. Leftover rows from lost claims still count as claimed here: they're listed separately
 // as lost-claim leftovers, so counting them as open slots too would show them twice.
@@ -53,11 +55,8 @@ export async function computeOpenSlots(orderId?: string | null): Promise<SlotOrd
         const members = list.map(m => ({ id: m.id, name: m.name, leftover: Math.max(0, sets - m.count) })).filter(m => m.leftover > 0)
         return members.length ? { versionLabel, members, type: 'album' } : null
       }
-      const total = list.reduce((s, m) => s + m.count, 0)
-      if (total === 0) return null
-      const max = Math.max(...list.map(m => m.count))
-      const members = list.map(m => ({ id: m.id, name: m.name, leftover: max - m.count })).filter(m => m.leftover > 0)
-      return members.length ? { versionLabel, members, type: 'standard' } : null
+      // No albums bought → nothing is guaranteed yet, so no leftover slots.
+      return null
     }
 
     const sections: SlotSection[] = []

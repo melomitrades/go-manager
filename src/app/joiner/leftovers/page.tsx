@@ -33,7 +33,7 @@ export default function JoinerLeftoversPage() {
   }, [])
   useEffect(() => { load() }, [load])
 
-  const entries = useMemo(() => buildEntries(data?.claims || [], data?.pcs || [], slots), [data, slots])
+  const entries = useMemo(() => buildEntries(data?.claims || [], data?.pcs || [], slots, true), [data, slots])
 
   // Already asked (pending) → the button turns into "Requested".
   const pendingKeys = useMemo(() => {
@@ -78,14 +78,14 @@ export default function JoinerLeftoversPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader title="Leftovers" subtitle="Ask your GOM for an available claim, open slot or photocard" />
+      <PageHeader title="Leftovers" subtitle="Ask your GOM for an available leftover" />
       <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-5">
         {!data ? (
           <div className="flex justify-center py-16"><div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>
         ) : (
           <>
             {entries.length === 0
-              ? <EmptyState icon={PackageOpen} title="No leftovers right now" description="Check back later — released claims and open slots show up here." />
+              ? <EmptyState icon={PackageOpen} title="No leftovers right now" description="Check back later — new leftovers show up here." />
               : <LeftoverBoard entries={entries} isGom={false} renderAction={e => pendingKeys.has(e.key)
                   ? <span className="text-xs font-semibold text-amber-600 flex-shrink-0">Requested</span>
                   : <Button size="sm" variant="outline" onClick={() => openRequest(e)}><Send size={12} /> Request</Button>} />}
@@ -100,7 +100,7 @@ export default function JoinerLeftoversPage() {
                         <p className="text-sm">
                           {r.kind === 'lost_claim' ? <>{r.claim_description}{r.claim_member_name && ` · ${r.claim_member_name}`}</>
                             : r.kind === 'lost_pc' ? <>{r.pc_item_name} · {r.pc_member_name}</>
-                            : <>{r.slot_member_name || 'Open slot'}{r.version_label && ` · ${r.version_label}`}{r.slot_option && ` — ${r.slot_option.description || 'claim'}${r.slot_option.price_eur != null ? ` (${formatEur(r.slot_option.price_eur)})` : ''}`}</>}
+                            : <>{r.slot_member_name || 'Leftover'}{r.version_label && ` · ${r.version_label}`}{r.slot_option && ` — ${r.slot_option.description || 'claim'}${r.slot_option.price_eur != null ? ` (${formatEur(r.slot_option.price_eur)})` : ''}`}</>}
                         </p>
                         <p className="text-xs text-muted-foreground">{r.kind === 'lost_pc' ? r.pc_session_title : r.order_label} · {formatDate(r.created_at)}{r.gom_note && ` · GOM: ${r.gom_note}`}</p>
                       </div>

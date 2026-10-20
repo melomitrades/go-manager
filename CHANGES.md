@@ -366,10 +366,13 @@ belonging to the joiner and become **leftovers** that can be reassigned (or give
   which payment, its amount, the date and the GOM's note), a "Lost claims" badge on the order row, the same list inside
   the order, and "Cancelled — claims lost" on Boxes. The joiner gets a notification.
 - **Leftovers page (GOM).** *Leftovers* is one combined list of lost order claims, open member slots and released
-  sorted cards. A **By order / By member** toggle switches the grouping (sorted cards group under their sorting session
+  sorted cards. Open slots are **guaranteed copies only** — the same "Guaranteed sets" maths as the Albums Bought panel
+  (floor(albums bought ÷ members) per member, minus what's claimed). The random remainder albums and orders with no
+  albums bought don't produce leftovers. A **By order / By member** toggle switches the grouping (sorted cards group under their sorting session
   in the order view), and chips filter by kind. Each lost item shows who lost it, which payment and why. Tabs:
   *Requests* (Accept / Decline) and *History* (every mark-lost action, with **Restore**).
-- **Leftovers page (joiner).** The same combined list, with the same order/member toggle, and **Request** on each item
+- **Leftovers page (joiner).** The same combined list, with the same order/member toggle but no type filter or
+  lost-claim/open-slot labels — joiners just see leftovers, and **Request** on each item
   (+ optional note). For an open slot, the joiner picks which of the order's pricing options they want, so they see the
   price before asking. Joiners never see who lost a leftover or why. Their requests show as waiting / accepted / declined.
 - **Accepting puts it straight into their claims.** Accepting a request is automatic: a lost claim moves into the
