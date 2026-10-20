@@ -424,3 +424,18 @@ claims once on first run (old `shipment_items` override columns are kept but no 
   member from the claim drops the change.
 - Verified on Postgres (override, slot maths, packing checklist, shared edit from packing, revert, order re-save,
   shipped lock) and in the browser (Orders panel chips + dialog).
+
+## Copies received per member (Albums Bought panel) — 2026-10-20
+
+Once an order is **At GOM** (or Closed), each Albums Bought panel in the order detail (GOM view) has
+**📦 Enter copies received per member**: one number per member for what actually came out of the albums.
+Multi-version and VCE/Fansign orders are entered per version. Saved in `orders.albums_received`
+(`{ section: { member_id: copies } }`, section = `__all__`, the version name, or `VCE`/`Fansign`); runtime migration, no SQL.
+Saved via `PATCH /api/orders/[id]` `{ action: 'albums_received', section, counts }` (`counts: null` clears it), GOM/admin
+only, refused before At GOM.
+
+- **Panel:** shows "📦 Received 18 / 20 bought" (amber ⚠ if the total doesn't match — you can still save). Per member:
+  ✓ guaranteed, 🎲 claims won from the random albums, ✗ *n* short (claimed more than came out — flag only), +*n* leftover.
+  The "random candidates" list disappears once real counts are in. **Edit** / **Clear (back to estimate)** any time.
+- **Leftovers pages:** for that order/section, open slots become the real numbers — received − claimed per member,
+  copies from the random albums included — instead of the guaranteed-sets estimate. Changed claims count as the new member.

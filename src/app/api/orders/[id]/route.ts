@@ -13,6 +13,10 @@ async function ensureOrderDetailSchema() {
   migDone = true
   await ensureLostClaimsSchema()
   await Promise.all([
+    // Real copies per member counted once the order is At GOM (Albums Bought panel), keyed by
+    // section: '__all__' for a plain order, the version name for multi-version orders, 'VCE' /
+    // 'Fansign' for VCE/Fansign orders → { member_id: copies }.
+    query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS albums_received JSONB DEFAULT NULL').catch(() => {}),
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS inclusions_count INTEGER DEFAULT 0').catch(() => {}),
     query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS entries_count INTEGER DEFAULT 0').catch(() => {}),
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_multi_version BOOLEAN DEFAULT false').catch(() => {}),
@@ -133,8 +137,33 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const user = session.user as any
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const { joiner_id, paid } = await req.json()
+  const body = await req.json()
   await ensureOrderDetailSchema()
+
+  // Albums Bought panel: save (or clear, with counts=null) the copies actually received per member
+  // for one section. Only once the order is At GOM — before that nothing has been opened.
+  if (body.action === 'albums_received') {
+    const order = await queryOne<any>('SELECT status FROM orders WHERE id=$1', [params.id])
+    if (!order) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!['at_gom', 'closed'].includes(order.status)) {
+      return NextResponse.json({ error: 'Copies can only be entered once the order is At GOM' }, { status: 400 })
+    }
+    const section = typeof body.section === 'string' && body.section ? body.section : '__all__'
+    if (body.counts == null) {
+      await query(`UPDATE orders SET albums_received = NULLIF(COALESCE(albums_received, '{}'::jsonb) - $2::text, '{}'::jsonb), updated_at=now() WHERE id=$1`, [params.id, section])
+    } else {
+      const counts: Record<string, number> = {}
+      for (const [k, v] of Object.entries(body.counts || {})) {
+        const n = parseInt(v as any)
+        if (!isNaN(n) && n >= 0) counts[k] = n
+      }
+      await query(`UPDATE orders SET albums_received = jsonb_set(COALESCE(albums_received, '{}'::jsonb), ARRAY[$2::text], $3::jsonb), updated_at=now() WHERE id=$1`,
+        [params.id, section, JSON.stringify(counts)])
+    }
+    return NextResponse.json({ ok: true })
+  }
+
+  const { joiner_id, paid } = body
   await query(`
     INSERT INTO order_joiner_paid (order_id, joiner_id, paid, paid_at)
     VALUES ($1, $2, $3, $4)

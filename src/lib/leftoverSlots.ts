@@ -9,6 +9,8 @@ import { query } from './db'
 // Deliberately NOT included: the random remainder (N % S albums, member unknown until opened) and
 // the old "level every member up to the most-claimed one" estimate for orders with no albums
 // bought — neither is a copy that's actually guaranteed to exist.
+// Once the order is home and the GOM has entered the copies actually received per member
+// (orders.albums_received), that section uses the real numbers instead: received − claimed.
 // Multi-version orders (with albums bought per version) and VCE/Fansign orders are computed per
 // version. Leftover rows from lost claims still count as claimed here: they're listed separately
 // as lost-claim leftovers, so counting them as open slots too would show them twice. A claim the
@@ -19,10 +21,16 @@ export interface SlotMember { id: string; name: string; leftover: number }
 export interface SlotSection { versionLabel?: string; members: SlotMember[]; type: 'album' | 'standard' }
 export interface SlotOrder { id: string; label: string; type: string; status: string; group_id: string | null; sections: SlotSection[] }
 
+let receivedColDone = false
+
 export async function computeOpenSlots(orderId?: string | null): Promise<SlotOrder[]> {
+  if (!receivedColDone) {
+    await query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS albums_received JSONB DEFAULT NULL').catch(() => {})
+    receivedColDone = true
+  }
   const orders = await query(`
     SELECT
-      o.id, o.status, o.type, o.round_number, o.albums_bought, o.is_vce_fansign, o.is_multi_version, o.version_names,
+      o.id, o.status, o.type, o.round_number, o.albums_bought, o.albums_received, o.is_vce_fansign, o.is_multi_version, o.version_names,
       s.name AS shop_name, g.id AS group_id, g.name AS group_name,
       (SELECT json_agg(json_build_object('id', m.id, 'name', m.name) ORDER BY m.sort_order NULLS LAST, m.name)
          FROM members m WHERE m.group_id = g.id) AS group_members,
@@ -45,12 +53,22 @@ export async function computeOpenSlots(orderId?: string | null): Promise<SlotOrd
     const isPerVersion = albumsBought && typeof albumsBought === 'object'
     const label = [order.group_name, order.round_number ? `R${order.round_number}` : null, order.shop_name].filter(Boolean).join(' · ')
 
+    let received: Record<string, Record<string, number>> = {}
+    try { received = typeof order.albums_received === 'string' ? JSON.parse(order.albums_received) : (order.albums_received || {}) } catch { }
+
     const compute = (filtered: typeof items, bought: number | null, versionLabel?: string): SlotSection | null => {
       if (setSize < 2) return null
       const counts: Record<string, number> = {}
       for (const m of groupMembers) counts[m.id] = 0
       for (const it of filtered) if (it.member_id && counts[it.member_id] !== undefined) counts[it.member_id]++
       const list = groupMembers.map(m => ({ id: m.id, name: m.name, count: counts[m.id] }))
+      // Real copies entered by the GOM once the order is home (Albums Bought panel) replace the
+      // guaranteed-sets estimate: leftover = received − claimed, random albums included.
+      const real = received[versionLabel || '__all__']
+      if (bought != null && real && typeof real === 'object') {
+        const members = list.map(m => ({ id: m.id, name: m.name, leftover: Math.max(0, (parseInt(real[m.id] as any) || 0) - m.count) })).filter(m => m.leftover > 0)
+        return members.length ? { versionLabel, members, type: 'album' } : null
+      }
       if (bought != null) {
         const sets = Math.floor(bought / setSize)
         const members = list.map(m => ({ id: m.id, name: m.name, leftover: Math.max(0, sets - m.count) })).filter(m => m.leftover > 0)

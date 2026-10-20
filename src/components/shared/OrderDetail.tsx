@@ -105,6 +105,22 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
   const [changeReason, setChangeReason] = useState('')
   const [changeBusy, setChangeBusy] = useState(false)
   const [changeError, setChangeError] = useState('')
+  // Albums Bought panel: real copies received per member, entered once the order is At GOM.
+  const [receivedEdit, setReceivedEdit] = useState<string | null>(null)   // section key being edited
+  const [receivedDraft, setReceivedDraft] = useState<Record<string, string>>({})
+  const [receivedBusy, setReceivedBusy] = useState(false)
+  const [receivedError, setReceivedError] = useState('')
+  async function saveReceived(section: string, counts: Record<string, string> | null) {
+    setReceivedBusy(true); setReceivedError('')
+    const res = await fetch(`/api/orders/${orderId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'albums_received', section, counts }),
+    })
+    setReceivedBusy(false)
+    if (!res.ok) { const j = await res.json().catch(() => ({})); setReceivedError(j.error || 'Could not save'); return }
+    setReceivedEdit(null)
+    setReloadKey(k => k + 1)
+  }
 
   function openChange(row: any, joinerName: string) {
     setChangeFor({ row, joinerName })
@@ -279,11 +295,24 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                   return groupMembers.map(m => ({ ...counts[m.id], id: m.id }))
                 }
 
-                const AlbumPanel = ({ label, albumsBought, memberList, color }: {
-                  label: string | null; albumsBought: number; memberList: { id: string; name: string; count: number }[]; color: string
+                const canEnterReceived = ['at_gom', 'closed'].includes(data.order?.status)
+                const receivedAll: Record<string, Record<string, number>> = (() => {
+                  const r = (data.order as any)?.albums_received
+                  try { return typeof r === 'string' ? JSON.parse(r) : (r || {}) } catch { return {} }
+                })()
+
+                // Called as a plain function (not <AlbumPanel/>): it's defined inside render, so as a
+                // component React would remount it on every keystroke and the count inputs would
+                // lose focus.
+                const AlbumPanel = ({ label, albumsBought, memberList, color, sectionKey }: {
+                  label: string | null; albumsBought: number; memberList: { id: string; name: string; count: number }[]; color: string; sectionKey: string
                 }) => {
                   const totalClaims = memberList.reduce((s, m) => s + m.count, 0)
                   if (totalClaims === 0 && albumsBought === 0) return null
+                  const received = receivedAll[sectionKey] && typeof receivedAll[sectionKey] === 'object' ? receivedAll[sectionKey] : null
+                  const editing = receivedEdit === sectionKey
+                  const receivedTotal = received ? memberList.reduce((s, m) => s + (parseInt(received[m.id] as any) || 0), 0) : 0
+                  const draftTotal = memberList.reduce((s, m) => s + (parseInt(receivedDraft[m.id]) || 0), 0)
                   const completeSets = totalClaims > 0 ? Math.min(...memberList.map(m => m.count)) : 0
                   const affordableSets = Math.floor(albumsBought / setSize)
                   const randomAlbumSlots = albumsBought % setSize
@@ -332,11 +361,77 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                         {allGuaranteed && randomAlbumSlots === 0 && totalClaims > 0 && (
                           <p className="text-xs text-emerald-600 font-semibold">Perfect fit 🎉</p>
                         )}
+                        {received && !editing && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-violet-700 dark:text-violet-300 font-semibold">📦 Received</span>
+                            <span className={`font-bold ${receivedTotal === albumsBought ? 'text-violet-700 dark:text-violet-300' : 'text-amber-600'}`}>
+                              {receivedTotal} / {albumsBought} bought{receivedTotal !== albumsBought ? ' ⚠' : ''}
+                            </span>
+                          </div>
+                        )}
                       </div>
+                      {canEnterReceived && !editing && (
+                        <button onClick={() => {
+                          setReceivedEdit(sectionKey); setReceivedError('')
+                          setReceivedDraft(Object.fromEntries(memberList.map(m => [m.id, received ? String(parseInt(received[m.id] as any) || 0) : ''])))
+                        }} className="w-full text-xs font-semibold px-3 py-1.5 rounded-lg border border-violet-300 text-violet-700 bg-background/60 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 transition-colors">
+                          {received ? '✏️ Edit copies received' : '📦 Enter copies received per member'}
+                        </button>
+                      )}
+                      {editing && (
+                        <div className="border-t border-current/10 pt-2.5 space-y-2">
+                          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Copies received per member</p>
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                            {memberList.map(m => (
+                              <label key={m.id} className="flex items-center justify-between gap-2 text-xs">
+                                <span className="font-semibold">{m.name} <span className="font-normal text-muted-foreground">({m.count} claimed)</span></span>
+                                <input type="number" min={0} inputMode="numeric" value={receivedDraft[m.id] ?? ''}
+                                  onChange={e => setReceivedDraft(d => ({ ...d, [m.id]: e.target.value }))}
+                                  className="w-16 px-2 py-1 rounded-lg border border-input bg-background text-sm text-right focus:outline-none focus:ring-2 focus:ring-primary/25" />
+                              </label>
+                            ))}
+                          </div>
+                          <p className={`text-xs font-semibold ${draftTotal === albumsBought ? 'text-muted-foreground' : 'text-amber-600'}`}>
+                            {draftTotal} entered / {albumsBought} bought{draftTotal !== albumsBought ? ' — doesn’t match, you can still save' : ''}
+                          </p>
+                          {receivedError && <p className="text-xs text-red-600">{receivedError}</p>}
+                          <div className="flex items-center justify-between gap-2">
+                            {received
+                              ? <button onClick={() => saveReceived(sectionKey, null)} disabled={receivedBusy} className="text-xs font-semibold text-muted-foreground hover:text-foreground">Clear (back to estimate)</button>
+                              : <span />}
+                            <div className="flex gap-2">
+                              <button onClick={() => setReceivedEdit(null)} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-border bg-background">Cancel</button>
+                              <button onClick={() => saveReceived(sectionKey, receivedDraft)} disabled={receivedBusy}
+                                className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-primary text-primary-foreground disabled:opacity-50">{receivedBusy ? 'Saving…' : 'Save'}</button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       {totalClaims > 0 && (
                         <div className="border-t border-current/10 pt-2.5 space-y-1.5">
                           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Per member</p>
+                          {received && <p className="text-[11px] text-muted-foreground -mt-0.5 mb-1">Using the copies received. ✓ guaranteed · 🎲 won from the random albums · ✗ short (not enough copies) · + leftover</p>}
                           {memberList.map(m => {
+                            if (received) {
+                              const got = parseInt(received[m.id] as any) || 0
+                              const fulfilled = Math.min(m.count, got)
+                              const guaranteedR = Math.min(m.count, effectiveSets, got)
+                              const randomWon = fulfilled - guaranteedR
+                              const short = m.count - fulfilled
+                              const left = got - fulfilled
+                              return (
+                                <div key={m.id} className="flex items-center justify-between text-xs gap-2">
+                                  <span className="font-semibold text-foreground min-w-[70px]">{m.name}</span>
+                                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                    <span className="text-muted-foreground">{m.count} claim{m.count !== 1 ? 's' : ''} · {got} received</span>
+                                    {guaranteedR > 0 && <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200 font-semibold dark:bg-emerald-900/30 dark:text-emerald-300">✓ {guaranteedR}</span>}
+                                    {randomWon > 0 && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 font-semibold dark:bg-amber-900/30 dark:text-amber-300">🎲 {randomWon}</span>}
+                                    {short > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 font-semibold dark:bg-red-900/30 dark:text-red-300">✗ {short} short</span>}
+                                    {left > 0 && <span className="px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 border border-sky-200 font-semibold dark:bg-sky-900/30 dark:text-sky-300">+{left} leftover</span>}
+                                  </div>
+                                </div>
+                              )
+                            }
                             const guaranteed = Math.min(m.count, effectiveSets)
                             const leftoverSlots = Math.max(0, effectiveSets - m.count) // album slots with no claim
                             const remaining = m.count - guaranteed
@@ -357,7 +452,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                           })}
                         </div>
                       )}
-                      {randomAlbumSlots > 0 && membersWithExcess.length > 0 && (
+                      {!received && randomAlbumSlots > 0 && membersWithExcess.length > 0 && (
                         <div className="border-t border-current/10 pt-2.5">
                           <p className="text-xs text-muted-foreground mb-1.5">Random candidates ({randomAlbumSlots} slot{randomAlbumSlots !== 1 ? 's' : ''}):</p>
                           <div className="flex flex-wrap gap-1.5">
@@ -389,7 +484,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                           if (item.version_name) return item.version_name === vn
                           return (item.description || '').toLowerCase().includes(vn.toLowerCase())
                         })
-                        return <AlbumPanel key={vn} label={vn} albumsBought={parseInt(bought)} memberList={memberList} color="sky" />
+                        return <div key={vn}>{AlbumPanel({ label: vn, albumsBought: parseInt(bought), memberList, color: 'sky', sectionKey: vn })}</div>
                       })}
                     </div>
                   )
@@ -400,8 +495,8 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                   const fansignBought = (rawAlbumsBought as any)['fansign']
                   return (
                     <div className="space-y-3">
-                      {vceBought != null && <AlbumPanel label="VCE" albumsBought={parseInt(vceBought)} memberList={countMemberClaims((item: any) => /vce/i.test(item.description || ''))} color="sky" />}
-                      {fansignBought != null && <AlbumPanel label="Fansign" albumsBought={parseInt(fansignBought)} memberList={countMemberClaims((item: any) => /fansign/i.test(item.description || ''))} color="purple" />}
+                      {vceBought != null && AlbumPanel({ label: 'VCE', albumsBought: parseInt(vceBought), memberList: countMemberClaims((item: any) => /vce/i.test(item.description || '')), color: 'sky', sectionKey: 'VCE' })}
+                      {fansignBought != null && AlbumPanel({ label: 'Fansign', albumsBought: parseInt(fansignBought), memberList: countMemberClaims((item: any) => /fansign/i.test(item.description || '')), color: 'purple', sectionKey: 'Fansign' })}
                     </div>
                   )
                 }
@@ -409,7 +504,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                 // Standard single value
                 const albumsBought = typeof rawAlbumsBought === 'number' ? rawAlbumsBought : parseInt(rawAlbumsBought)
                 if (isNaN(albumsBought)) return null
-                return <AlbumPanel label={null} albumsBought={albumsBought} memberList={countMemberClaims()} color="sky" />
+                return AlbumPanel({ label: null, albumsBought, memberList: countMemberClaims(), color: 'sky', sectionKey: '__all__' })
               })()}
               {/* Leftover calculator — hidden when albums bought is set (album panel takes over) */}
               {viewAs === 'gom' && data.joiners.length > 0 && !(data.order as any).hide_leftovers && !(data.order as any).albums_bought && (() => {
