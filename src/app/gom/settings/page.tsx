@@ -282,7 +282,7 @@ export default function GomSettingsPage() {
                         <EraManager
                           groupId={group.id}
                           members={members.map(m => ({ id: m.id, name: m.name }))}
-                          joiners={users.filter((u: any) => u.role === 'joiner') as any}
+                          joiners={users.filter((u: any) => ['joiner', 'gom'].includes(u.role)) as any}
                         />
                       </CardContent>
                     )}
@@ -356,7 +356,7 @@ export default function GomSettingsPage() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        {u.role === 'joiner' && (u as any).is_fixed && (
+                        {['joiner', 'gom'].includes(u.role) && (u as any).is_fixed && (
                           <span
                             title="Fixed Joiner in one or more groups — +2 raffle entries on those groups' fancalls"
                             className="text-xs font-semibold px-2 py-1 rounded-lg border bg-primary text-white border-primary flex-shrink-0">
@@ -383,7 +383,8 @@ export default function GomSettingsPage() {
           </FormField>
           {editingGroup && (() => {
             const groupMembers: any[] = (editingGroup as any).members || []
-            const joinerUsers = users.filter((u:any) => u.role === 'joiner')
+            // GOMs can hold fixed / semi-fixed spots too
+            const joinerUsers = users.filter((u:any) => ['joiner', 'gom'].includes(u.role))
             return (
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Fixed Joiners</p>
@@ -404,7 +405,7 @@ export default function GomSettingsPage() {
                             }
                           }}
                           className="w-4 h-4 rounded accent-primary flex-shrink-0"/>
-                        <span className={`text-sm flex-1 ${isFixed ? 'font-semibold text-primary' : ''}`}>{u.display_name || u.username}</span>
+                        <span className={`text-sm flex-1 ${isFixed ? 'font-semibold text-primary' : ''}`}>{u.display_name || u.username}{u.role === 'gom' && <span className="ml-1.5 text-[10px] font-semibold uppercase text-muted-foreground">GOM</span>}</span>
                         {isFixed && groupMembers.length > 0 && (
                           <div className="flex flex-wrap gap-1 flex-1 justify-end">
                             {groupMembers.map((m:any) => {

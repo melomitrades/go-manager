@@ -11,7 +11,8 @@ import { formatDate } from '@/lib/utils'
 interface Props {
   groupId: string
   members: { id: string; name: string }[]
-  joiners: { id: string; display_name?: string | null; username: string }[]
+  // joiners + GOMs (GOMs can hold spots too)
+  joiners: { id: string; display_name?: string | null; username: string; role?: string }[]
 }
 
 const emptyEra = { name: '', events_per_round: '5', renewal_days: '7' }
@@ -197,7 +198,7 @@ export function EraManager({ groupId, members, joiners }: Props) {
               {active && (addFor === e.id ? (
                 <div className="px-3 py-3 space-y-2 bg-primary/[0.03]">
                   <Select
-                    options={joiners.filter(j => !takenIds.has(String(j.id))).map(j => ({ value: j.id, label: j.display_name || j.username }))}
+                    options={joiners.filter(j => !takenIds.has(String(j.id))).map(j => ({ value: j.id, label: `${j.display_name || j.username}${j.role === 'gom' ? ' (GOM)' : ''}` }))}
                     placeholder="Select joiner…" value={newJoiner} onChange={ev => setNewJoiner(ev.target.value)} className="py-2 text-sm" />
                   {members.length > 0 && <MemberPills selected={newMembers} onToggle={id => setNewMembers(l => toggle(l, id))} />}
                   <div className="flex justify-end gap-2">

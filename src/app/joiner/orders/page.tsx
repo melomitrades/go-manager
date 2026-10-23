@@ -35,7 +35,7 @@ export default function JoinerOrdersPage() {
   // Semi-fixed spots in active eras (progress + renewal)
   const [spots, setSpots] = useState<any[]>([])
   const [renewing, setRenewing] = useState<string | null>(null)
-  const loadSpots = () => fetch('/api/semi-fixed').then(r => r.json()).then(d => setSpots(Array.isArray(d) ? d : [])).catch(() => {})
+  const loadSpots = () => fetch('/api/semi-fixed?viewAs=joiner').then(r => r.json()).then(d => setSpots(Array.isArray(d) ? d : [])).catch(() => {})
   useEffect(() => { loadSpots() }, [])
   async function renewSpot(id: string) {
     setRenewing(id)
