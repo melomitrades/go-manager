@@ -59,6 +59,8 @@ export async function ensureSemiFixedSchema() {
     )`).catch(() => {})
   await Promise.all([
     query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS era_id TEXT DEFAULT NULL').catch(() => {}),
+    // Orders ticked "Don't count for semi-fixed" stay in the era but aren't counted as events
+    query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS exclude_from_semi_fixed BOOLEAN DEFAULT false').catch(() => {}),
     query('CREATE INDEX IF NOT EXISTS idx_orders_era_id ON orders(era_id)').catch(() => {}),
     query('CREATE INDEX IF NOT EXISTS idx_eras_group_id ON eras(group_id)').catch(() => {}),
     query('CREATE INDEX IF NOT EXISTS idx_sfs_era_id ON semi_fixed_spots(era_id)').catch(() => {}),
@@ -78,7 +80,8 @@ const SPOT_SELECT = `
          COALESCE((
            SELECT COUNT(DISTINCT o.id) FROM orders o
            JOIN order_items oi ON oi.order_id = o.id
-           WHERE o.era_id = s.era_id AND oi.joiner_id::text = s.joiner_id AND oi.lost_claim_id IS NULL
+           WHERE o.era_id = s.era_id AND NOT COALESCE(o.exclude_from_semi_fixed, false)
+             AND oi.joiner_id::text = s.joiner_id AND oi.lost_claim_id IS NULL
          ), 0)::int AS events_total
   FROM semi_fixed_spots s
   JOIN eras e ON e.id = s.era_id
@@ -118,6 +121,9 @@ export async function refreshSpots(filter: { eraId?: string; joinerId?: string }
     if (!s.renewal_requested_at && s.target > 0 && s.progress >= s.target) {
       await query(`UPDATE semi_fixed_spots SET renewal_requested_at = now() WHERE id = $1 AND renewal_requested_at IS NULL`, [s.id])
       await notify(s.joiner_id, `🔁 Your semi-fixed round for ${label} is complete (${s.target}/${s.target} events). Renew your spot within ${s.renewal_days} day${s.renewal_days === 1 ? '' : 's'} in My Orders to keep it.`)
+    } else if (s.renewal_requested_at && s.progress < s.target) {
+      // An order was excluded/removed after the round looked complete — round isn't complete anymore
+      await query(`UPDATE semi_fixed_spots SET renewal_requested_at = NULL WHERE id = $1`, [s.id])
     } else if (s.renewal_requested_at && s.renewal_deadline && new Date(s.renewal_deadline).getTime() < Date.now()) {
       await query(`UPDATE semi_fixed_spots SET status = 'lost', ended_at = now() WHERE id = $1 AND status = 'active'`, [s.id])
       await notify(s.joiner_id, `Your semi-fixed spot for ${label} was released because it wasn't renewed in time.`)

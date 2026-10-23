@@ -55,7 +55,7 @@ export default function GomOrdersPage() {
   const [filterType, setFilterType] = useState('')
   const [search, setSearch] = useState('')
   const [orderType, setOrderType] = useState<OrderType>('group')
-  const [form, setForm] = useState({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered' as OrderStatus, notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'' })
+  const [form, setForm] = useState({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered' as OrderStatus, notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false })
   const [albumsPerVersion, setAlbumsPerVersion] = useState<Record<string, string>>({})
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
   const [pricingOptions, setPricingOptions] = useState<PricingOption[]>([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
@@ -141,7 +141,7 @@ export default function GomOrdersPage() {
   function openNew() {
     setEditingOrder(null)
     setOrderType('group')
-    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'' }); setAlbumsPerVersion({})
+    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false }); setAlbumsPerVersion({})
     setSelectedGroup(null)
     setPricingOptions([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
     setVceOptions([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
@@ -181,6 +181,7 @@ export default function GomOrdersPage() {
       payment_info: (order as any).payment_info || '',
       albums_bought: (order as any).albums_bought != null && typeof (order as any).albums_bought !== 'object' ? String((order as any).albums_bought) : '',
       era_id: (order as any).era_id || '',
+      exclude_from_semi_fixed: !!(order as any).exclude_from_semi_fixed,
     })
     // If albums_bought is a per-version object, restore it
     if ((order as any).albums_bought && typeof (order as any).albums_bought === 'object') {
@@ -480,6 +481,7 @@ export default function GomOrdersPage() {
       joiner_id:orderType==='personal'?(form.group_id||null):null,
       round_number:form.round_number||null,
       era_id: orderType==='group' ? (form.era_id||null) : null,
+      exclude_from_semi_fixed: form.exclude_from_semi_fixed,
       is_fancall:form.is_fancall, is_vce_fansign:form.is_vce_fansign, is_multi_version:form.is_multi_version, version_names: form.is_multi_version ? versionSections.map(v=>v.name) : null, version_options: form.is_multi_version ? versionSections.map(v=>({name:v.name, options:v.options})) : null, status:form.status, notes:form.notes||null,
       deadline: form.deadline || null,
       ordered_at: form.ordered_at || null,
@@ -520,7 +522,7 @@ export default function GomOrdersPage() {
 
   function resetModal() {
     setModalOpen(false); setEditingOrder(null); setOrderType('group')
-    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'' }); setAlbumsPerVersion({})
+    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false }); setAlbumsPerVersion({})
     setSelectedGroup(null); setPricingOptions([{ id:uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }]); setJoinerRows([])
   }
 
@@ -577,7 +579,7 @@ export default function GomOrdersPage() {
                   : (order.group as any)?.name || '—'
                 }
               </Td>
-              <Td className="text-muted-foreground">{order.round_number||'—'}{(order as any).era_name && <span className="block text-[11px] text-muted-foreground/70">{(order as any).era_name}</span>}</Td>
+              <Td className="text-muted-foreground">{order.round_number||'—'}{(order as any).era_name && <span className="block text-[11px] text-muted-foreground/70">{(order as any).era_name}{(order as any).exclude_from_semi_fixed ? ' · not counted' : ''}</span>}</Td>
               <Td onClick={e => e.stopPropagation()}>
                 <select value={order.status} onChange={async e => { await fetch('/api/orders',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:order.id,status:e.target.value})}); fetchData() }} className="text-xs border border-border rounded-lg px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 cursor-pointer">
                   {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
@@ -667,6 +669,11 @@ export default function GomOrdersPage() {
                       value={form.era_id}
                       onChange={e => handleEraSelect(e.target.value)}
                     />
+                  )}
+                  {form.era_id && (
+                    <div className="mt-2">
+                      <Checkbox id="exclude_from_semi_fixed" label="Don't count this order for semi-fixed rounds" checked={form.exclude_from_semi_fixed} onChange={e=>setForm(f=>({...f,exclude_from_semi_fixed:e.target.checked}))}/>
+                    </div>
                   )}
                 </FormField>
               )

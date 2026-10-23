@@ -150,13 +150,13 @@ export async function POST(req: NextRequest) {
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   await ensureOrderColumns()
-  const { type, shop_id, group_id, round_number, is_fancall, is_vce_fansign, is_multi_version, version_names, version_options, status, notes, items, deadline, ordered_at, joiner_id: personal_joiner_id, preview_image_url, hide_leftovers, payment_info, albums_bought, era_id } = await req.json()
+  const { type, shop_id, group_id, round_number, is_fancall, is_vce_fansign, is_multi_version, version_names, version_options, status, notes, items, deadline, ordered_at, joiner_id: personal_joiner_id, preview_image_url, hide_leftovers, payment_info, albums_bought, era_id, exclude_from_semi_fixed } = await req.json()
   const addy_country = ADDY_MAP[status] || null
 
   const order = await queryOne(
-    `INSERT INTO orders (type, shop_id, group_id, round_number, is_fancall, status, addy_country, notes, created_by, deadline, ordered_at, personal_joiner_id, preview_image_url, hide_leftovers, payment_info, is_vce_fansign, is_multi_version, version_names, version_options, albums_bought, era_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
-    [type, shop_id || null, group_id || null, round_number || null, is_fancall, status, addy_country, notes || null, user.id, deadline || null, ordered_at || null, personal_joiner_id || null, preview_image_url || null, hide_leftovers || false, payment_info || null, is_vce_fansign || false, is_multi_version || false, version_names ? JSON.stringify(version_names) : null, version_options ? JSON.stringify(version_options) : null, albums_bought != null ? JSON.stringify(albums_bought) : null, (type === 'group' && era_id) ? era_id : null]
+    `INSERT INTO orders (type, shop_id, group_id, round_number, is_fancall, status, addy_country, notes, created_by, deadline, ordered_at, personal_joiner_id, preview_image_url, hide_leftovers, payment_info, is_vce_fansign, is_multi_version, version_names, version_options, albums_bought, era_id, exclude_from_semi_fixed)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+    [type, shop_id || null, group_id || null, round_number || null, is_fancall, status, addy_country, notes || null, user.id, deadline || null, ordered_at || null, personal_joiner_id || null, preview_image_url || null, hide_leftovers || false, payment_info || null, is_vce_fansign || false, is_multi_version || false, version_names ? JSON.stringify(version_names) : null, version_options ? JSON.stringify(version_options) : null, albums_bought != null ? JSON.stringify(albums_bought) : null, (type === 'group' && era_id) ? era_id : null, !!exclude_from_semi_fixed]
   )
   if (!order) return NextResponse.json({ error: 'Insert failed' }, { status: 500 })
 
@@ -230,6 +230,10 @@ export async function PATCH(req: NextRequest) {
     const nextEra = type === 'personal' ? null : (body.era_id || null)
     await query('UPDATE orders SET era_id=$1 WHERE id=$2', [nextEra, id])
     ;(order as any).era_id = nextEra
+    if ('exclude_from_semi_fixed' in body) {
+      await query('UPDATE orders SET exclude_from_semi_fixed=$1 WHERE id=$2', [!!body.exclude_from_semi_fixed, id])
+      ;(order as any).exclude_from_semi_fixed = !!body.exclude_from_semi_fixed
+    }
     if (prevEra && prevEra !== nextEra) await refreshSpots({ eraId: prevEra }).catch(() => {})
   }
 
