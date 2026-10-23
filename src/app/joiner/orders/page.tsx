@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { ShoppingBag, AlertTriangle } from 'lucide-react'
-import { Card, Table, Th, Td, Tr, PageHeader, EmptyState, StatusBadge, Badge } from '@/components/ui'
+import { ShoppingBag, AlertTriangle, RotateCcw } from 'lucide-react'
+import { Card, Table, Th, Td, Tr, PageHeader, EmptyState, StatusBadge, Badge, Button } from '@/components/ui'
 import { formatDate, formatEur } from '@/lib/utils'
 import { LostBadge } from '@/components/shared/MarkLostModal'
 import { OrderDetail } from '@/components/shared/OrderDetail'
@@ -32,6 +32,19 @@ export default function JoinerOrdersPage() {
   }, [])
   const lostOrderIds = new Set(lost.claims.map((c: any) => c.order_id))
 
+  // Semi-fixed spots in active eras (progress + renewal)
+  const [spots, setSpots] = useState<any[]>([])
+  const [renewing, setRenewing] = useState<string | null>(null)
+  const loadSpots = () => fetch('/api/semi-fixed').then(r => r.json()).then(d => setSpots(Array.isArray(d) ? d : [])).catch(() => {})
+  useEffect(() => { loadSpots() }, [])
+  async function renewSpot(id: string) {
+    setRenewing(id)
+    const res = await fetch('/api/semi-fixed', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action: 'renew' }) })
+    if (!res.ok) { const e = await res.json().catch(() => ({})); alert(e.error || 'Could not renew') }
+    await loadSpots()
+    setRenewing(null)
+  }
+
   // Orders where the GOM changed one of this joiner's claims while packing (see /api/claim-overrides).
   useEffect(() => {
     fetch('/api/claim-overrides').then(r => r.json()).then(d => {
@@ -43,6 +56,43 @@ export default function JoinerOrdersPage() {
     <div className="flex flex-col h-full">
       <PageHeader title="My Orders" subtitle="Click an order to see your items and payment status" />
       <div className="flex-1 overflow-auto p-4 sm:p-6">
+        {spots.length > 0 && (
+          <div className="mb-5 border border-border rounded-2xl overflow-hidden bg-card">
+            <div className="px-4 py-3 border-b border-border bg-secondary/30">
+              <p className="text-sm font-bold">🔁 My semi-fixed spots</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Each order you join in the era counts as one event. When a round is complete, renew to keep your spot — extra events carry over to the next round.</p>
+            </div>
+            <div className="divide-y divide-border/60">
+              {spots.map((s: any) => {
+                const waiting = s.state === 'awaiting_renewal'
+                const pct = s.target > 0 ? Math.min(100, Math.round(s.progress / s.target * 100)) : 0
+                return (
+                  <div key={s.id} className={`px-4 py-3 space-y-2 ${waiting ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold">{s.group_name || 'Group'}</span>
+                      <span className="text-xs text-muted-foreground">· {s.era_name} · round {s.round}</span>
+                      {s.state === 'lost' && <Badge className="bg-red-50 text-red-700 border border-red-200">Spot lost</Badge>}
+                      {waiting && <Badge className="bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700">Renew by {s.renewal_deadline ? formatDate(s.renewal_deadline) : '—'}</Badge>}
+                      {waiting && (
+                        <Button size="sm" className="ml-auto" disabled={renewing === s.id} onClick={() => renewSpot(s.id)}>
+                          <RotateCcw size={12} /> {renewing === s.id ? 'Renewing…' : 'Renew spot'}
+                        </Button>
+                      )}
+                    </div>
+                    {s.state !== 'lost' && (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 rounded-full bg-secondary overflow-hidden">
+                          <div className={`h-full rounded-full ${waiting ? 'bg-amber-500' : 'bg-primary'}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="text-xs font-semibold tabular-nums text-muted-foreground">{s.progress} / {s.target} events</span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
         {(lost.claims.length > 0 || lost.pcs.length > 0) && (
           <div className="mb-5 border border-red-200 dark:border-red-900 rounded-2xl overflow-hidden bg-card">
             <div className="px-4 py-3 border-b border-red-100 dark:border-red-900 bg-red-50/60 dark:bg-red-900/10">

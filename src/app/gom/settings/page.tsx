@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, GripVertical, KeyRound, Eye, EyeOff } from 'lucide-react'
 import { Button, Card, CardHeader, CardContent, Modal, Input, FormField, PageHeader } from '@/components/ui'
 import type { Group, Member, Profile } from '@/types'
+import { EraManager } from '@/components/shared/EraManager'
 
 export default function GomSettingsPage() {
   const [groups, setGroups] = useState<Group[]>([])
@@ -278,6 +279,11 @@ export default function GomSettingsPage() {
                             <Plus size={14} /> Add Member
                           </Button>
                         </div>
+                        <EraManager
+                          groupId={group.id}
+                          members={members.map(m => ({ id: m.id, name: m.name }))}
+                          joiners={users.filter((u: any) => u.role === 'joiner') as any}
+                        />
                       </CardContent>
                     )}
                   </Card>
@@ -352,7 +358,7 @@ export default function GomSettingsPage() {
                       <div className="flex items-center gap-2">
                         {u.role === 'joiner' && (u as any).is_fixed && (
                           <span
-                            title="Marked as a Fixed Joiner in one or more groups — gets +2 raffle entries"
+                            title="Fixed Joiner in one or more groups — +2 raffle entries on those groups' fancalls"
                             className="text-xs font-semibold px-2 py-1 rounded-lg border bg-primary text-white border-primary flex-shrink-0">
                             📌 Fixed
                           </span>
@@ -381,7 +387,7 @@ export default function GomSettingsPage() {
             return (
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Fixed Joiners</p>
-                <p className="text-xs text-muted-foreground">Auto-added with their default member when logging a new order for this group. Fixed joiners also get +2 entries on every raffle.</p>
+                <p className="text-xs text-muted-foreground">Auto-added with their default member when logging a new order for this group. Fixed joiners also get +2 raffle entries on this group&apos;s fancall orders they&apos;re in. Semi-fixed spots are managed per era below the members list.</p>
                 <div className="border border-border rounded-xl overflow-hidden divide-y divide-border">
                   {joinerUsers.length === 0 && <p className="text-sm text-muted-foreground p-3">No joiners found</p>}
                   {joinerUsers.map((u:any) => {

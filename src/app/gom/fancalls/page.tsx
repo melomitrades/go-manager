@@ -16,7 +16,7 @@ export default function GomFancallsPage() {
 
   // Raffle state
   const [raffleModal, setRaffleModal] = useState<any>(null)   // the fancall being raffled
-  const [raffleEntries, setRaffleEntries] = useState<{ joiner_id: string; display_name: string; entries: number }[]>([])
+  const [raffleEntries, setRaffleEntries] = useState<{ joiner_id: string; display_name: string; entries: number; base: number; bonus: number; bonus_type: 'fixed' | 'semi_fixed' | null }[]>([])
   const [raffleLoading, setRaffleLoading] = useState(false)
   const [raffleWinner, setRaffleWinner] = useState<{ joiner_id: string; display_name: string } | null>(null)
   const [raffleAnimation, setRaffleAnimation] = useState(false)
@@ -62,34 +62,11 @@ export default function GomFancallsPage() {
     setRaffleModal(fc)
     setRaffleWinner(null)
     setRaffleLoading(true)
-    // Fetch order items with entries_count per joiner
-    const data = await fetch(`/api/orders/${fc.order_id}`).then(r=>r.json()).catch(() => null)
-    if (!data?.joiners) { setRaffleLoading(false); return }
-
-    // Build weighted entry list: sum entries_count across all items per joiner
-    const joinerEntries: Record<string, { display_name: string; entries: number }> = {}
-    for (const jg of data.joiners) {
-      const totalEntries = jg.items.reduce((s: number, i: any) => s + (parseInt(i.entries_count) || 0), 0)
-      if (totalEntries > 0) {
-        const name = jg.joiner?.display_name || jg.joiner?.username || jg.joiner_id || 'Unknown'
-        joinerEntries[jg.joiner_id] = { display_name: name, entries: totalEntries }
-      }
-    }
-    // Fixed joiners get +2 entries on top of their normal entries (global setting).
-    // This applies regardless of whether they have any items logged on this specific order.
-    // Coerce is_fixed defensively (Postgres bool can arrive as boolean, string, or number depending on driver/path)
-    const isFixedUser = (u: any) => u.is_fixed === true || u.is_fixed === 'true' || u.is_fixed === 't' || u.is_fixed === 1 || u.is_fixed === '1'
-    for (const u of users) {
-      if (!isFixedUser(u)) continue
-      // Match joiner ids case-insensitively / trimmed, in case of UUID casing differences
-      const key = Object.keys(joinerEntries).find(k => String(k).trim().toLowerCase() === String(u.id).trim().toLowerCase())
-      if (key) {
-        joinerEntries[key].entries += 2
-      } else {
-        joinerEntries[u.id] = { display_name: u.display_name || u.username, entries: 2 }
-      }
-    }
-    setRaffleEntries(Object.entries(joinerEntries).map(([joiner_id, v]) => ({ joiner_id, ...v })))
+    // Bought entries (qty × entries per pricing option) + bonus, computed server-side:
+    //   +2 for fixed joiners of this order's group, +1 for semi-fixed spot holders in that group.
+    // Bonuses only go to joiners who have a claim in this order.
+    const data = await fetch(`/api/raffle-entries?order_id=${fc.order_id}`).then(r => r.json()).catch(() => [])
+    setRaffleEntries(Array.isArray(data) ? data : [])
     setRaffleLoading(false)
   }
 
@@ -226,6 +203,11 @@ export default function GomFancallsPage() {
                       <div key={e.joiner_id} className="flex items-center justify-between px-4 py-2.5">
                         <span className="text-sm font-semibold">{e.display_name}</span>
                         <div className="flex items-center gap-2">
+                          {e.bonus > 0 && (
+                            <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-full border ${e.bonus_type === 'fixed' ? 'bg-primary/10 text-primary border-primary/30' : 'bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-900/20 dark:text-violet-300 dark:border-violet-800'}`}>
+                              {e.base} + {e.bonus} {e.bonus_type === 'fixed' ? 'fixed' : 'semi-fixed'}
+                            </span>
+                          )}
                           <span className="text-xs font-bold text-primary">{e.entries}</span>
                           <span className="text-xs text-muted-foreground">entr{e.entries === 1 ? 'y' : 'ies'}</span>
                           <span className="text-xs text-muted-foreground">({Math.round(e.entries / totalEntries * 100)}%)</span>

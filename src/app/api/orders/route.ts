@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureWeightVariantsSchema } from '@/lib/weightVariants'
 import { ensureLostClaimsSchema } from '@/lib/lostClaims'
+import { ensureSemiFixedSchema, refreshSpots } from '@/lib/semiFixed'
 
 async function notifyJoiners(orderId: string, status: string, shopName: string | null) {
   const statusLabels: Record<string, string> = {
@@ -32,6 +33,8 @@ async function ensureOrderColumns() {
   // order_items.lost_claim_id (leftover rows from lost claims) is read by GET and protected by
   // PATCH below, so the column must exist before either runs.
   await ensureLostClaimsSchema()
+  // orders.era_id (semi-fixed rounds count orders per era)
+  await ensureSemiFixedSchema()
   // Idempotent backfill — belongs in the once-per-cold-start gate below, not run unconditionally
   // on every request (it used to fire outside the gate on every single GET/POST/PATCH).
   query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
@@ -99,11 +102,13 @@ export async function GET(req: NextRequest) {
       o.*,
       row_to_json(s) AS shop,
       row_to_json(g) AS "group",
+      era.name AS era_name,
       w.display_name AS raffle_winner_name,
       COALESCE(agg.items, '[]'::json) AS items
     FROM orders o
     LEFT JOIN shops s ON s.id = o.shop_id
     LEFT JOIN groups g ON g.id = o.group_id
+    LEFT JOIN eras era ON era.id = o.era_id
     LEFT JOIN fancalls f ON f.order_id = o.id
     LEFT JOIN profiles w ON w.id = f.raffle_winner_id
     LEFT JOIN (
@@ -144,13 +149,14 @@ export async function POST(req: NextRequest) {
   const user = session.user as any
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const { type, shop_id, group_id, round_number, is_fancall, is_vce_fansign, is_multi_version, version_names, version_options, status, notes, items, deadline, ordered_at, joiner_id: personal_joiner_id, preview_image_url, hide_leftovers, payment_info, albums_bought } = await req.json()
+  await ensureOrderColumns()
+  const { type, shop_id, group_id, round_number, is_fancall, is_vce_fansign, is_multi_version, version_names, version_options, status, notes, items, deadline, ordered_at, joiner_id: personal_joiner_id, preview_image_url, hide_leftovers, payment_info, albums_bought, era_id } = await req.json()
   const addy_country = ADDY_MAP[status] || null
 
   const order = await queryOne(
-    `INSERT INTO orders (type, shop_id, group_id, round_number, is_fancall, status, addy_country, notes, created_by, deadline, ordered_at, personal_joiner_id, preview_image_url, hide_leftovers, payment_info, is_vce_fansign, is_multi_version, version_names, version_options, albums_bought)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
-    [type, shop_id || null, group_id || null, round_number || null, is_fancall, status, addy_country, notes || null, user.id, deadline || null, ordered_at || null, personal_joiner_id || null, preview_image_url || null, hide_leftovers || false, payment_info || null, is_vce_fansign || false, is_multi_version || false, version_names ? JSON.stringify(version_names) : null, version_options ? JSON.stringify(version_options) : null, albums_bought != null ? JSON.stringify(albums_bought) : null]
+    `INSERT INTO orders (type, shop_id, group_id, round_number, is_fancall, status, addy_country, notes, created_by, deadline, ordered_at, personal_joiner_id, preview_image_url, hide_leftovers, payment_info, is_vce_fansign, is_multi_version, version_names, version_options, albums_bought, era_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
+    [type, shop_id || null, group_id || null, round_number || null, is_fancall, status, addy_country, notes || null, user.id, deadline || null, ordered_at || null, personal_joiner_id || null, preview_image_url || null, hide_leftovers || false, payment_info || null, is_vce_fansign || false, is_multi_version || false, version_names ? JSON.stringify(version_names) : null, version_options ? JSON.stringify(version_options) : null, albums_bought != null ? JSON.stringify(albums_bought) : null, (type === 'group' && era_id) ? era_id : null]
   )
   if (!order) return NextResponse.json({ error: 'Insert failed' }, { status: 500 })
 
@@ -168,6 +174,9 @@ export async function POST(req: NextRequest) {
   if (is_fancall && shop_id) {
     await query('INSERT INTO fancalls (order_id, shop_id) VALUES ($1,$2)', [order.id, shop_id])
   }
+
+  // A new order in an era may complete someone's semi-fixed round.
+  if (order.era_id) await refreshSpots({ eraId: order.era_id }).catch(() => {})
 
   return NextResponse.json(order, { status: 201 })
 }
@@ -213,6 +222,16 @@ export async function PATCH(req: NextRequest) {
      WHERE id=$14 RETURNING *`,
     [type || null, shop_id || null, group_id || null, round_number || null, is_fancall ?? null, status, addy_country, notes || null, deadline || null, ordered_at || null, personal_joiner_id || null, preview_image_url || null, hide_leftovers ?? false, id, payment_info || null, is_vce_fansign ?? null, is_multi_version ?? null, version_names ? JSON.stringify(version_names) : null, version_options ? JSON.stringify(version_options) : null, albums_bought != null ? JSON.stringify(albums_bought) : null]
   )
+
+  // era_id is only touched when the client sends it (status-only/partial PATCHes leave it alone).
+  // Changing an order's era or its claims can complete a semi-fixed round.
+  if ('era_id' in body && order) {
+    const prevEra = (order as any).era_id
+    const nextEra = type === 'personal' ? null : (body.era_id || null)
+    await query('UPDATE orders SET era_id=$1 WHERE id=$2', [nextEra, id])
+    ;(order as any).era_id = nextEra
+    if (prevEra && prevEra !== nextEra) await refreshSpots({ eraId: prevEra }).catch(() => {})
+  }
 
   if (is_fancall === true) {
     const existing = await queryOne('SELECT id FROM fancalls WHERE order_id=$1', [(order as any).id]).catch(() => null)
@@ -267,6 +286,8 @@ export async function PATCH(req: NextRequest) {
     const shopRow = await queryOne('SELECT s.name FROM shops s JOIN orders o ON o.shop_id=s.id WHERE o.id=$1', [id]).catch(() => null)
     await notifyJoiners(id, status, (shopRow as any)?.name || null)
   }
+
+  if ((order as any)?.era_id) await refreshSpots({ eraId: (order as any).era_id }).catch(() => {})
 
   return NextResponse.json(order)
 }

@@ -1,3 +1,23 @@
+# Fixed / semi-fixed spots + eras — what's in this zip
+
+No manual SQL needed. The app creates the `eras` and `semi_fixed_spots` tables and the `orders.era_id` column itself the first time they're used.
+
+**New files:** `src/lib/semiFixed.ts`, `src/app/api/eras/route.ts`, `src/app/api/semi-fixed/route.ts`,
+`src/app/api/raffle-entries/route.ts`, `src/components/shared/EraManager.tsx`
+
+**Edited:** `src/app/api/orders/route.ts` (era_id), `src/app/gom/orders/page.tsx` (Era picker, semi-fixed auto-add),
+`src/app/gom/settings/page.tsx` (Eras section per group), `src/app/gom/fancalls/page.tsx` (raffle bonus),
+`src/app/joiner/orders/page.tsx` (My semi-fixed spots + Renew)
+
+- **Eras** live in Settings → Groups & Members → expand a group. Each era has its own "events per round" and "days to renew". Use **End era** when the album cycle is over. Ending an era also ends its semi-fixed spots.
+- **Semi-fixed spots** are a joiner plus member(s) inside an era. An order in that era where the joiner has a claim counts as 1 event, however many claims are in it. Lost claims don't count.
+- When a round is complete, the joiner is notified and sees **Renew spot** in My Orders. Renewing resets the counter, and any extra events carry over. If they don't renew within the set days, they lose the spot. There's no background job: this is checked whenever Orders, Settings or My Orders is loaded, or when an order is saved.
+- **Auto-add:** on a new group order, the group's active era is pre-selected. Fixed joiners and the era's semi-fixed joiners are both added with their members.
+- **Raffle bonus:** +2 for fixed joiners of the order's group, +1 for semi-fixed spot holders of that group. The bonus only applies if they have a claim in the order. If someone is both, they get only the higher bonus (+2). The raffle list shows the breakdown, e.g. "4 + 2 fixed".
+- Fixed joiners are no longer added to every raffle with 2 entries. Before, they were added even when they weren't in the order and were fixed for a different group.
+
+---
+
 # PC Sorter redesign — what's in this zip
 
 Drop these files into your `go-manager` project at the same paths (they overwrite the

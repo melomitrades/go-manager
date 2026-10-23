@@ -55,7 +55,7 @@ export default function GomOrdersPage() {
   const [filterType, setFilterType] = useState('')
   const [search, setSearch] = useState('')
   const [orderType, setOrderType] = useState<OrderType>('group')
-  const [form, setForm] = useState({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered' as OrderStatus, notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'' })
+  const [form, setForm] = useState({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered' as OrderStatus, notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'' })
   const [albumsPerVersion, setAlbumsPerVersion] = useState<Record<string, string>>({})
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
   const [pricingOptions, setPricingOptions] = useState<PricingOption[]>([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
@@ -66,15 +66,22 @@ export default function GomOrdersPage() {
   const [saving, setSaving] = useState(false)
   const [joinerSearch, setJoinerSearch] = useState<Record<number,string>>({})
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
+  // Eras (per group) and active semi-fixed spots — semi-fixed joiners are auto-added like fixed ones
+  const [eras, setEras] = useState<any[]>([])
+  const [semiSpots, setSemiSpots] = useState<any[]>([])
 
   const fetchData = useCallback(async () => {
     setLoading(true)
-    const [ordersRes, shopsRes, groupsRes, joinersRes] = await Promise.all([
+    const [ordersRes, shopsRes, groupsRes, joinersRes, erasRes, spotsRes] = await Promise.all([
       fetch('/api/orders').then(r => r.json()),
       fetch('/api/shops').then(r => r.json()),
       fetch('/api/groups').then(r => r.json()),
       fetch('/api/users').then(r => r.json()),
+      fetch('/api/eras').then(r => r.json()).catch(() => []),
+      fetch('/api/semi-fixed').then(r => r.json()).catch(() => []),
     ])
+    setEras(Array.isArray(erasRes) ? erasRes : [])
+    setSemiSpots(Array.isArray(spotsRes) ? spotsRes : [])
     const STATUS_ORDER = ['to_be_ordered','ordered','at_k_addy','otw_to_gom','at_gom','at_c_addy','at_j_addy','otw_to_joiners','delivered','closed']
     const raw = Array.isArray(ordersRes) ? ordersRes : []
     const sorted = [...raw].sort((a: any,b: any) => (STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status)) || (new Date(b.created_at).getTime() - new Date(a.created_at).getTime()))
@@ -87,48 +94,54 @@ export default function GomOrdersPage() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  function handleGroupSelect(groupId: string) {
-    setForm(f => ({ ...f, group_id: groupId }))
-    const g = groups.find(gr => gr.id === groupId) || null
-    setSelectedGroup(g)
-    // Auto-add fixed joiners with their default members for new orders
-    if (!editingOrder && g) {
-      try {
-        const fixed: { joiner_id: string; member_ids?: string[]; member_id?: string }[] =
-          JSON.parse((g as any).fixed_joiners || '[]')
-        if (fixed.length > 0) {
-          setJoinerRows(fixed.map(f => {
-            const memberIds = f.member_ids || (f.member_id ? [f.member_id] : [])
-            if (form.is_multi_version && versionSections.length > 0) {
-              return {
-                joiner_id: f.joiner_id,
-                items: versionSections.map(v => ({ ...newItemLine(v.options[0]?.id || ''), member_ids: memberIds, qty: memberIds.length || 1 }))
-              }
-            } else if (form.is_vce_fansign) {
-              return {
-                joiner_id: f.joiner_id,
-                items: [
-                  { ...newItemLine(vceOptions[0]?.id || ''), member_ids: memberIds, qty: memberIds.length || 1 },
-                  { ...newItemLine(fansignOptions[0]?.id || ''), member_ids: memberIds, qty: memberIds.length || 1 },
-                ]
-              }
-            }
-            return {
-              joiner_id: f.joiner_id,
-              items: [{ ...newItemLine(pricingOptions[0]?.id || ''), member_ids: memberIds, qty: memberIds.length || 1 }]
-            }
-          }))
-          return
-        }
-      } catch {}
+  // Joiners auto-added to a new order: the group's fixed joiners + everyone holding an active
+  // semi-fixed spot in the chosen era. Someone who's both gets one row with both member sets.
+  function buildAutoRows(g: Group | null, eraId: string): JoinerRow[] {
+    if (!g) return []
+    const byJoiner = new Map<string, string[]>()
+    const add = (joinerId: string, memberIds: string[]) => {
+      const prev = byJoiner.get(joinerId) || []
+      byJoiner.set(joinerId, Array.from(new Set([...prev, ...memberIds])))
     }
-    setJoinerRows([])
+    try {
+      const fixed: { joiner_id: string; member_ids?: string[]; member_id?: string }[] = JSON.parse((g as any).fixed_joiners || '[]')
+      for (const f of fixed) add(f.joiner_id, f.member_ids || (f.member_id ? [f.member_id] : []))
+    } catch {}
+    if (eraId) for (const s of semiSpots) if (s.era_id === eraId && s.status === 'active') add(s.joiner_id, s.member_ids || [])
+    return Array.from(byJoiner.entries()).map(([joiner_id, memberIds]) => {
+      const qty = memberIds.length || 1
+      if (form.is_multi_version && versionSections.length > 0) {
+        return { joiner_id, items: versionSections.map(v => ({ ...newItemLine(v.options[0]?.id || ''), member_ids: memberIds, qty })) }
+      } else if (form.is_vce_fansign) {
+        return { joiner_id, items: [
+          { ...newItemLine(vceOptions[0]?.id || ''), member_ids: memberIds, qty },
+          { ...newItemLine(fansignOptions[0]?.id || ''), member_ids: memberIds, qty },
+        ] }
+      }
+      return { joiner_id, items: [{ ...newItemLine(pricingOptions[0]?.id || ''), member_ids: memberIds, qty }] }
+    })
+  }
+
+  function handleGroupSelect(groupId: string) {
+    const g = groups.find(gr => gr.id === groupId) || null
+    // Default to the group's current (active) era
+    const activeEra = eras.find(e => String(e.group_id) === String(groupId) && e.status === 'active')
+    const eraId = activeEra?.id || ''
+    setForm(f => ({ ...f, group_id: groupId, era_id: eraId }))
+    setSelectedGroup(g)
+    if (!editingOrder) setJoinerRows(buildAutoRows(g, eraId))
+  }
+
+  function handleEraSelect(eraId: string) {
+    setForm(f => ({ ...f, era_id: eraId }))
+    // On a new order, switching era swaps in that era's semi-fixed joiners
+    if (!editingOrder) setJoinerRows(buildAutoRows(selectedGroup, eraId))
   }
 
   function openNew() {
     setEditingOrder(null)
     setOrderType('group')
-    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'' }); setAlbumsPerVersion({})
+    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'' }); setAlbumsPerVersion({})
     setSelectedGroup(null)
     setPricingOptions([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
     setVceOptions([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
@@ -167,6 +180,7 @@ export default function GomOrdersPage() {
       is_multi_version: !!(order as any).is_multi_version,
       payment_info: (order as any).payment_info || '',
       albums_bought: (order as any).albums_bought != null && typeof (order as any).albums_bought !== 'object' ? String((order as any).albums_bought) : '',
+      era_id: (order as any).era_id || '',
     })
     // If albums_bought is a per-version object, restore it
     if ((order as any).albums_bought && typeof (order as any).albums_bought === 'object') {
@@ -465,6 +479,7 @@ export default function GomOrdersPage() {
       group_id:orderType==='group'?(form.group_id||null):null,
       joiner_id:orderType==='personal'?(form.group_id||null):null,
       round_number:form.round_number||null,
+      era_id: orderType==='group' ? (form.era_id||null) : null,
       is_fancall:form.is_fancall, is_vce_fansign:form.is_vce_fansign, is_multi_version:form.is_multi_version, version_names: form.is_multi_version ? versionSections.map(v=>v.name) : null, version_options: form.is_multi_version ? versionSections.map(v=>({name:v.name, options:v.options})) : null, status:form.status, notes:form.notes||null,
       deadline: form.deadline || null,
       ordered_at: form.ordered_at || null,
@@ -505,7 +520,7 @@ export default function GomOrdersPage() {
 
   function resetModal() {
     setModalOpen(false); setEditingOrder(null); setOrderType('group')
-    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'' }); setAlbumsPerVersion({})
+    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'' }); setAlbumsPerVersion({})
     setSelectedGroup(null); setPricingOptions([{ id:uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }]); setJoinerRows([])
   }
 
@@ -562,7 +577,7 @@ export default function GomOrdersPage() {
                   : (order.group as any)?.name || '—'
                 }
               </Td>
-              <Td className="text-muted-foreground">{order.round_number||'—'}</Td>
+              <Td className="text-muted-foreground">{order.round_number||'—'}{(order as any).era_name && <span className="block text-[11px] text-muted-foreground/70">{(order as any).era_name}</span>}</Td>
               <Td onClick={e => e.stopPropagation()}>
                 <select value={order.status} onChange={async e => { await fetch('/api/orders',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:order.id,status:e.target.value})}); fetchData() }} className="text-xs border border-border rounded-lg px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 cursor-pointer">
                   {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
@@ -639,6 +654,23 @@ export default function GomOrdersPage() {
               <FormField label="Group"><Select options={groups.map(g=>({value:g.id,label:g.name}))} placeholder="Select group…" value={form.group_id} onChange={e=>handleGroupSelect(e.target.value)}/></FormField>
               <FormField label="Round"><Input type="text" placeholder="e.g. 1 or POB" value={form.round_number} onChange={e=>setForm(f=>({...f,round_number:e.target.value}))}/></FormField>
             </div>
+            {form.group_id && (() => {
+              const groupEras = eras.filter(e => String(e.group_id) === String(form.group_id))
+              return (
+                <FormField label="Era">
+                  {groupEras.length === 0 ? (
+                    <p className="text-xs text-muted-foreground px-1 py-2">No eras for this group yet — create one in Settings → Groups &amp; Members.</p>
+                  ) : (
+                    <Select
+                      options={groupEras.map(e => ({ value: e.id, label: e.status === 'active' ? e.name : `${e.name} (ended)` }))}
+                      placeholder="No era"
+                      value={form.era_id}
+                      onChange={e => handleEraSelect(e.target.value)}
+                    />
+                  )}
+                </FormField>
+              )
+            })()}
             <Checkbox id="is_fancall" label="This order is a fancall" checked={form.is_fancall} onChange={e=>setForm(f=>({...f,is_fancall:e.target.checked}))}/>
             <Checkbox id="is_vce_fansign" label="VCE/Fansign combined" checked={form.is_vce_fansign} onChange={e=>setForm(f=>({...f,is_vce_fansign:e.target.checked}))}/>
             <Checkbox id="is_multi_version" label="Multi-version album" checked={form.is_multi_version} onChange={e=>{
