@@ -9,6 +9,7 @@ import {
 import { formatDate } from '@/lib/utils'
 import { OrderDetail } from '@/components/shared/OrderDetail'
 import { WeightVariantPicker } from '@/components/shared/WeightVariantPicker'
+import { GomPaidPrompt, type PromptOrder } from '@/components/shared/GomPaidModal'
 import type { Order, Shop, Group, Member, Profile, OrderStatus, OrderType } from '@/types'
 import { ORDER_STATUS_LABELS } from '@/types'
 
@@ -69,9 +70,16 @@ export default function GomOrdersPage() {
   // Eras (per group) and active semi-fixed spots — semi-fixed joiners are auto-added like fixed ones
   const [eras, setEras] = useState<any[]>([])
   const [semiSpots, setSemiSpots] = useState<any[]>([])
+  // Multi-select for bulk status changes, and the "amount paid" prompt shown when orders become Ordered
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkStatus, setBulkStatus] = useState('')
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [paidPrompt, setPaidPrompt] = useState<PromptOrder[]>([])
+  const [toast, setToast] = useState('')
 
-  const fetchData = useCallback(async () => {
-    setLoading(true)
+  // silent = refresh in the background without the full-page spinner
+  const fetchData = useCallback(async (silent: boolean = false) => {
+    if (!silent) setLoading(true)
     const [ordersRes, shopsRes, groupsRes, joinersRes, erasRes, spotsRes] = await Promise.all([
       fetch('/api/orders').then(r => r.json()),
       fetch('/api/shops').then(r => r.json()),
@@ -93,6 +101,53 @@ export default function GomOrdersPage() {
   }, [])
 
   useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 4000); return () => clearTimeout(t) }, [toast])
+
+  function promptLabel(o: any): PromptOrder {
+    const who = o.type === 'personal'
+      ? (() => { const j = joiners.find(jj => jj.id === o.personal_joiner_id); return j ? `→ ${j.display_name || j.username}` : 'Personal' })()
+      : (o.group?.name || null)
+    return { id: o.id, label: [o.shop?.name || 'No shop', o.round_number ? (/^\d+$/.test(String(o.round_number)) ? `R${o.round_number}` : String(o.round_number)) : null].filter(Boolean).join(' · '), sublabel: [who, o.era_name].filter(Boolean).join(' · '), already_eur: o.gom_paid_eur != null ? parseFloat(o.gom_paid_eur) : null }
+  }
+
+  // Change the status of one or several orders in place — no reload. Orders that just became
+  // "Ordered" and have no amount paid yet open the amount prompt.
+  async function changeStatus(ids: string[], status: string) {
+    if (!ids.length || !status) return
+    const before = new Map(orders.map(o => [o.id, o]))
+    setOrders(prev => prev.map(o => ids.includes(o.id) ? { ...o, status: status as OrderStatus } : o))
+    const res = await fetch('/api/orders', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ids.length === 1 ? { id: ids[0], status } : { ids, status }) }).catch(() => null)
+    if (!res || !res.ok) {
+      setOrders(prev => prev.map(o => before.has(o.id) && ids.includes(o.id) ? before.get(o.id)! : o))
+      setToast('Could not change the status — nothing was saved')
+      return
+    }
+    const data = await res.json().catch(() => null)
+    const updated: any[] = ids.length === 1 ? (data ? [data] : []) : (data?.updated || [])
+    if (updated.length) {
+      const byId = new Map(updated.map(u => [u.id, u]))
+      setOrders(prev => prev.map(o => byId.has(o.id) ? { ...o, status: byId.get(o.id).status, ordered_at: byId.get(o.id).ordered_at ?? o.ordered_at, addy_country: byId.get(o.id).addy_country } : o))
+    }
+    if (ids.length > 1) setToast(`${ids.length} orders set to ${ORDER_STATUS_LABELS[status as OrderStatus] || status}`)
+    if (status === 'ordered') {
+      const need = ids.map(id => before.get(id)).filter((o: any) => o && !o.gom_payments_legacy && o.status !== 'ordered' && !(o.gom_paid_lines > 0))
+      if (need.length) setPaidPrompt(need.map(promptLabel))
+    }
+  }
+
+  async function applyBulk() {
+    const ids = filteredOrders.filter(o => selected.has(o.id)).map(o => o.id)
+    if (!ids.length || !bulkStatus) return
+    setBulkBusy(true)
+    await changeStatus(ids, bulkStatus)
+    setBulkBusy(false); setSelected(new Set()); setBulkStatus('')
+  }
+  function toggleSelect(id: string) {
+    setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+  // Legacy orders (already Ordered when the new payments went live) are never tracked
+  const missingPaid = (o: any) => !o.gom_payments_legacy && o.status !== 'to_be_ordered' && !(o.gom_paid_lines > 0)
 
   // Joiners auto-added to a new order: the group's fixed joiners + everyone holding an active
   // semi-fixed spot in the chosen era. Someone who's both gets one row with both member sets.
@@ -505,19 +560,27 @@ export default function GomOrdersPage() {
       items:itemsPayload,
     }
 
+    let saved: any = null
     if (editingOrder) {
-      await fetch('/api/orders', { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...body, id:editingOrder.id}) })
+      saved = await fetch('/api/orders', { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...body, id:editingOrder.id}) }).then(r => r.ok ? r.json() : null).catch(() => null)
     } else {
-      await fetch('/api/orders', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })
+      saved = await fetch('/api/orders', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r => r.ok ? r.json() : null).catch(() => null)
+    }
+    // Became "Ordered" with this save → ask for the amount paid (unless already entered)
+    const wasOrdered = editingOrder?.status === 'ordered'
+    const hasPaid = ((editingOrder as any)?.gom_paid_lines || 0) > 0
+    if (saved?.id && form.status === 'ordered' && !wasOrdered && !hasPaid && !saved.gom_payments_legacy) {
+      setPaidPrompt([promptLabel({ ...saved, shop: shops.find(sh => sh.id === saved.shop_id), group: groups.find(g => g.id === saved.group_id), era_name: eras.find(e => e.id === saved.era_id)?.name, gom_paid_eur: (editingOrder as any)?.gom_paid_eur })])
     }
 
-    resetModal(); fetchData(); setSaving(false)
+    resetModal(); fetchData(true); setSaving(false)
   }
 
   async function handleDelete(id: string) {
     if (!confirm('Delete this order and all its items?')) return
+    setOrders(prev => prev.filter(o => o.id !== id))
     await fetch('/api/orders', { method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id }) })
-    fetchData()
+    fetchData(true)
   }
 
   function resetModal() {
@@ -564,13 +627,17 @@ export default function GomOrdersPage() {
         : <>
           <div className="flex items-center justify-between mb-3">
             <div className="flex gap-2">
-              <button onClick={()=>setShowArchive(false)} className={`px-4 py-2 text-sm font-semibold rounded-xl border transition-all ${!showArchive?'bg-primary text-primary-foreground border-primary shadow-rose-sm':'bg-card text-muted-foreground border-border hover:border-primary/30'}`}>Active ({activeOrders.length})</button>
-              <button onClick={()=>setShowArchive(true)} className={`px-4 py-2 text-sm font-semibold rounded-xl border transition-all ${showArchive?'bg-primary text-primary-foreground border-primary shadow-rose-sm':'bg-card text-muted-foreground border-border hover:border-primary/30'}`}>Archive ({archivedOrders.length})</button>
+              <button onClick={()=>{setShowArchive(false);setSelected(new Set())}} className={`px-4 py-2 text-sm font-semibold rounded-xl border transition-all ${!showArchive?'bg-primary text-primary-foreground border-primary shadow-rose-sm':'bg-card text-muted-foreground border-border hover:border-primary/30'}`}>Active ({activeOrders.length})</button>
+              <button onClick={()=>{setShowArchive(true);setSelected(new Set())}} className={`px-4 py-2 text-sm font-semibold rounded-xl border transition-all ${showArchive?'bg-primary text-primary-foreground border-primary shadow-rose-sm':'bg-card text-muted-foreground border-border hover:border-primary/30'}`}>Archive ({archivedOrders.length})</button>
             </div>
           </div>
-        <div className="hidden sm:block"><Card><Table><thead><tr><Th>Type</Th><Th>Shop</Th><Th>Group</Th><Th>Round</Th><Th>Status</Th><Th>Fancall</Th><Th>Deadline</Th><Th>Date</Th><Th></Th></tr></thead>
+        <div className="hidden sm:block"><Card><Table><thead><tr><Th className="w-10 pr-0"><input type="checkbox" aria-label="Select all" className="w-4 h-4 accent-primary cursor-pointer align-middle"
+            checked={filteredOrders.length > 0 && filteredOrders.every(o => selected.has(o.id))}
+            ref={el => { if (el) el.indeterminate = filteredOrders.some(o => selected.has(o.id)) && !filteredOrders.every(o => selected.has(o.id)) }}
+            onChange={e => setSelected(e.target.checked ? new Set(filteredOrders.map(o => o.id)) : new Set())}/></Th><Th>Type</Th><Th>Shop</Th><Th>Group</Th><Th>Round</Th><Th>Status</Th><Th>Fancall</Th><Th>Deadline</Th><Th>Date</Th><Th></Th></tr></thead>
           <tbody>{filteredOrders.map(order => (
-            <Tr key={order.id} onClick={() => setSelectedOrderId(order.id)} className="cursor-pointer">
+            <Tr key={order.id} onClick={() => setSelectedOrderId(order.id)} className={`cursor-pointer ${selected.has(order.id) ? 'bg-primary/[0.05]' : ''}`}>
+              <Td className="w-10 pr-0" onClick={e => e.stopPropagation()}><input type="checkbox" aria-label="Select order" className="w-4 h-4 accent-primary cursor-pointer align-middle" checked={selected.has(order.id)} onChange={() => toggleSelect(order.id)}/></Td>
               <Td><Badge className="capitalize bg-secondary text-secondary-foreground">{order.type}</Badge></Td>
               <Td className="font-semibold">{order.shop?.name||'—'}</Td>
               <Td className="text-muted-foreground">
@@ -581,9 +648,10 @@ export default function GomOrdersPage() {
               </Td>
               <Td className="text-muted-foreground">{order.round_number||'—'}{(order as any).era_name && <span className="block text-[11px] text-muted-foreground/70">{(order as any).era_name}{(order as any).exclude_from_semi_fixed ? ' · not counted' : ''}</span>}</Td>
               <Td onClick={e => e.stopPropagation()}>
-                <select value={order.status} onChange={async e => { await fetch('/api/orders',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:order.id,status:e.target.value})}); fetchData() }} className="text-xs border border-border rounded-lg px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 cursor-pointer">
+                <select value={order.status} onChange={e => changeStatus([order.id], e.target.value)} className="text-xs border border-border rounded-lg px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 cursor-pointer">
                   {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>
+                {missingPaid(order) && <button onClick={() => setPaidPrompt([promptLabel(order)])} title="Amount paid not entered yet" className="block mt-1 text-[11px] font-semibold text-amber-600 hover:underline">€ paid missing</button>}
               </Td>
               <Td>{order.is_fancall?<Badge className="bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/20 dark:text-rose-300">Fancall</Badge>:<span className="text-muted-foreground/40 text-xs">—</span>}</Td>
               <Td className="text-xs text-muted-foreground">{order.deadline ? <span className={new Date(order.deadline) < new Date() ? 'text-destructive font-semibold' : ''}>{formatDate(order.deadline)}</span> : '—'}</Td>
@@ -600,9 +668,10 @@ export default function GomOrdersPage() {
           {/* Mobile card list */}
           <div className="sm:hidden space-y-3 px-4 py-4">
             {filteredOrders.map(order => (
-              <div key={order.id} className="bg-card border border-border rounded-2xl overflow-hidden">
+              <div key={order.id} className={`bg-card border rounded-2xl overflow-hidden ${selected.has(order.id) ? 'border-primary ring-1 ring-primary/30' : 'border-border'}`}>
                 <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3" onClick={() => setSelectedOrderId(order.id)}>
-                  <div className="min-w-0">
+                  <input type="checkbox" aria-label="Select order" className="w-5 h-5 mt-0.5 accent-primary flex-shrink-0" checked={selected.has(order.id)} onClick={e => e.stopPropagation()} onChange={() => toggleSelect(order.id)}/>
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">{order.type}</span>
                       {order.is_fancall && <span className="text-xs font-bold text-amber-600">⭐ Fancall</span>}
@@ -624,9 +693,10 @@ export default function GomOrdersPage() {
                   </div>
                 )}
                 <div className="px-4 pb-3">
-                  <select value={order.status} onChange={async e => { await fetch('/api/orders',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:order.id,status:e.target.value})}); fetchData() }} onClick={e=>e.stopPropagation()} className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 w-full">
+                  <select value={order.status} onChange={e => changeStatus([order.id], e.target.value)} onClick={e=>e.stopPropagation()} className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 w-full">
                     {STATUS_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
+                  {missingPaid(order) && <button onClick={() => setPaidPrompt([promptLabel(order)])} className="mt-1.5 text-xs font-semibold text-amber-600">€ amount paid missing — enter it</button>}
                 </div>
               </div>
             ))}
@@ -634,6 +704,24 @@ export default function GomOrdersPage() {
         </>
         }
       </div>
+
+      {/* Bulk action bar */}
+      {filteredOrders.filter(o => selected.has(o.id)).length > 0 && (
+        <div className="fixed md:sticky left-0 right-0 bottom-16 md:bottom-0 z-[45] border-t border-border bg-card/95 backdrop-blur-sm px-4 sm:px-6 py-3 flex flex-wrap items-center gap-3 shadow-[0_-4px_16px_rgba(0,0,0,0.06)]">
+          <span className="text-sm font-semibold">{filteredOrders.filter(o => selected.has(o.id)).length} selected</span>
+          <select value={bulkStatus} onChange={e => setBulkStatus(e.target.value)} className="text-sm border border-border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30">
+            <option value="">Set status to…</option>
+            {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+          <Button size="sm" onClick={applyBulk} disabled={!bulkStatus || bulkBusy}>{bulkBusy ? 'Applying…' : 'Apply'}</Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear selection</Button>
+        </div>
+      )}
+
+      <GomPaidPrompt open={paidPrompt.length > 0} orders={paidPrompt} onClose={() => setPaidPrompt([])}
+        onSaved={ids => { setToast(ids.length > 1 ? `Amount paid saved for ${ids.length} orders` : 'Amount paid saved'); setOrders(prev => prev.map(o => ids.includes(o.id) ? { ...o, gom_paid_lines: ((o as any).gom_paid_lines || 0) + 1 } as any : o)); fetchData(true) }}/>
+
+      {toast && <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] bg-foreground text-background text-sm font-medium px-4 py-2 rounded-xl shadow-lg">{toast}</div>}
 
       {/* Modal */}
       <Modal open={modalOpen} onClose={resetModal} title={editingOrder ? 'Edit Order' : 'New Order'} subtitle={editingOrder ? `Editing ${editingOrder.shop?.name || ''}` : undefined} size="xl">

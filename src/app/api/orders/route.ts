@@ -5,6 +5,8 @@ import { query, queryOne } from '@/lib/db'
 import { ensureWeightVariantsSchema } from '@/lib/weightVariants'
 import { ensureLostClaimsSchema } from '@/lib/lostClaims'
 import { ensureSemiFixedSchema, refreshSpots } from '@/lib/semiFixed'
+import { ensureGomPaymentsSchema } from '@/lib/gomPayments'
+import { setOrderStatus } from '@/lib/orderStatus'
 
 async function notifyJoiners(orderId: string, status: string, shopName: string | null) {
   const statusLabels: Record<string, string> = {
@@ -35,6 +37,8 @@ async function ensureOrderColumns() {
   await ensureLostClaimsSchema()
   // orders.era_id (semi-fixed rounds count orders per era)
   await ensureSemiFixedSchema()
+  // gom_order_payments (amount the GOM paid per order) — summed into the list below
+  await ensureGomPaymentsSchema()
   // Idempotent backfill — belongs in the once-per-cold-start gate below, not run unconditionally
   // on every request (it used to fire outside the gate on every single GET/POST/PATCH).
   query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
@@ -104,7 +108,9 @@ export async function GET(req: NextRequest) {
       row_to_json(g) AS "group",
       era.name AS era_name,
       w.display_name AS raffle_winner_name,
-      COALESCE(agg.items, '[]'::json) AS items
+      COALESCE(agg.items, '[]'::json) AS items,
+      gp.paid_eur AS gom_paid_eur,
+      COALESCE(gp.lines, 0) AS gom_paid_lines
     FROM orders o
     LEFT JOIN shops s ON s.id = o.shop_id
     LEFT JOIN groups g ON g.id = o.group_id
@@ -116,6 +122,10 @@ export async function GET(req: NextRequest) {
       FROM order_items oi
       GROUP BY order_id
     ) agg ON agg.order_id = o.id
+    LEFT JOIN (
+      SELECT order_id, SUM(amount_eur) AS paid_eur, COUNT(*)::int AS lines
+      FROM gom_order_payments GROUP BY order_id
+    ) gp ON gp.order_id = o.id::text
     WHERE 1=1
   `
   const params: any[] = []
@@ -200,16 +210,19 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
+  // Bulk status change from the Orders list: { ids: [...], status }
+  if (Array.isArray(body.ids) && status) {
+    const updated: any[] = []
+    for (const oid of body.ids) {
+      const o = await setOrderStatus(String(oid), status)
+      if (o) updated.push(o)
+    }
+    return NextResponse.json({ updated })
+  }
+
   const isStatusOnly = status && !type && !shop_id && items === undefined && deadline === undefined && ordered_at === undefined && !notes
   if (isStatusOnly) {
-    const order = await queryOne(`UPDATE orders SET status=$1, addy_country=$2, updated_at=now() WHERE id=$3 RETURNING *`, [status, addy_country, id])
-    const shopRow = order ? await queryOne('SELECT s.name FROM shops s JOIN orders o ON o.shop_id=s.id WHERE o.id=$1', [id]).catch(() => null) : null
-    await notifyJoiners(id, status, (shopRow as any)?.name || null)
-    if (addy_country && ['KR','CN','JP'].includes(addy_country)) {
-      await query(`ALTER TABLE addy_items ADD COLUMN IF NOT EXISTS picture_url TEXT`).catch(() => {})
-      const exists = await queryOne('SELECT id FROM addy_items WHERE order_id=$1 AND country=$2', [id, addy_country])
-      if (!exists) await query(`INSERT INTO addy_items (country, order_id, arrived_at) VALUES ($1,$2,now())`, [addy_country, id])
-    }
+    const order = await setOrderStatus(id, status)
     return NextResponse.json(order)
   }
 
@@ -302,6 +315,8 @@ export async function DELETE(req: NextRequest) {
   const user = session.user as any
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   const { id } = await req.json()
+  await ensureOrderColumns()
+  await query('DELETE FROM gom_order_payments WHERE order_id=$1', [String(id)]).catch(() => {})
   await query('DELETE FROM orders WHERE id=$1', [id])
   return NextResponse.json({ ok: true })
 }

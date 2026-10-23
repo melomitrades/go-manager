@@ -1,3 +1,71 @@
+# GOM payments rework + bulk order status + box received — 2026-10-23
+
+No manual SQL needed: everything self-migrates on first use.
+
+**New files:** `src/lib/gomPayments.ts`, `src/lib/orderStatus.ts`, `src/app/api/gom-payments/route.ts`,
+`src/components/shared/GomPaidModal.tsx`, `src/components/shared/GomCoverage.tsx`
+
+**Edited:** `src/app/gom/payments/page.tsx`, `src/app/gom/orders/page.tsx`, `src/app/gom/boxes/page.tsx`,
+`src/app/api/orders/route.ts`, `src/app/api/boxes/route.ts`, `src/app/api/boxes/[id]/route.ts`,
+`src/app/api/payments/route.ts`, `src/app/api/stats/route.ts`
+
+## Cut-over: only orders not yet ordered use the new system
+On first start, every order that is already **Ordered or further** (incl. Closed) is marked as legacy
+(`orders.gom_payments_legacy = true`). Legacy orders never show in the GOM Payments tab, never show "€ paid missing"
+and never trigger the amount prompt — their old payments stay in the Archive. Orders still **To be ordered** at that
+moment, and every new order, use the new system. This runs exactly once (only when the column is first created), so
+later status changes never make an order legacy.
+
+## Payments
+- **Archive.** Every entry of the old GOM payments log (`payments` table + `covering_log`) is now the read-only
+  **Archive** tab. Nothing is deleted, and `/api/payments` refuses new writes (410).
+- **GOM Payments tab = coverage per order.** It lists every order that's at least **Ordered**, organised
+  **Group → Era → orders** (eras collapsible; active era first, "No era" last; personal orders and orders with no
+  group go under **Other / personal**). Subtotals are shown per group and per era, with grand totals on top.
+  - *Received* = order payments of joiners that you validated, plus money already paid for claims later marked
+    lost. Proofs that were sent but not yet validated show separately as *pending*. EMS, customs and shipping are
+    not included.
+  - *Paid* = the sum of the order's payment lines. An order can have several (deposit + balance, shop + proxy…),
+    each with an amount, paid to (shop / K-addy / proxy / seller / other), a date and a note.
+  - *Covered* = received − paid. Green if ≥ 0, red if short. Orders with no amount entered show "Enter amount"
+    and aren't counted in Covered, so they can't look falsely covered. The "Missing amount paid" card filters to them.
+  - Amounts can be typed in € or in ₩ with a "1 € = … ₩" rate. € is what the maths uses, and ₩ + rate are kept and
+    shown. The last rate is remembered per browser.
+- New table `gom_order_payments`. Lines of a deleted order are removed with it. Admin stats count archived + new.
+
+## Old orders stay on the old system (cut-over)
+- **Every order created before 22 Oct 2026** stays on the old system, whatever its status. Its GOM payments are the
+  ones in the Archive, it doesn't appear on the GOM Payments tab, it never shows "€ paid missing" and never asks for
+  an amount paid, even when its status changes later. Payment lines can't be added to it.
+- Orders created from 22 Oct 2026 use the new system.
+- New column `orders.gom_payments_legacy`, set from the creation date when the app starts.
+
+## Orders
+- **Status changes no longer reload the page.** The row updates in place, and it rolls back with a message if
+  saving fails. Saving/deleting an order refreshes in the background without the full-page spinner.
+- **Multi-select.** There's a checkbox per order (and "select all" in the header). A bar appears with
+  "Set status to… / Apply". It only acts on selected orders that are visible with the current filters.
+- **Amount paid prompt.** When orders become **Ordered** (inline, in bulk, or via the edit form), a pop-up asks
+  for the amount paid, with one row per order. Leave a field empty or click "Skip — fill in later". Orders that
+  already have an amount aren't asked again. Orders past "To be ordered" with no amount show "€ paid missing",
+  which opens the same pop-up.
+- Becoming Ordered fills `ordered_at` if it was empty. Joiners are now notified only when the status actually
+  changes (a bulk change that includes orders already at that status won't re-notify them).
+- API: `PATCH /api/orders { ids: [...], status }` for bulk changes.
+
+## Boxes
+- **Mark received / Undo received** button per box (new `boxes.received_at`), with a "Received <date>" badge.
+- Marking a box received moves every order in it to **At GOM**, but only once **all** boxes that order is in are
+  received, and only forward: orders already At GOM or Closed are left alone. A line under the box says what
+  happened, e.g. "1 order moved to At GOM · 1 waiting for another box". Order chips on the box show their status.
+- Linking an order to a box that's already received moves it too (same rules).
+- Undo only clears the flag. Orders keep their status.
+
+Verified on Postgres 16 with the app's own routes (coverage maths incl. pending, multi-line, ₩ conversion,
+bulk status, box received with shared boxes / forward-only / undo) and in the browser (desktop + mobile).
+
+---
+
 # Fixed / semi-fixed spots + eras — what's in this zip
 
 No manual SQL needed. The app creates the `eras` and `semi_fixed_spots` tables and the `orders.era_id` column itself the first time they're used.

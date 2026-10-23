@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Box, Pencil, ChevronDown, ChevronUp, Check, X, Trash2, PackageX } from 'lucide-react'
+import { Plus, Box, Pencil, ChevronDown, ChevronUp, Check, X, Trash2, PackageX, PackageCheck, Undo2 } from 'lucide-react'
 import { Button, Card, CardHeader, CardContent, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
-import { formatEur, formatKrw } from '@/lib/utils'
+import { formatEur, formatKrw, formatDate } from '@/lib/utils'
+import { ORDER_STATUS_LABELS } from '@/types'
 import { MarkLostModal } from '@/components/shared/MarkLostModal'
 
 const ITEM_TYPES = [
@@ -67,9 +68,12 @@ export default function GomBoxesPage() {
     { id: uid(), item_type: 'photocard', custom_label: '', weight_g: '' }
   ])
   const [saving, setSaving] = useState(false)
+  // "Mark received": which box is being saved, and the result line shown under each box
+  const [receivingId, setReceivingId] = useState<string | null>(null)
+  const [receivedNotice, setReceivedNotice] = useState<Record<string, string>>({})
 
-  const fetchData = useCallback(async () => {
-    setLoading(true)
+  const fetchData = useCallback(async (silent: boolean = false) => {
+    if (!silent) setLoading(true)
     const [b, o] = await Promise.all([
       fetch('/api/boxes').then(r => r.json()),
       fetch('/api/orders').then(r => r.json()),
@@ -112,6 +116,33 @@ export default function GomBoxesPage() {
         ),
       },
     }))
+  }
+
+  // Box received → its orders move to At GOM once all of their boxes are received (forward only).
+  // Undo only clears the flag; orders keep their status.
+  async function toggleReceived(box: any) {
+    const received = !box.received_at
+    setReceivingId(box.id)
+    const res = await fetch(`/api/boxes/${box.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'received', received }),
+    }).then(r => r.ok ? r.json() : null).catch(() => null)
+    setReceivingId(null)
+    if (!res) { setReceivedNotice(p => ({ ...p, [box.id]: 'Could not save — try again' })); return }
+    const moved: string[] = res.moved || []
+    setBoxes(prev => prev.map(b => b.id !== box.id ? b : {
+      ...b, received_at: res.received_at,
+      linked_orders: (b.linked_orders || []).map((o: any) => moved.includes(String(o.order_id || o.id)) ? { ...o, status: 'at_gom' } : o),
+    }))
+    // Other boxes sharing a moved order show the new status too
+    if (moved.length) setBoxes(prev => prev.map(b => ({ ...b, linked_orders: (b.linked_orders || []).map((o: any) => moved.includes(String(o.order_id || o.id)) ? { ...o, status: 'at_gom' } : o) })))
+    const parts: string[] = []
+    if (received) {
+      parts.push(moved.length ? `${moved.length} order${moved.length > 1 ? 's' : ''} moved to At GOM` : 'No orders moved')
+      if (res.waiting?.length) parts.push(`${res.waiting.length} waiting for another box`)
+      if (res.already?.length) parts.push(`${res.already.length} already At GOM or later`)
+    } else parts.push('Marked as not received — order statuses unchanged')
+    setReceivedNotice(p => ({ ...p, [box.id]: parts.join(' · ') }))
   }
 
   function openNew() {
@@ -166,7 +197,7 @@ export default function GomBoxesPage() {
     } else {
       await fetch('/api/boxes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     }
-    setModalOpen(false); setEditingBox(null); fetchData(); setSaving(false)
+    setModalOpen(false); setEditingBox(null); fetchData(true); setSaving(false)
   }
 
   async function handleDelete(boxId: string) {
@@ -174,7 +205,7 @@ export default function GomBoxesPage() {
     await fetch('/api/boxes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: boxId }) })
     if (expandedBox === boxId) setExpandedBox(null)
     setBoxShares(prev => { const n = { ...prev }; delete n[boxId]; return n })
-    fetchData()
+    fetchData(true)
   }
 
   function toggleOrderId(id: string) {
@@ -219,7 +250,11 @@ export default function GomBoxesPage() {
                     <CardHeader>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="font-display font-semibold">{box.label || 'Box'}</p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-display font-semibold">{box.label || 'Box'}</p>
+                            {box.received_at && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800"><PackageCheck size={11}/> Received {formatDate(box.received_at)}</span>}
+                          </div>
+                          {receivedNotice[box.id] && <p className="text-xs text-muted-foreground mt-1">{receivedNotice[box.id]}</p>}
                           {box.payment_info && (
                             <div className="mt-2 border border-primary/20 bg-primary/5 rounded-xl px-3 py-2">
                               <p className="text-xs font-bold text-primary uppercase tracking-wide mb-0.5">💳 Payment Info</p>
@@ -232,6 +267,7 @@ export default function GomBoxesPage() {
                               {(box.linked_orders || []).map((o: any) => (
                                 <Badge key={o.order_id || o.id} className="bg-secondary text-secondary-foreground border border-border text-xs">
                                   {o.shop?.name || '?'}{o.round_number ? ` #${o.round_number}` : ''}
+                                  {o.status && <span className={`ml-1 font-normal ${o.status === 'at_gom' ? 'text-emerald-600' : 'text-muted-foreground'}`}>· {(ORDER_STATUS_LABELS as any)[o.status] || o.status}</span>}
                                 </Badge>
                               ))}
                             </div>
@@ -247,7 +283,11 @@ export default function GomBoxesPage() {
                             </div>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
+                        <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+                          <Button size="sm" variant={box.received_at ? 'ghost' : 'outline'} disabled={receivingId === box.id} onClick={() => toggleReceived(box)}
+                            title={box.received_at ? 'Undo received (orders keep their status)' : 'Mark the box received — its orders move to At GOM'}>
+                            {box.received_at ? <><Undo2 size={12}/> Undo received</> : <><PackageCheck size={12}/> {receivingId === box.id ? 'Saving…' : 'Mark received'}</>}
+                          </Button>
                           <Button variant="ghost" size="icon" onClick={() => openEdit(box)}><Pencil size={13}/></Button>
                           <Button variant="ghost" size="icon" onClick={() => handleDelete(box.id)}><Trash2 size={13} className="text-destructive/50 hover:text-destructive"/></Button>
                           <button onClick={() => toggleExpand(box.id)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary transition-colors">

@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureWeightVariantsSchema } from '@/lib/weightVariants'
 import { ensureLostClaimsSchema } from '@/lib/lostClaims'
+import { setBoxReceived } from '@/lib/orderStatus'
 
 let migDone = false
 async function ensureTables() {
@@ -283,6 +284,15 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   await ensureTables()
 
   const body = await req.json()
+
+  // Mark the box received (or undo). Received → its orders move to At GOM once all of their
+  // boxes are received, only if they're not already At GOM or later.
+  if (body.action === 'received') {
+    if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    const res = await setBoxReceived(params.id, !!body.received)
+    if (!res) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    return NextResponse.json({ received_at: res.box.received_at, moved: res.moved, waiting: res.waiting, already: res.already })
+  }
 
   // Toggle excluded
   if (body.action === 'exclude') {

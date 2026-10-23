@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
+import { applyReceivedBoxes } from '@/lib/orderStatus'
 
 // Gate ALL migration DDL (the 2 ALTERs + both CREATE TABLEs) behind the once-per-cold-start flag —
 // previously only the 2 ALTERs were gated while the CREATE TABLE IF NOT EXISTS calls still ran on
@@ -13,6 +14,8 @@ async function ensureTables() {
   await Promise.all([
     query('ALTER TABLE boxes ADD COLUMN IF NOT EXISTS ems_deadline TIMESTAMPTZ').catch(() => {}),
     query('ALTER TABLE boxes ADD COLUMN IF NOT EXISTS customs_deadline TIMESTAMPTZ').catch(() => {}),
+    // Set by "Mark received" on the Boxes page (PATCH /api/boxes/[id] { action: 'received' })
+    query('ALTER TABLE boxes ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ').catch(() => {}),
     query(`CREATE TABLE IF NOT EXISTS box_orders (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       box_id UUID REFERENCES boxes(id) ON DELETE CASCADE,
@@ -135,7 +138,13 @@ export async function PATCH(req: NextRequest) {
     }
   }
 
-  return NextResponse.json(box)
+  // Orders linked to a box that's already received move to At GOM too (forward only).
+  let moved: string[] = []
+  if (order_ids !== undefined && (box as any)?.received_at) {
+    moved = (await applyReceivedBoxes(id).catch(() => ({ moved: [] as string[] }))).moved
+  }
+
+  return NextResponse.json({ ...(box as any), moved_to_at_gom: moved })
 }
 
 export async function DELETE(req: NextRequest) {
