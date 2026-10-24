@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback, useRef, Fragment } from 'react'
-import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Check, Clock, Zap, Repeat, Shuffle, ShieldCheck } from 'lucide-react'
+import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Check, Clock, Zap, Repeat, Shuffle, ShieldCheck, ArrowRightLeft } from 'lucide-react'
 import { Button, Card, CardContent, CardHeader, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { WeightVariantPicker, type WeightVariant } from '@/components/shared/WeightVariantPicker'
 import { formatDate, formatDateTime } from '@/lib/utils'
@@ -170,13 +170,13 @@ export default function GomPcSorterPage() {
   const [saving, setSaving] = useState(false)
 
   const [createModal, setCreateModal] = useState(false)
-  const [form, setForm] = useState({ title: '', group_id: '', box_id: '', deadline: '' })
+  const [form, setForm] = useState({ title: '', group_id: '', box_id: '', deadline: '', packs_interchangeable: false })
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([])
   const [selectedOrderVersions, setSelectedOrderVersions] = useState<Record<string, string[]>>({})
   const [selectedOrderItems, setSelectedOrderItems] = useState<Record<string, string[]>>({})
 
   const [editingSession, setEditingSession] = useState<any>(null)
-  const [editForm, setEditForm] = useState({ title: '', group_id: '', deadline: '', box_id: '' })
+  const [editForm, setEditForm] = useState({ title: '', group_id: '', deadline: '', box_id: '', packs_interchangeable: false })
   const [editOrderIds, setEditOrderIds] = useState<string[]>([])
   const [editOrderVersions, setEditOrderVersions] = useState<Record<string, string[]>>({})
   const [editOrderItems, setEditOrderItems] = useState<Record<string, string[]>>({})
@@ -289,10 +289,11 @@ export default function GomPcSorterPage() {
         order_ids: selectedOrderIds.length > 0 ? selectedOrderIds : null,
         order_versions: selectedOrderVersions,
         order_items_filter: Object.fromEntries(Object.entries(selectedOrderItems).filter(([oid]) => selectedOrderIds.includes(oid))),
+        packs_interchangeable: form.packs_interchangeable,
       }),
     })
     setCreateModal(false)
-    setForm({ title: '', group_id: '', box_id: '', deadline: '' })
+    setForm({ title: '', group_id: '', box_id: '', deadline: '', packs_interchangeable: false })
     setSelectedOrderIds([])
     setSelectedOrderVersions({})
     setSelectedOrderItems({})
@@ -315,6 +316,7 @@ export default function GomPcSorterPage() {
         order_ids: editOrderIds.length > 0 ? editOrderIds : null,
         order_versions: editOrderVersions,
         order_items_filter: Object.fromEntries(Object.entries(editOrderItems).filter(([oid]) => editOrderIds.includes(oid))),
+        packs_interchangeable: editForm.packs_interchangeable,
       }),
     })
     setEditingSession(null)
@@ -685,6 +687,7 @@ export default function GomPcSorterPage() {
                           </Badge>
                         )}
                         {s.deadline && <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${new Date(s.deadline) < new Date() ? 'bg-destructive/10 text-destructive border-destructive/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>⏱ {formatDate(s.deadline)}</span>}
+                        {s.packs_interchangeable && <Badge className="bg-violet-50 text-violet-700 border border-violet-200 text-xs" title="Interchangeable packs: a pack that runs out is filled from the others">⇄ Interchangeable packs</Badge>}
                         {s.box?.label && <Badge className="bg-sky-50 text-sky-700 border border-sky-200 text-xs">📦 {s.box.label}</Badge>}
                         {s.sort_method && <Badge className="bg-primary/10 text-primary border border-primary/20 text-xs">{s.sort_method === 'timestamp' ? <><Clock size={10} className="inline mr-0.5" />Timestamp</> : <><Zap size={10} className="inline mr-0.5" />Fair</>} sorted</Badge>}
                       </div>
@@ -702,7 +705,7 @@ export default function GomPcSorterPage() {
                         </Button>
                       )}
                       <Button variant="ghost" size="sm" onClick={async () => {
-                        setEditForm({ title: s.title, group_id: s.group_id || '', deadline: s.deadline?.slice(0, 16) || '', box_id: s.box_id || '' })
+                        setEditForm({ title: s.title, group_id: s.group_id || '', deadline: s.deadline?.slice(0, 16) || '', box_id: s.box_id || '', packs_interchangeable: !!s.packs_interchangeable })
                         const savedIds = (() => { try { const o = s.order_ids; if (!o) return []; return Array.isArray(o) ? o : JSON.parse(o) } catch { return [] } })()
                         setEditOrderIds(savedIds.length > 0 ? savedIds : boxLinkedOrderIds(s.box_id))
                         const savedVersions = (() => { try { const v = s.order_versions; if (!v) return {}; return typeof v === 'string' ? JSON.parse(v) : v } catch { return {} } })()
@@ -1078,6 +1081,7 @@ export default function GomPcSorterPage() {
                               {lastSort && (
                                 <p className="text-xs mt-2 text-muted-foreground">
                                   Assigned {lastSort.assigned} · Unfulfilled {lastSort.unfulfilled}
+                                  {lastSort.overflowed > 0 && <> · {lastSort.overflowed} inclusion{lastSort.overflowed !== 1 ? 's' : ''} filled from another pack (one ran out)</>}
                                   {typeof lastSort.totalDemand === 'number' && <> (of {lastSort.totalDemand} expected at sort time)</>}
                                   {staleVsCurrent && !isLocked && (
                                     <span className="block text-amber-600 dark:text-amber-400 font-medium mt-1">
@@ -1103,6 +1107,7 @@ export default function GomPcSorterPage() {
                           const totalRandom = allAssignments.filter((a: any) => a.is_random).length
                           const totalRepeat = allAssignments.filter((a: any) => a.is_repeat).length
                           const totalGuaranteed = allAssignments.filter((a: any) => a.is_guaranteed).length
+                          const totalOverflow = allAssignments.filter((a: any) => a.is_overflow).length
                           const expected = expectedAssignedTotal(d)
 
                           return (
@@ -1115,6 +1120,7 @@ export default function GomPcSorterPage() {
                                     {totalGuaranteed > 0 && <> · <ShieldCheck size={10} className="inline text-emerald-500" /> {totalGuaranteed} guaranteed</>}
                                     {totalRandom > 0 && <> · <Shuffle size={10} className="inline text-sky-500" /> {totalRandom} random</>}
                                     {totalRepeat > 0 && <> · <Repeat size={10} className="inline text-amber-500" /> {totalRepeat} repeat</>}
+                                    {totalOverflow > 0 && <> · <ArrowRightLeft size={10} className="inline text-violet-500" /> {totalOverflow} from another pack</>}
                                   </p>
                                   {expected > allAssignments.length && (
                                     <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mt-0.5">
@@ -1152,7 +1158,8 @@ export default function GomPcSorterPage() {
                                                   <span className="text-foreground font-semibold">{r.member_name}</span>
                                                   {r.is_guaranteed && <span title="Guaranteed — matched a version this joiner specifically claimed, not ranked or competed for"><ShieldCheck size={10} className="text-emerald-500" /></span>}
                                                   {r.is_repeat && <span title="Repeat — every other option was already owned"><Repeat size={10} className="text-amber-500" /></span>}
-                                                  {r.is_random && <span title="Random — no priority form was submitted"><Shuffle size={10} className="text-sky-500" /></span>}
+                                                  {r.is_random && <span title={r.is_overflow ? 'Random — no ranking to go by for this pack' : 'Random — no priority form was submitted'}><Shuffle size={10} className="text-sky-500" /></span>}
+                                                  {r.is_overflow && <span title="From another pack — the pack this inclusion was in ran out, so it was filled from this one"><ArrowRightLeft size={10} className="text-violet-500" /></span>}
                                                 </span>
                                               ))}
                                             </div>
@@ -1179,7 +1186,7 @@ export default function GomPcSorterPage() {
       </div>
 
       {/* Create Session Modal */}
-      <Modal open={createModal} onClose={() => { setCreateModal(false); setForm({ title: '', group_id: '', box_id: '', deadline: '' }); setSelectedOrderIds([]); setSelectedOrderVersions({}); setSelectedOrderItems({}) }} title="New Sorting Session" size="lg">
+      <Modal open={createModal} onClose={() => { setCreateModal(false); setForm({ title: '', group_id: '', box_id: '', deadline: '', packs_interchangeable: false }); setSelectedOrderIds([]); setSelectedOrderVersions({}); setSelectedOrderItems({}) }} title="New Sorting Session" size="lg">
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             <FormField label="Session Title" required>
@@ -1197,6 +1204,13 @@ export default function GomPcSorterPage() {
               <Select options={groups.map((g: any) => ({ value: g.id, label: g.name }))} placeholder="Select group…" value={form.group_id} onChange={e => setForm(f => ({ ...f, group_id: e.target.value }))} />
             </FormField>
           </div>
+          <label className="flex items-start gap-2.5 p-3 rounded-xl border border-border cursor-pointer hover:bg-secondary/30">
+            <input type="checkbox" checked={form.packs_interchangeable} onChange={e => setForm((x: any) => ({ ...x, packs_interchangeable: e.target.checked }))} className="accent-primary w-3.5 h-3.5 mt-0.5" />
+            <span>
+              <span className="text-sm font-semibold block">Interchangeable packs (e.g. trading card sets)</span>
+              <span className="text-xs text-muted-foreground">For packs that can replace each other, like a Bread set (44 pcs) and a Letter set (30 pcs). Auto-fill splits inclusions by each pack's stock, and when a pack runs out its remaining claims are filled from the other packs. Leave off for album versions and anything else where a joiner must get the exact pack they're due.</span>
+            </span>
+          </label>
           {form.box_id && (
             <FormField label="Orders included in this session">
               <p className="text-xs text-muted-foreground mb-2">Inclusion counts will be pulled from these orders. All orders from the box are pre-selected. For a multi-version order, uncheck the versions you don't want feeding this session. For an order with several items (e.g. merch), pick only the item to sort, like the trading cards.</p>
@@ -1240,6 +1254,13 @@ export default function GomPcSorterPage() {
                   <Select options={groups.map((g: any) => ({ value: g.id, label: g.name }))} placeholder="Select…" value={editForm.group_id} onChange={e => setEditForm(f => ({ ...f, group_id: e.target.value }))} />
                 </FormField>
               </div>
+          <label className="flex items-start gap-2.5 p-3 rounded-xl border border-border cursor-pointer hover:bg-secondary/30">
+            <input type="checkbox" checked={editForm.packs_interchangeable} onChange={e => setEditForm((x: any) => ({ ...x, packs_interchangeable: e.target.checked }))} className="accent-primary w-3.5 h-3.5 mt-0.5" />
+            <span>
+              <span className="text-sm font-semibold block">Interchangeable packs (e.g. trading card sets)</span>
+              <span className="text-xs text-muted-foreground">For packs that can replace each other, like a Bread set (44 pcs) and a Letter set (30 pcs). Auto-fill splits inclusions by each pack's stock, and when a pack runs out its remaining claims are filled from the other packs. Leave off for album versions and anything else where a joiner must get the exact pack they're due.</span>
+            </span>
+          </label>
               {editForm.box_id && (
                 <FormField label="Orders included in this session">
                   <p className="text-xs text-muted-foreground mb-2">For a multi-version order, uncheck the versions you don't want feeding this session. For an order with several items (e.g. merch), pick only the item to sort, like the trading cards.</p>

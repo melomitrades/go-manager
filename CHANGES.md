@@ -1,3 +1,24 @@
+# PC Sorter: packs of different sizes (e.g. Bread set 44 pcs / Letter set 30 pcs) — 2026-10-24
+
+No manual SQL needed: the new columns self-migrate on first use.
+
+**Edited:** `src/lib/pcSorter.ts`, `src/app/api/pc-sorter/route.ts`, `src/app/gom/pc-sorter/page.tsx`, `src/app/joiner/pc-sorter/page.tsx`
+
+- **Opt-in per session:** checkbox "Interchangeable packs (e.g. trading card sets)" in New/Edit session, off by
+  default (`packs_interchangeable`). Sessions with it get a "⇄ Interchangeable packs" badge. Everything below only
+  applies to those sessions; all other sessions sort exactly as before.
+
+- **Sort — overflow:** when a pack runs out, every inclusion of it that got nothing is filled from a pack that
+  still has stock. Picked by the joiner's ranking (of that pack, else of the pack they were due), else at random;
+  same ownership/repeat rule. Submitters first by submission time, then non-submitters at random. Saved with
+  `is_overflow`; shown with a ⇄ icon for the GOM and "(replacement)" for the joiner. The sort summary says how
+  many were filled from another pack, and "Unfulfilled" only counts what really couldn't be filled.
+- **Auto-fill — stock-aware split:** when every pack has its quantities entered, inclusions are split in
+  proportion to each pack's stock (44 bread / 30 letter instead of 37/37). A joiner with 2+ inclusions still
+  gets one of each pack first. Without quantities, the old even split is used (overflow still fixes it at sort).
+- Tested on a simulated session: 74 claims on 44 + 30 cards → all 74 filled, no pack over its stock;
+  80 claims → 74 filled, 6 reported unfulfilled.
+
 # Fix: manual inclusion edits not saving — 2026-10-24
 
 **Edited:** `src/app/gom/pc-sorter/page.tsx`, `src/app/api/pc-sorter/[sessionId]/route.ts`

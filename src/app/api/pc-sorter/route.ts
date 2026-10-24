@@ -52,17 +52,18 @@ export async function POST(req: NextRequest) {
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   await ensurePcSorterSchema()
 
-  const { title, group_id, box_id, deadline, order_ids, order_versions, order_items_filter } = await req.json()
+  const { title, group_id, box_id, deadline, order_ids, order_versions, order_items_filter, packs_interchangeable } = await req.json()
   if (!title) return NextResponse.json({ error: 'Title is required' }, { status: 400 })
 
   // Sessions always start closed — the GOM opens the form explicitly once packs/items/
   // quantities/inclusions are set up.
   const pcSession = await queryOne(
-    `INSERT INTO pc_sorting_sessions (title, group_id, created_by, deadline, box_id, order_ids, order_versions, order_items_filter, form_open)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false) RETURNING *`,
+    `INSERT INTO pc_sorting_sessions (title, group_id, created_by, deadline, box_id, order_ids, order_versions, order_items_filter, packs_interchangeable, form_open)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false) RETURNING *`,
     [title, group_id || null, user.id, deadline || null, box_id || null, order_ids ? JSON.stringify(order_ids) : null,
      order_versions ? JSON.stringify(order_versions) : null,
-     order_items_filter && Object.keys(order_items_filter).length ? JSON.stringify(order_items_filter) : null]
+     order_items_filter && Object.keys(order_items_filter).length ? JSON.stringify(order_items_filter) : null,
+     !!packs_interchangeable]
   )
   return NextResponse.json(pcSession, { status: 201 })
 }
@@ -85,6 +86,9 @@ export async function PATCH(req: NextRequest) {
     [title || null, form_open ?? null, group_id || null, deadline || null, box_id || null,
      order_ids ? JSON.stringify(order_ids) : null, order_versions ? JSON.stringify(order_versions) : null, id]
   )
+  if (typeof body.packs_interchangeable === 'boolean') {
+    await query(`UPDATE pc_sorting_sessions SET packs_interchangeable=$1 WHERE id=$2`, [body.packs_interchangeable, id])
+  }
   // Item narrowing is saved as-is whenever the edit form sends it (an empty {} clears it back to
   // "every item counts"), unlike the COALESCE'd fields above which can't be cleared.
   if (body.order_items_filter !== undefined) {

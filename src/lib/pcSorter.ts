@@ -65,6 +65,11 @@ export async function ensurePcSorterSchema() {
     // behaviour); present key = only claims on those items count, e.g. just the "Trading cards"
     // line of a merch order. See itemFilterFor / rowCountsForSession below.
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_items_filter JSONB DEFAULT NULL`,
+    // Opt-in per session (e.g. a trading-card session whose packs are sets of different sizes):
+    // packs are interchangeable, so auto-fill splits inclusions by each pack's stock and the sort
+    // fills a sold-out pack's claims from the other packs. false = every pack is its own thing
+    // (album versions etc.), exactly the original behaviour.
+    `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS packs_interchangeable BOOLEAN NOT NULL DEFAULT false`,
     `ALTER TABLE order_items ADD COLUMN IF NOT EXISTS price_krw NUMERIC(12,0)`,
 
     // Packs (was "versions") — one or more per session
@@ -92,6 +97,10 @@ export async function ensurePcSorterSchema() {
     // version whose ID card set is physically guaranteed to match (see computeGuaranteedUnitClaims
     // below) — never ranked/competed for, unlike is_repeat/is_random.
     `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_guaranteed BOOLEAN NOT NULL DEFAULT false`,
+    // Set when this assignment came from ANOTHER pack's shortfall: the joiner's inclusion was in a
+    // pack that ran out (e.g. "Letter set", 30 pcs), so it was filled from a pack with stock left
+    // (e.g. "Bread set", 44 pcs). pack_id is the pack actually received. See overflow in runPcSort.
+    `ALTER TABLE pc_assignments ADD COLUMN IF NOT EXISTS is_overflow BOOLEAN NOT NULL DEFAULT false`,
     // Leftover marker from lost claims (src/lib/lostClaims.ts). Auto-fill and the guaranteed-claim
     // lookup filter on it, so it must exist before they run — otherwise their query would error,
     // fall back to "no rows" and auto-fill would wipe every inclusion.
@@ -312,12 +321,12 @@ export async function autoFillInclusions(sessionId: string) {
     }
   }
 
-  return writeInclusionTotals(sessionId, packs, joinerTotals)
+  return writeInclusionTotals(sessionId, packs, joinerTotals, !!sessionRow.packs_interchangeable)
 }
 
 // Splits each joiner's total inclusion count across the session's packs and fully REPLACES
 // the session's inclusion rows with the result. Shared by both auto-fill modes.
-async function writeInclusionTotals(sessionId: string, packs: any[], joinerTotals: Record<string, number>) {
+async function writeInclusionTotals(sessionId: string, packs: any[], joinerTotals: Record<string, number>, interchangeable = false) {
   const packTotals: Record<string, number> = {}
   for (const p of packs) packTotals[p.id] = 0
 
@@ -325,6 +334,41 @@ async function writeInclusionTotals(sessionId: string, packs: any[], joinerTotal
   const entries = Object.entries(joinerTotals).filter(([, t]) => t > 0)
   const multi = entries.filter(([, t]) => t > 1)
   const single = entries.filter(([, t]) => t === 1)
+
+  // STOCK-AWARE split — only for sessions marked "interchangeable packs", when every pack's quantities are filled in. A pack's capacity = how many
+  // full inclusions it can make = the smallest "total pulled" among its items. Packs of different
+  // sizes (e.g. Bread set 44 pcs, Letter set 30 pcs) then get inclusions in proportion to their
+  // stock instead of an even split — an even split would hand the Letter set more inclusions than
+  // it has cards. Each unit goes to the pack with the most capacity left, while still giving a
+  // joiner with several inclusions one of each pack before repeating one. If quantities aren't
+  // entered yet (any pack at 0), the old even split below is used; the sort's overflow step
+  // still fills a pack's shortfall from other packs either way.
+  const capacity = interchangeable && packs.length > 1 ? await packCapacities(packs) : null
+  if (capacity && packs.every((p: any) => (capacity.get(p.id) || 0) > 0)) {
+    const left = new Map(capacity)
+    const counts = new Map<string, Map<string, number>>() // joiner -> pack -> count
+    const ordered = [...multi.sort((a, b) => b[1] - a[1]), ...single]
+    for (const [joinerId, total] of ordered) {
+      const mine = new Map<string, number>()
+      let givenThisCycle = new Set<string>()
+      for (let u = 0; u < total; u++) {
+        if (givenThisCycle.size >= packs.length) givenThisCycle = new Set()
+        const candidates = packs.filter((p: any) => !givenThisCycle.has(p.id))
+        const target = candidates.reduce((best: any, p: any) => ((left.get(p.id) || 0) > (left.get(best.id) || 0) ? p : best), candidates[0])
+        givenThisCycle.add(target.id)
+        left.set(target.id, (left.get(target.id) || 0) - 1)
+        mine.set(target.id, (mine.get(target.id) || 0) + 1)
+      }
+      counts.set(joinerId, mine)
+    }
+    for (const [joinerId, mine] of counts) {
+      for (const p of packs) {
+        const c = mine.get(p.id) || 0
+        if (c > 0) rows.push({ joiner_id: joinerId, pack_id: p.id, inclusions_assigned: c })
+      }
+    }
+    return replaceInclusionRows(sessionId, rows)
+  }
 
   // Joiners with >1 inclusion: split evenly across packs, remainder to earlier packs
   for (const [joinerId, total] of multi) {
@@ -343,6 +387,28 @@ async function writeInclusionTotals(sessionId: string, packs: any[], joinerTotal
     packTotals[target.id] += 1
   }
 
+  return replaceInclusionRows(sessionId, rows)
+}
+
+// pack_id -> how many FULL inclusions its stock can make (min "total pulled" across its items).
+// A pack with no items or no quantities entered gets 0.
+async function packCapacities(packs: any[]): Promise<Map<string, number>> {
+  const rows = await query<any>(`
+    SELECT it.pack_id, it.id AS item_id, COALESCE(SUM(q.total_pulled), 0)::int AS total
+    FROM pc_items it
+    LEFT JOIN pc_item_quantities q ON q.item_id = it.id
+    WHERE it.pack_id = ANY($1::uuid[])
+    GROUP BY it.pack_id, it.id
+  `, [packs.map((p: any) => p.id)]).catch(() => [] as any[])
+  const cap = new Map<string, number>()
+  for (const p of packs) {
+    const totals = rows.filter((r: any) => r.pack_id === p.id).map((r: any) => parseInt(r.total) || 0)
+    cap.set(p.id, totals.length ? Math.min(...totals) : 0)
+  }
+  return cap
+}
+
+async function replaceInclusionRows(sessionId: string, rows: { joiner_id: string; pack_id: string; inclusions_assigned: number }[]) {
   // A true overwrite: clear every existing inclusion row for this session first, THEN insert
   // the freshly computed ones. An upsert alone (INSERT ... ON CONFLICT DO UPDATE) can only ever
   // touch joiners who still qualify — a joiner who qualified last time (or was set manually) but
@@ -431,7 +497,7 @@ export async function autoFillInclusionsBySpend(sessionId: string, thresholdKrw:
   }
   joiners.sort((a, b) => b.spent_krw - a.spent_krw)
 
-  const result = await writeInclusionTotals(sessionId, packs, joinerTotals)
+  const result = await writeInclusionTotals(sessionId, packs, joinerTotals, !!sessionRow.packs_interchangeable)
   return { ...empty, assignments: result.assignments, joiners, missingKrwClaims }
 }
 
@@ -791,11 +857,16 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
 
   const submittedJoinerIds = new Set(forms.map((f: any) => f.joiner_id))
 
-  type PendingAssignment = { pack_id: string; item_id: string; joiner_id: string; member_id: string; round: number; is_repeat: boolean; is_random: boolean; is_guaranteed: boolean }
+  type PendingAssignment = { pack_id: string; item_id: string; joiner_id: string; member_id: string; round: number; is_repeat: boolean; is_random: boolean; is_guaranteed: boolean; is_overflow: boolean }
   const pending: PendingAssignment[] = []
   let totalDemand = 0
   let totalAssigned = 0
   const finalStockByItem = new Map<string, Map<string, number>>()
+  // Kept per item for the overflow step after the main loop.
+  const itemState = new Map<string, { stock: Map<string, number>; ownSet: Set<string>; ranking: Map<string, RankEntry[]> }>()
+  const gotByItem = new Map<string, Map<string, number>>() // item_id -> joiner_id -> units received
+  const submittedAtAll = new Map<string, Date>()
+  for (const f of forms) submittedAtAll.set(f.joiner_id, new Date(f.submitted_at))
 
   for (const pack of packs) {
     const packItems = items.filter((i: any) => i.pack_id === pack.id)
@@ -845,7 +916,7 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
             const key = `${joinerId}|${keyForId(unitId)}`
             ownSet.add(key)
             for (let i = 0; i < grant; i++) {
-              pending.push({ pack_id: pack.id, item_id: item.id, joiner_id: joinerId, member_id: unitId, round: 1, is_repeat: false, is_random: false, is_guaranteed: true })
+              pending.push({ pack_id: pack.id, item_id: item.id, joiner_id: joinerId, member_id: unitId, round: 1, is_repeat: false, is_random: false, is_guaranteed: true, is_overflow: false })
               totalAssigned += 1
             }
           }
@@ -873,9 +944,108 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
       const allResults = results.concat(randomResults)
       totalAssigned += allResults.length
       for (const r of allResults) {
-        pending.push({ pack_id: pack.id, item_id: item.id, joiner_id: r.joiner_id, member_id: r.member_id, round: r.round, is_repeat: r.is_repeat, is_random: r.is_random, is_guaranteed: false })
+        pending.push({ pack_id: pack.id, item_id: item.id, joiner_id: r.joiner_id, member_id: r.member_id, round: r.round, is_repeat: r.is_repeat, is_random: r.is_random, is_guaranteed: false, is_overflow: false })
       }
       finalStockByItem.set(item.id, stock)
+      itemState.set(item.id, { stock, ownSet, ranking })
+    }
+  }
+
+  // ── Overflow: packs of different sizes — ONLY for sessions marked "interchangeable packs" ──
+  // e.g. Bread set 44 pcs, Letter set 30 pcs. If the Letter set runs out, a joiner whose
+  // Letter inclusion got NOTHING is filled from a pack that still has stock (the Bread set),
+  // instead of being left empty while Bread cards stay unsorted. Only inclusions that received
+  // nothing at all count as short (got nothing in any item of that pack). The joiner gets one
+  // of every item of the pack it's filled from, picked by their own ranking for that item if
+  // they ranked it, else by their ranking of the same-named (or first) item of their original
+  // pack, else at random. Same ownership/repeat rule as the main sort. Order: form submitters
+  // first by submission time (one unit each per pass for "fair", all of a joiner's units at
+  // once for "timestamp"), then non-submitters in random order.
+  for (const a of pending) {
+    if (!gotByItem.has(a.item_id)) gotByItem.set(a.item_id, new Map())
+    const m = gotByItem.get(a.item_id)!
+    m.set(a.joiner_id, (m.get(a.joiner_id) || 0) + 1)
+  }
+  const itemsByPack = new Map<string, any[]>()
+  for (const p of packs) itemsByPack.set(p.id, items.filter((i: any) => i.pack_id === p.id))
+
+  type ShortUnit = { joiner_id: string; from_pack: string }
+  const shortByJoiner = new Map<string, ShortUnit[]>()
+  for (const inc of inclusions) {
+    const n = parseInt(inc.inclusions_assigned) || 0
+    const packItems = itemsByPack.get(inc.pack_id) || []
+    if (n <= 0 || packItems.length === 0) continue
+    const got = Math.max(...packItems.map((it: any) => gotByItem.get(it.id)?.get(inc.joiner_id) || 0))
+    for (let u = got; u < n; u++) {
+      if (!shortByJoiner.has(inc.joiner_id)) shortByJoiner.set(inc.joiner_id, [])
+      shortByJoiner.get(inc.joiner_id)!.push({ joiner_id: inc.joiner_id, from_pack: inc.pack_id })
+    }
+  }
+
+  let overflowUnits = 0
+  let overflowCoveredDemand = 0
+  if (sessionRow?.packs_interchangeable && shortByJoiner.size > 0 && packs.length > 1) {
+    const submitters = [...shortByJoiner.keys()].filter(j => submittedJoinerIds.has(j))
+      .sort((a, b) => (submittedAtAll.get(a)?.getTime() || 0) - (submittedAtAll.get(b)?.getTime() || 0))
+    const others = [...shortByJoiner.keys()].filter(j => !submittedJoinerIds.has(j))
+    for (let i = others.length - 1; i > 0; i--) { const k = Math.floor(Math.random() * (i + 1)); [others[i], others[k]] = [others[k], others[i]] }
+
+    // Build the processing queue of short units in the right order.
+    const queue: ShortUnit[] = []
+    const roundRobin = (ids: string[]) => {
+      const lists = ids.map(j => [...(shortByJoiner.get(j) || [])])
+      let more = true
+      while (more) { more = false; for (const l of lists) { const u = l.shift(); if (u) { queue.push(u); more = true } } }
+    }
+    if (method === 'fair') roundRobin(submitters)
+    else for (const j of submitters) queue.push(...(shortByJoiner.get(j) || []))
+    roundRobin(others)
+
+    const packStock = (packId: string) => (itemsByPack.get(packId) || []).map((it: any) =>
+      [...(itemState.get(it.id)?.stock.values() || [])].reduce((s, v) => s + Math.max(0, v), 0))
+
+    for (const unit of queue) {
+      // Target: another pack that can still make a FULL inclusion (most stock left first);
+      // if none can, one that still has at least some stock in some item.
+      const otherPacks = packs.filter((p: any) => p.id !== unit.from_pack && (itemsByPack.get(p.id) || []).length > 0)
+      const full = otherPacks.map((p: any) => ({ p, cap: Math.min(...packStock(p.id)) })).filter(x => x.cap > 0).sort((a, b) => b.cap - a.cap)
+      const partial = otherPacks.map((p: any) => ({ p, any: packStock(p.id).reduce((s, v) => s + v, 0) })).filter(x => x.any > 0).sort((a, b) => b.any - a.any)
+      const target = full[0]?.p || partial[0]?.p
+      if (!target) break // nothing left anywhere
+
+      const fromItems = itemsByPack.get(unit.from_pack) || []
+      let gaveSomething = false
+      for (const it of itemsByPack.get(target.id) || []) {
+        const st = itemState.get(it.id)
+        if (!st) continue
+        const own = (id: string) => st.ownSet.has(`${unit.joiner_id}|${keyForId(id)}`)
+        // Preference list: their ranking of THIS item, else of the same-named / first item of
+        // the pack they were short in (same members, so the order carries over).
+        const sameName = fromItems.find((f: any) => f.name === it.name) || fromItems[0]
+        const fallbackRanking = sameName ? itemState.get(sameName.id)?.ranking.get(unit.joiner_id) : undefined
+        const prefs = (st.ranking.get(unit.joiner_id) || fallbackRanking || []).map(e => e.member_id).filter(id => st.stock.has(id))
+        let pick: string | null = prefs.find(id => (st.stock.get(id) || 0) > 0 && !own(id)) || null
+        let fromRanking = !!pick
+        if (!pick) {
+          const pool = [...st.stock.entries()].filter(([, v]) => v > 0)
+          const fresh = pool.filter(([id]) => !own(id))
+          // Already owns every option left → a repeat, by ranking order if possible.
+          const rankedRepeat = !fresh.length ? prefs.find(id => (st.stock.get(id) || 0) > 0) : undefined
+          if (rankedRepeat) { pick = rankedRepeat; fromRanking = true }
+          else {
+            const from = fresh.length ? fresh : pool
+            if (from.length) pick = from[Math.floor(Math.random() * from.length)][0]
+          }
+        }
+        if (!pick) continue
+        const wasOwned = own(pick)
+        st.stock.set(pick, (st.stock.get(pick) || 0) - 1)
+        st.ownSet.add(`${unit.joiner_id}|${keyForId(pick)}`)
+        pending.push({ pack_id: target.id, item_id: it.id, joiner_id: unit.joiner_id, member_id: pick, round: fromRanking ? 1 : 0, is_repeat: wasOwned, is_random: !fromRanking, is_guaranteed: false, is_overflow: true })
+        totalAssigned += 1
+        gaveSomething = true
+      }
+      if (gaveSomething) { overflowUnits += 1; overflowCoveredDemand += fromItems.length }
     }
   }
 
@@ -901,10 +1071,10 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
     const baseTime = Date.now()
     const createdAts = pending.map((_, idx) => new Date(baseTime + idx))
     await query(
-      `INSERT INTO pc_assignments (session_id, pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, is_guaranteed, sort_method, created_at)
-       SELECT $1, t.pack_id, t.item_id, t.joiner_id, t.member_id, t.round, t.is_repeat, t.is_random, t.is_guaranteed, $2, t.created_at
-       FROM UNNEST($3::uuid[], $4::uuid[], $5::uuid[], $6::uuid[], $7::int[], $8::bool[], $9::bool[], $10::bool[], $11::timestamptz[])
-         AS t(pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, is_guaranteed, created_at)`,
+      `INSERT INTO pc_assignments (session_id, pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, is_guaranteed, is_overflow, sort_method, created_at)
+       SELECT $1, t.pack_id, t.item_id, t.joiner_id, t.member_id, t.round, t.is_repeat, t.is_random, t.is_guaranteed, t.is_overflow, $2, t.created_at
+       FROM UNNEST($3::uuid[], $4::uuid[], $5::uuid[], $6::uuid[], $7::int[], $8::bool[], $9::bool[], $10::bool[], $11::timestamptz[], $12::bool[])
+         AS t(pack_id, item_id, joiner_id, member_id, round, is_repeat, is_random, is_guaranteed, created_at, is_overflow)`,
       [
         sessionId,
         method,
@@ -917,6 +1087,7 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
         pending.map(a => a.is_random),
         pending.map(a => a.is_guaranteed),
         createdAts,
+        pending.map(a => a.is_overflow),
       ]
     )
   }
@@ -939,5 +1110,10 @@ export async function runPcSort(sessionId: string, method: 'timestamp' | 'fair')
     [method, sessionId]
   )
 
-  return { assigned: totalAssigned, unfulfilled: Math.max(0, totalDemand - totalAssigned), totalDemand }
+  // Overflow assignments fill demand that belonged to another pack, so "unfulfilled" is the
+  // regular shortfall minus the demand they covered (not just demand − assigned, which would be
+  // off whenever the two packs have a different number of items).
+  const regularAssigned = totalAssigned - pending.filter(a => a.is_overflow).length
+  const unfulfilled = Math.max(0, totalDemand - regularAssigned - overflowCoveredDemand)
+  return { assigned: totalAssigned, unfulfilled, totalDemand, overflowed: overflowUnits }
 }

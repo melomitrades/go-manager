@@ -207,6 +207,7 @@ export default function JoinerPCSorterPage() {
                                       {r.is_guaranteed && <span className="text-emerald-600 ml-1.5 text-xs font-normal">(guaranteed)</span>}
                                       {r.is_repeat && <span className="text-amber-600 ml-1.5 text-xs font-normal">(2nd)</span>}
                                       {r.is_random && <span className="text-sky-600 ml-1.5 text-xs font-normal">(random)</span>}
+                                      {r.is_overflow && <span className="text-violet-600 ml-1.5 text-xs font-normal" title="The pack you were due ran out, so you got this pack instead">(replacement)</span>}
                                     </p>
                                   </div>
                                 ))}
