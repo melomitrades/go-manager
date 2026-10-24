@@ -1028,7 +1028,7 @@ export default function GomPcSorterPage() {
                                       <p className="text-sm font-semibold">
                                         {f.display_name || f.username}
                                         {(() => { const n = unrankedOptionsFor(d, f); return n > 0 ? (
-                                          <span className="ml-2 text-[11px] font-medium text-amber-700 dark:text-amber-400" title="Options added after this joiner submitted. They can rank them from their Sorting page while the form is open — otherwise those picks are random.">
+                                          <span className="ml-2 text-[11px] font-medium text-amber-700 dark:text-amber-400" title="Options added after this joiner submitted. They can re-rank those items from their Sorting page while the form is open — otherwise new options are only picked at random.">
                                             ⚠ {n} new option{n !== 1 ? 's' : ''} not ranked yet
                                           </span>) : null })()}
                                       </p>

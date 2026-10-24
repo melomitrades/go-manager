@@ -27,21 +27,33 @@ function remainingNeedForItem(item: any, det: any, packId: string): number {
   return Math.max(0, packNeed - guaranteedForItemFrom(det?.guaranteed || [], item.id))
 }
 
-// Options that are on the form NOW but weren't ranked when this joiner submitted: an item that
-// had no stock at the time (so it never appeared), or a member added to an item afterwards.
-// itemId -> missing members, only for items the joiner is actually due to rank.
-function missingOptionsFor(det: any): Record<string, RankedMember[]> {
-  const out: Record<string, RankedMember[]> = {}
+// Items to (re)rank after submitting, because options appeared that weren't on the form then:
+// an item that had no stock at the time (so it never appeared), or a member added to an item
+// afterwards. For each such item: its FULL list of options with stock, starting from the joiner's
+// previous order with the new options at the bottom — they re-rank the whole item. Only items the
+// joiner is actually due to rank. Returns itemId -> { list, isNew (true = never ranked), added }.
+function itemsToRerankFor(det: any): Record<string, { list: RankedMember[]; isNew: boolean; added: Set<string> }> {
+  const out: Record<string, { list: RankedMember[]; isNew: boolean; added: Set<string> }> = {}
   if (!(det?.forms || []).length) return out
-  const ranked = new Set((det.entries || []).map((e: any) => `${e.item_id}|${e.member_id}`))
   for (const item of det.items || []) {
     if (remainingNeedForItem(item, det, item.pack_id) <= 0) continue
-    const missing = (det.quantities || [])
-      .filter((q: any) => q.item_id === item.id && (q.total_pulled || 0) > 0 && !ranked.has(`${item.id}|${q.member_id}`))
-      .map((q: any) => ({ member_id: q.member_id, name: q.member_name || '?' }))
-    if (missing.length) out[item.id] = missing
+    const stocked = (det.quantities || []).filter((q: any) => q.item_id === item.id && (q.total_pulled || 0) > 0)
+    const mine = (det.entries || []).filter((e: any) => e.item_id === item.id).sort((a: any, b: any) => a.priority - b.priority)
+    const rankedIds = new Set(mine.map((e: any) => e.member_id))
+    const added = stocked.filter((q: any) => !rankedIds.has(q.member_id))
+    if (!added.length) continue
+    const nameOf = (id: string) => stocked.find((q: any) => q.member_id === id)?.member_name || '?'
+    const stockedIds = new Set(stocked.map((q: any) => q.member_id))
+    const list: RankedMember[] = [
+      ...mine.filter((e: any) => stockedIds.has(e.member_id)).map((e: any) => ({ member_id: e.member_id, name: nameOf(e.member_id) })),
+      ...added.map((q: any) => ({ member_id: q.member_id, name: q.member_name || '?' })),
+    ]
+    out[item.id] = { list, isNew: mine.length === 0, added: new Set(added.map((q: any) => q.member_id)) }
   }
   return out
+}
+function rerankOrderFrom(det: any): Record<string, RankedMember[]> {
+  return Object.fromEntries(Object.entries(itemsToRerankFor(det)).map(([id, v]) => [id, v.list]))
 }
 
 export default function JoinerPCSorterPage() {
@@ -86,7 +98,7 @@ export default function JoinerPCSorterPage() {
         setDetails(detailMap)
         setOrder(initialOrder)
         const extra: Record<string, Record<string, RankedMember[]>> = {}
-        for (const s of open) extra[s.id] = missingOptionsFor(detailMap[s.id])
+        for (const s of open) extra[s.id] = rerankOrderFrom(detailMap[s.id])
         setExtraOrder(extra)
         setLoading(false)
       })
@@ -132,7 +144,7 @@ export default function JoinerPCSorterPage() {
     if (res.ok) {
       const det = await fetch(`/api/pc-sorter/${sessionId}?viewAs=joiner`).then(r => r.json())
       setDetails(prev => ({ ...prev, [sessionId]: det }))
-      setExtraOrder(prev => ({ ...prev, [sessionId]: missingOptionsFor(det) }))
+      setExtraOrder(prev => ({ ...prev, [sessionId]: rerankOrderFrom(det) }))
     } else {
       const err = await res.json().catch(() => ({}))
       alert(err.error || 'Could not save — the form may have just closed.')
@@ -195,24 +207,25 @@ export default function JoinerPCSorterPage() {
           const extra = extraOrder[session.id] || {}
           const extraItemIds = Object.keys(extra).filter(id => (extra[id] || []).length > 0)
           const canComplete = isSubmitted && session.form_open && !deadlinePassed && !session.locked_at && extraItemIds.length > 0
-          const rankedItemIds = new Set((det.entries || []).map((e: any) => e.item_id))
+          const rerankInfo = itemsToRerankFor(det)
           const completeBlock = canComplete ? (
             <div className="border border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-900/10 rounded-2xl p-4 space-y-4 mb-4">
               <div>
                 <p className="text-sm font-semibold">New options to rank</p>
-                <p className="text-xs text-muted-foreground mt-0.5">These weren't on the form when you submitted. Rank them so you don't end up with a random pick. What you already submitted stays exactly as it was.</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Some options weren't on the form when you submitted. Rank the item{extraItemIds.length !== 1 ? 's' : ''} below again with the new options included, so you don't end up with a random pick. Your other items stay exactly as you submitted them.</p>
               </div>
               {extraItemIds.map(itemId => {
                 const item = (det.items || []).find((i: any) => i.id === itemId)
                 const pack = packs.find((p: any) => p.id === item?.pack_id)
                 const members = extra[itemId] || []
-                const alreadyRanked = rankedItemIds.has(itemId)
+                const info = rerankInfo[itemId]
+                const alreadyRanked = !!info && !info.isNew
                 return (
                   <div key={itemId} className="border border-border rounded-2xl overflow-hidden bg-background">
                     <div className="px-4 py-3 bg-secondary/40 border-b border-border">
                       <p className="text-sm font-semibold">{pack ? `${pack.name} · ` : ''}{item?.name || 'Item'}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {alreadyRanked ? 'You already ranked this item — these new options go after the ones you ranked.' : '#1 at the top = most wanted'}
+                        {alreadyRanked ? 'New option added — re-rank the whole item. Your previous order is kept as a starting point. #1 = most wanted.' : 'New item — #1 at the top = most wanted'}
                       </p>
                     </div>
                     <div className="divide-y divide-border/40">
@@ -221,7 +234,10 @@ export default function JoinerPCSorterPage() {
                           <div className="w-7 h-7 rounded-lg border border-border bg-secondary/30 flex items-center justify-center flex-shrink-0">
                             <span className="text-xs font-bold text-muted-foreground">{idx + 1}</span>
                           </div>
-                          <p className="flex-1 text-sm font-semibold">{m.name}</p>
+                          <p className="flex-1 text-sm font-semibold">
+                            {m.name}
+                            {alreadyRanked && info?.added.has(m.member_id) && <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-600">new</span>}
+                          </p>
                           <div className="flex flex-col gap-0.5 flex-shrink-0">
                             <button onClick={() => moveExtra(session.id, itemId, idx, -1)} disabled={idx === 0}
                               className="w-7 h-6 flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:text-primary disabled:opacity-20 disabled:cursor-not-allowed"><ChevronUp size={13} /></button>
@@ -235,7 +251,7 @@ export default function JoinerPCSorterPage() {
                 )
               })}
               <Button onClick={() => completeForm(session.id)} disabled={saving === session.id} className="w-full">
-                {saving === session.id ? 'Saving…' : <><Check size={14} /> Add to my preferences</>}
+                {saving === session.id ? 'Saving…' : <><Check size={14} /> Save new ranking</>}
               </Button>
             </div>
           ) : null
@@ -327,7 +343,7 @@ export default function JoinerPCSorterPage() {
                   {completeBlock}
                   <div className="flex items-center gap-2.5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl px-4 py-3 text-emerald-700 dark:text-emerald-300">
                     <Check size={15} />
-                    <p className="text-sm font-medium">Your priorities have been submitted and can't be changed{canComplete ? ' — but you can still rank the new options above' : ''}. Your GOM will run the sort when ready — your results will show here once they do.</p>
+                    <p className="text-sm font-medium">Your priorities have been submitted and can't be changed{canComplete ? ' — except the item' + (extraItemIds.length !== 1 ? 's' : '') + ' with new options above' : ''}. Your GOM will run the sort when ready — your results will show here once they do.</p>
                   </div>
                 </CardContent>
               ) : canSubmit && !hasAnythingToSort ? (

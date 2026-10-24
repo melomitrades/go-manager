@@ -4,9 +4,10 @@
 `src/app/gom/pc-sorter/page.tsx`
 
 - **Joiners:** after submitting, if options appear that weren't on the form (an item whose quantities were all 0,
-  a member added later), the Sorting page shows "New options to rank" while the form is open. They rank only the
-  new options and click "Add to my preferences". What they already submitted never changes; new options of an
-  item they'd already ranked go after their existing ones. Their submission time is kept.
+  a member added later), the Sorting page shows "New options to rank" while the form is open, for the affected
+  items only. A brand-new item is ranked from scratch; an item that got a new member is **re-ranked entirely**
+  (their previous order is the starting point, the new member is marked "new" at the bottom). "Save new ranking"
+  replaces their ranking of those items only — every other item stays as submitted. Their submission time is kept.
 - **GOM:** each submitted form in "Forms & Inclusions" shows "⚠ N new options not ranked yet" when that applies.
   The form must be open (reopen it if you closed it) for joiners to complete.
 - **Sort fix:** a joiner who submitted but has no ranking for an item (or whose ranked options ran out while

@@ -155,31 +155,52 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     // chance; it never reopens editing for someone who already has a form on file.
     const existingForm = await queryOne<any>(`SELECT id FROM pc_priority_forms WHERE session_id=$1 AND joiner_id=$2`, [sessionId, user.id])
 
-    // COMPLETING a submitted form: options that weren't on the form when the joiner submitted
-    // (an item whose quantities were all 0 so it never showed, or a member added to an item
-    // later). Only (item, member) pairs NOT already ranked are added — everything already
-    // submitted stays exactly as it was. New options of an item they'd already ranked go AFTER
-    // their existing ones, in the order they now choose. submitted_at is kept, so completing
+    // COMPLETING a submitted form, when options appeared after the joiner submitted (an item
+    // whose quantities were all 0 so it never showed, or a member added to an item later).
+    // Only items that currently have at least one option (member/unit with stock) the joiner
+    // hasn't ranked can be (re)ranked — for those, the joiner's ranking of that WHOLE item is
+    // replaced by the one sent (a new member means re-ranking the item, not tacking the member on
+    // at the end). Every other item stays exactly as submitted. submitted_at is kept, so completing
     // never loses their place in timestamp order.
     if (existingForm && body.complete === true) {
-      const existing = await query<any>(`SELECT item_id, member_id, priority FROM pc_priority_entries WHERE form_id=$1`, [existingForm.id])
+      const [existing, stocked] = await Promise.all([
+        query<any>(`SELECT item_id, member_id FROM pc_priority_entries WHERE form_id=$1`, [existingForm.id]),
+        query<any>(`
+          SELECT q.item_id, q.member_id FROM pc_item_quantities q
+          WHERE q.total_pulled > 0
+            AND q.item_id = ANY(SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1))
+        `, [sessionId]),
+      ])
       const have = new Set(existing.map((e: any) => `${e.item_id}|${e.member_id}`))
-      const maxByItem = new Map<string, number>()
-      for (const e of existing) maxByItem.set(e.item_id, Math.max(maxByItem.get(e.item_id) || 0, e.priority))
-      const validItems = new Set((await query<any>(`SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1)`, [sessionId])).map((i: any) => i.id))
-      const incoming = (body.priorities || [])
-        .filter((p: any) => p?.item_id && p?.member_id && validItems.has(p.item_id) && !have.has(`${p.item_id}|${p.member_id}`))
-        .sort((a: any, b: any) => (parseInt(a.priority) || 0) - (parseInt(b.priority) || 0))
-      let added = 0
-      for (const p of incoming) {
-        const next = (maxByItem.get(p.item_id) || 0) + 1
-        maxByItem.set(p.item_id, next)
-        have.add(`${p.item_id}|${p.member_id}`)
-        await query(`INSERT INTO pc_priority_entries (form_id, item_id, member_id, priority) VALUES ($1,$2,$3,$4) ON CONFLICT (form_id, item_id, member_id) DO NOTHING`,
-          [existingForm.id, p.item_id, p.member_id, next])
-        added++
+      const stockedByItem = new Map<string, Set<string>>()
+      for (const q of stocked) {
+        if (!stockedByItem.has(q.item_id)) stockedByItem.set(q.item_id, new Set())
+        stockedByItem.get(q.item_id)!.add(q.member_id)
       }
-      return NextResponse.json({ ok: true, added })
+      const reopenable = new Set([...stockedByItem.entries()]
+        .filter(([itemId, mems]) => [...mems].some(m => !have.has(`${itemId}|${m}`)))
+        .map(([itemId]) => itemId))
+
+      const byItem = new Map<string, { member_id: string; priority: number }[]>()
+      for (const p of (body.priorities || [])) {
+        if (!p?.item_id || !p?.member_id || !reopenable.has(p.item_id)) continue
+        if (!stockedByItem.get(p.item_id)?.has(p.member_id)) continue
+        if (!byItem.has(p.item_id)) byItem.set(p.item_id, [])
+        byItem.get(p.item_id)!.push({ member_id: p.member_id, priority: parseInt(p.priority) || 0 })
+      }
+      if (byItem.size === 0) return NextResponse.json({ error: 'Nothing new to rank — your submitted priorities are unchanged.' }, { status: 400 })
+
+      for (const [itemId, list] of byItem) {
+        const seen = new Set<string>()
+        const ordered = list.sort((a, b) => a.priority - b.priority).filter(e => !seen.has(e.member_id) && !!seen.add(e.member_id))
+        await query(`DELETE FROM pc_priority_entries WHERE form_id=$1 AND item_id=$2`, [existingForm.id, itemId])
+        await query(
+          `INSERT INTO pc_priority_entries (form_id, item_id, member_id, priority)
+           SELECT $1, $2, t.member_id, t.priority FROM UNNEST($3::uuid[], $4::int[]) AS t(member_id, priority)`,
+          [existingForm.id, itemId, ordered.map(e => e.member_id), ordered.map((_, i) => i + 1)]
+        )
+      }
+      return NextResponse.json({ ok: true, items: byItem.size })
     }
 
     if (existingForm) {
