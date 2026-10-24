@@ -294,12 +294,22 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
   }
 
   if (body.inclusions) {
+    // Manual edits from the Inclusions box. A 0 deletes the row (auto-fill never writes zero
+    // rows either), so a joiner set to 0 everywhere drops out of the session like one who never
+    // qualified. Only packs belonging to THIS session are accepted.
+    const sessionPacks = new Set((await query<any>(`SELECT id FROM pc_packs WHERE session_id=$1`, [sessionId])).map((p: any) => p.id))
     for (const a of body.inclusions) {
-      await query(`
-        INSERT INTO pc_pack_inclusions (session_id, pack_id, joiner_id, inclusions_assigned)
-        VALUES ($1,$2,$3,$4)
-        ON CONFLICT (pack_id, joiner_id) DO UPDATE SET inclusions_assigned=$4
-      `, [sessionId, a.pack_id, a.joiner_id, parseInt(a.inclusions_assigned) || 0])
+      if (!a?.joiner_id || !sessionPacks.has(a.pack_id)) continue
+      const n = Math.max(0, parseInt(a.inclusions_assigned) || 0)
+      if (n === 0) {
+        await query(`DELETE FROM pc_pack_inclusions WHERE session_id=$1 AND pack_id=$2 AND joiner_id=$3`, [sessionId, a.pack_id, a.joiner_id])
+      } else {
+        await query(`
+          INSERT INTO pc_pack_inclusions (session_id, pack_id, joiner_id, inclusions_assigned)
+          VALUES ($1,$2,$3,$4)
+          ON CONFLICT (pack_id, joiner_id) DO UPDATE SET inclusions_assigned=$4
+        `, [sessionId, a.pack_id, a.joiner_id, n])
+      }
     }
     return NextResponse.json({ ok: true })
   }

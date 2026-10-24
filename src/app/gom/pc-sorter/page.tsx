@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useCallback, Fragment } from 'react'
+import { useEffect, useState, useCallback, useRef, Fragment } from 'react'
 import { Plus, Music, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Check, Clock, Zap, Repeat, Shuffle, ShieldCheck } from 'lucide-react'
 import { Button, Card, CardContent, CardHeader, Modal, Input, Select, FormField, PageHeader, EmptyState, Badge } from '@/components/ui'
 import { WeightVariantPicker, type WeightVariant } from '@/components/shared/WeightVariantPicker'
@@ -15,6 +15,16 @@ const PC_ITEM_TYPES = [
   { value: 'photobook', label: '📖 Photobook' },
   { value: 'custom', label: '✏️ Custom' },
 ]
+
+// Manage Inclusions drafts (joiner_id -> pack_id -> typed value) built from a session's saved rows.
+function inclusionDraftsFrom(d: any): Record<string, Record<string, string>> {
+  const inc: Record<string, Record<string, string>> = {}
+  for (const i of d?.inclusions || []) {
+    if (!inc[i.joiner_id]) inc[i.joiner_id] = {}
+    inc[i.joiner_id][i.pack_id] = String(i.inclusions_assigned)
+  }
+  return inc
+}
 
 function orderLabel(o: any) {
   return [o.group?.name, o.round_number ? `R${o.round_number}` : null, o.shop?.name].filter(Boolean).join(' · ') || o.id?.slice(0, 8)
@@ -189,7 +199,11 @@ export default function GomPcSorterPage() {
   const [unitDraftMembers, setUnitDraftMembers] = useState<Record<string, string[]>>({})
   const [unitDraftName, setUnitDraftName] = useState<Record<string, string | undefined>>({})
 
-  const [inclusionsModal, setInclusionsModal] = useState<string | null>(null)
+  const [inclusionsModal, setInclusionsModalState] = useState<string | null>(null)
+  // The drafts below belong to ONE session at a time (the one whose Inclusions box is open).
+  // The ref lets loadDetails — which runs for every session that gets expanded/refreshed — know
+  // whether it may replace them, so loading another session never wipes what's in the open box.
+  const inclusionsModalRef = useRef<string | null>(null)
   const [inclusionDrafts, setInclusionDrafts] = useState<Record<string, Record<string, string>>>({}) // joiner_id -> pack_id -> value
   const [spendThresholdDraft, setSpendThresholdDraft] = useState<Record<string, string>>({}) // session_id -> ₩ threshold typed in the "per amount spent" auto-fill
   const [spendResult, setSpendResult] = useState<Record<string, any>>({}) // session_id -> last "per amount spent" auto-fill breakdown
@@ -230,13 +244,16 @@ export default function GomPcSorterPage() {
       }
     }
     setQtyDrafts(qd)
-    const inc: Record<string, Record<string, string>> = {}
-    for (const i of d.inclusions || []) {
-      if (!inc[i.joiner_id]) inc[i.joiner_id] = {}
-      inc[i.joiner_id][i.pack_id] = String(i.inclusions_assigned)
-    }
-    setInclusionDrafts(inc)
+    if (inclusionsModalRef.current === null || inclusionsModalRef.current === sessionId) setInclusionDrafts(inclusionDraftsFrom(d))
     return d
+  }
+
+  // Opening the Inclusions box always starts from THAT session's saved numbers (never leftovers
+  // from another session, or from a previous edit that was cancelled). Closing it clears the ref.
+  function setInclusionsModal(sessionId: string | null) {
+    inclusionsModalRef.current = sessionId
+    setInclusionsModalState(sessionId)
+    if (sessionId) setInclusionDrafts(inclusionDraftsFrom(sessionDetails[sessionId]))
   }
 
   async function toggleExpand(sessionId: string) {
@@ -443,19 +460,27 @@ export default function GomPcSorterPage() {
     setSaving(false)
   }
 
-  async function saveInclusions(sessionId: string, packs: any[]) {
+  async function saveInclusions(sessionId: string, packs: any[], joinerIds: string[]) {
     setSaving(true)
+    // Send EVERY joiner × pack shown in the box, zeros included — a number lowered to 0 (or
+    // cleared) must reach the server too, otherwise the old value silently stays.
     const rows: any[] = []
-    for (const [joinerId, byPack] of Object.entries(inclusionDrafts)) {
+    for (const joinerId of joinerIds) {
       for (const p of packs) {
-        const v = parseInt(byPack[p.id] || '0') || 0
-        if (v > 0) rows.push({ joiner_id: joinerId, pack_id: p.id, inclusions_assigned: v })
+        const v = Math.max(0, parseInt(inclusionDrafts[joinerId]?.[p.id] || '0') || 0)
+        rows.push({ joiner_id: joinerId, pack_id: p.id, inclusions_assigned: v })
       }
     }
-    await fetch(`/api/pc-sorter/${sessionId}`, {
+    const res = await fetch(`/api/pc-sorter/${sessionId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inclusions: rows }),
-    })
+    }).catch(() => null)
+    if (!res || !res.ok) {
+      const err = res ? await res.json().catch(() => null) : null
+      alert(err?.error || 'Inclusions could not be saved. Please try again.')
+      setSaving(false)
+      return
+    }
     await loadDetails(sessionId)
     setInclusionsModal(null)
     setSaving(false)
@@ -1251,7 +1276,7 @@ export default function GomPcSorterPage() {
                   <p className="text-sm font-semibold">Auto-fill / refresh from orders</p>
                   <p className="text-xs text-muted-foreground">Sums inclusion counts from this session's selected orders only (plus any claim mentioning "album" in those orders — or, for an order narrowed to specific items, every claim on those items) and splits across packs. Fully replaces every current value, including clearing joiners who no longer qualify.</p>
                 </div>
-                <Button size="sm" onClick={() => autoFillInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>✨ Auto-fill</Button>
+                <Button size="sm" onClick={() => autoFillInclusions(inclusionsModal)}>✨ Auto-fill</Button>
               </div>
               {(() => {
                 const sid = inclusionsModal
@@ -1312,7 +1337,7 @@ export default function GomPcSorterPage() {
                   <p className="text-sm font-semibold">Reset all inclusions</p>
                   <p className="text-xs text-muted-foreground">Clears every joiner's inclusion count for this session back to zero — for starting over by hand instead of auto-filling. Never touches priority forms or past sort results — joiners' submitted rankings stay exactly as they are.</p>
                 </div>
-                <Button size="sm" variant="destructive" onClick={() => resetInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>Reset</Button>
+                <Button size="sm" variant="destructive" onClick={() => resetInclusions(inclusionsModal)}>Reset</Button>
               </div>
               </>
               )}
@@ -1385,7 +1410,7 @@ export default function GomPcSorterPage() {
               )}
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="outline" onClick={() => { setInclusionsModal(null); setInclusionSourcesOpenFor(null) }}>{modalLocked ? 'Close' : 'Cancel'}</Button>
-                {!modalLocked && <Button onClick={() => saveInclusions(inclusionsModal, packs)} disabled={saving}>{saving ? 'Saving…' : 'Save inclusions'}</Button>}
+                {!modalLocked && <Button onClick={() => saveInclusions(inclusionsModal, packs, joiners.map((j: any) => j.joiner_id))} disabled={saving}>{saving ? 'Saving…' : 'Save inclusions'}</Button>}
               </div>
             </div>
           </Modal>

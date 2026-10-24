@@ -1,3 +1,13 @@
+# Fix: manual inclusion edits not saving — 2026-10-24
+
+**Edited:** `src/app/gom/pc-sorter/page.tsx`, `src/app/api/pc-sorter/[sessionId]/route.ts`
+
+- Lowering a number to 0 or clearing it in Manage inclusions now saves (before, only numbers above 0 were sent,
+  so the old value stayed). A joiner at 0 in every pack is removed from the session, same as auto-fill.
+- The box now always opens with that session's saved numbers. Before, opening/refreshing another session or
+  cancelling an edit left wrong numbers in the box, which then looked saved.
+- A failed save (e.g. locked session) now shows an error instead of closing silently.
+
 # PC Sorter: sort only some items of an order — 2026-10-24
 
 No manual SQL needed: the new column self-migrates on first use.
