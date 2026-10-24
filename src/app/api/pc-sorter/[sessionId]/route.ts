@@ -154,6 +154,34 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     // reopens the form after a sort, that's for joiners who never submitted at all to get a
     // chance; it never reopens editing for someone who already has a form on file.
     const existingForm = await queryOne<any>(`SELECT id FROM pc_priority_forms WHERE session_id=$1 AND joiner_id=$2`, [sessionId, user.id])
+
+    // COMPLETING a submitted form: options that weren't on the form when the joiner submitted
+    // (an item whose quantities were all 0 so it never showed, or a member added to an item
+    // later). Only (item, member) pairs NOT already ranked are added — everything already
+    // submitted stays exactly as it was. New options of an item they'd already ranked go AFTER
+    // their existing ones, in the order they now choose. submitted_at is kept, so completing
+    // never loses their place in timestamp order.
+    if (existingForm && body.complete === true) {
+      const existing = await query<any>(`SELECT item_id, member_id, priority FROM pc_priority_entries WHERE form_id=$1`, [existingForm.id])
+      const have = new Set(existing.map((e: any) => `${e.item_id}|${e.member_id}`))
+      const maxByItem = new Map<string, number>()
+      for (const e of existing) maxByItem.set(e.item_id, Math.max(maxByItem.get(e.item_id) || 0, e.priority))
+      const validItems = new Set((await query<any>(`SELECT id FROM pc_items WHERE pack_id = ANY(SELECT id FROM pc_packs WHERE session_id=$1)`, [sessionId])).map((i: any) => i.id))
+      const incoming = (body.priorities || [])
+        .filter((p: any) => p?.item_id && p?.member_id && validItems.has(p.item_id) && !have.has(`${p.item_id}|${p.member_id}`))
+        .sort((a: any, b: any) => (parseInt(a.priority) || 0) - (parseInt(b.priority) || 0))
+      let added = 0
+      for (const p of incoming) {
+        const next = (maxByItem.get(p.item_id) || 0) + 1
+        maxByItem.set(p.item_id, next)
+        have.add(`${p.item_id}|${p.member_id}`)
+        await query(`INSERT INTO pc_priority_entries (form_id, item_id, member_id, priority) VALUES ($1,$2,$3,$4) ON CONFLICT (form_id, item_id, member_id) DO NOTHING`,
+          [existingForm.id, p.item_id, p.member_id, next])
+        added++
+      }
+      return NextResponse.json({ ok: true, added })
+    }
+
     if (existingForm) {
       return NextResponse.json({ error: "You've already submitted your priorities for this session — they can't be changed." }, { status: 403 })
     }

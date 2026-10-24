@@ -1,3 +1,18 @@
+# PC Sorter: complete a submitted form with new options — 2026-10-24
+
+**Edited:** `src/app/joiner/pc-sorter/page.tsx`, `src/app/api/pc-sorter/[sessionId]/route.ts`, `src/lib/pcSorter.ts`,
+`src/app/gom/pc-sorter/page.tsx`
+
+- **Joiners:** after submitting, if options appear that weren't on the form (an item whose quantities were all 0,
+  a member added later), the Sorting page shows "New options to rank" while the form is open. They rank only the
+  new options and click "Add to my preferences". What they already submitted never changes; new options of an
+  item they'd already ranked go after their existing ones. Their submission time is kept.
+- **GOM:** each submitted form in "Forms & Inclusions" shows "⚠ N new options not ranked yet" when that applies.
+  The form must be open (reopen it if you closed it) for joiners to complete.
+- **Sort fix:** a joiner who submitted but has no ranking for an item (or whose ranked options ran out while
+  unranked ones remain) used to get nothing for it. They now get a random pick from what's left, served before
+  non-submitters (by submission time).
+
 # PC Sorter: packs of different sizes (e.g. Bread set 44 pcs / Letter set 30 pcs) — 2026-10-24
 
 No manual SQL needed: the new columns self-migrate on first use.

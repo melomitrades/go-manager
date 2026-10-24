@@ -627,6 +627,21 @@ export default function GomPcSorterPage() {
     return list
   }
 
+  // How many options (item × member with stock) a SUBMITTED joiner hasn't ranked yet — added after
+  // they submitted, e.g. an item whose quantities were all 0 back then. They can complete their
+  // form from the joiner Sorting page while the form is open; until then those picks are random.
+  const unrankedOptionsFor = (d: any, form: any) => {
+    const ranked = new Set((d?.entries || []).filter((e: any) => e.form_id === form.id).map((e: any) => `${e.item_id}|${e.member_id}`))
+    let n = 0
+    for (const item of d?.items || []) {
+      const packNeed = (d?.inclusions || []).filter((i: any) => i.joiner_id === form.joiner_id && i.pack_id === item.pack_id).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
+      const need = item.is_unit ? packNeed - guaranteedForJoinerItem(d, form.joiner_id, item.id) : packNeed
+      if (need <= 0) continue
+      n += (d?.quantities || []).filter((q: any) => q.item_id === item.id && (q.total_pulled || 0) > 0 && !ranked.has(`${item.id}|${q.member_id}`)).length
+    }
+    return n
+  }
+
   const totalInclusionsFor = (d: any, joinerId: string) =>
     (d?.inclusions || []).filter((i: any) => i.joiner_id === joinerId).reduce((s: number, i: any) => s + (parseInt(i.inclusions_assigned) || 0), 0)
 
@@ -1010,7 +1025,13 @@ export default function GomPcSorterPage() {
                                 return (
                                   <div key={f.id} className="border border-border rounded-xl overflow-hidden">
                                     <div className="flex items-center justify-between px-3 py-2 bg-secondary/30">
-                                      <p className="text-sm font-semibold">{f.display_name || f.username}</p>
+                                      <p className="text-sm font-semibold">
+                                        {f.display_name || f.username}
+                                        {(() => { const n = unrankedOptionsFor(d, f); return n > 0 ? (
+                                          <span className="ml-2 text-[11px] font-medium text-amber-700 dark:text-amber-400" title="Options added after this joiner submitted. They can rank them from their Sorting page while the form is open — otherwise those picks are random.">
+                                            ⚠ {n} new option{n !== 1 ? 's' : ''} not ranked yet
+                                          </span>) : null })()}
+                                      </p>
                                       <span className="text-xs text-muted-foreground">{formatDateTime(f.submitted_at)}</span>
                                     </div>
                                     <div className="px-3 py-2 space-y-1.5">

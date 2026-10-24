@@ -691,7 +691,11 @@ function timestampSort(ctx: ItemCtx): AssignResult[] {
         isRepeat = true
         round = Math.max(round, 2)
       }
-      if (assigned) results.push({ joiner_id: joinerId, member_id: assigned.member_id, round: isRepeat ? 2 : 1, is_repeat: isRepeat, is_random: false })
+      if (assigned) {
+        results.push({ joiner_id: joinerId, member_id: assigned.member_id, round: isRepeat ? 2 : 1, is_repeat: isRepeat, is_random: false })
+        // Keep need in sync (fairSort already does) so the random fill afterwards knows what's left.
+        ctx.need.set(joinerId, (ctx.need.get(joinerId) || 0) - 1)
+      }
       // else: this unit is unfulfilled (no stock left anywhere in their list) — just move on
     }
   }
@@ -753,14 +757,23 @@ function fairSort(ctx: ItemCtx): AssignResult[] {
 // after every joiner who DID submit has been processed gets handed out to them at random.
 // Same ownership rule applies — skip members they already own until every option is
 // exhausted, then allow a repeat. Both the joiner order and the member picked are randomized.
+//
+// Also covers joiners who DID submit but whose ranking doesn't cover what's left: they submitted
+// before an item/member appeared (e.g. its quantities were all 0) and didn't complete their form.
+// Before, those got nothing for that item. They're served first (by submission time), since they
+// did send a form, then the non-submitters in random order.
 function randomFillUnsubmitted(ctx: ItemCtx, submittedJoinerIds: Set<string>): AssignResult[] {
   const results: AssignResult[] = []
-  const joinerIds = [...ctx.need.keys()].filter(j => (ctx.need.get(j) || 0) > 0 && !submittedJoinerIds.has(j))
+  const withNeed = [...ctx.need.keys()].filter(j => (ctx.need.get(j) || 0) > 0)
+  const submitters = withNeed.filter(j => submittedJoinerIds.has(j))
+    .sort((a, b) => (ctx.submittedAt.get(a)?.getTime() || 0) - (ctx.submittedAt.get(b)?.getTime() || 0))
+  const others = withNeed.filter(j => !submittedJoinerIds.has(j))
   // shuffle so no joiner is systematically favored when leftover stock is scarce
-  for (let i = joinerIds.length - 1; i > 0; i--) {
+  for (let i = others.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
-    ;[joinerIds[i], joinerIds[j]] = [joinerIds[j], joinerIds[i]]
+    ;[others[i], others[j]] = [others[j], others[i]]
   }
+  const joinerIds = [...submitters, ...others]
 
   for (const joinerId of joinerIds) {
     const n = ctx.need.get(joinerId) || 0
