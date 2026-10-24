@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
-import { ensurePcSorterSchema, autoFillInclusions, resetInclusions, computeGuaranteedUnitClaims } from '@/lib/pcSorter'
+import { ensurePcSorterSchema, autoFillInclusions, autoFillInclusionsBySpend, resetInclusions, computeGuaranteedUnitClaims } from '@/lib/pcSorter'
 
 export async function GET(req: NextRequest, { params }: { params: { sessionId: string } }) {
   const session = await getServerSession(authOptions)
@@ -202,7 +202,7 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
   // Every other GOM action below mutates packs/items/quantities/inclusions/the sort — all
   // blocked once the session is locked. (lock_sort/unlock_sort themselves are handled above,
   // before this check, so unlocking always works regardless of current state.)
-  const mutatingKeys = ['add_pack', 'rename_pack', 'delete_pack', 'add_item', 'rename_item', 'delete_item', 'add_unit', 'delete_unit', 'update_quantities', 'inclusions', 'auto_fill_inclusions', 'reset_inclusions']
+  const mutatingKeys = ['add_pack', 'rename_pack', 'delete_pack', 'add_item', 'rename_item', 'delete_item', 'add_unit', 'delete_unit', 'update_quantities', 'inclusions', 'auto_fill_inclusions', 'auto_fill_by_spend', 'reset_inclusions']
   if (mutatingKeys.some(k => body[k] !== undefined)) {
     const sessionRow = await queryOne<any>(`SELECT locked_at FROM pc_sorting_sessions WHERE id=$1`, [sessionId])
     if (sessionRow?.locked_at) return NextResponse.json({ error: 'This session is locked — unlock it first to make changes.' }, { status: 403 })
@@ -305,6 +305,12 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
   }
   if (body.auto_fill_inclusions) {
     const result = await autoFillInclusions(sessionId)
+    return NextResponse.json(result)
+  }
+  if (body.auto_fill_by_spend) {
+    const threshold = Number(body.auto_fill_by_spend.threshold_krw)
+    if (!threshold || threshold <= 0) return NextResponse.json({ error: 'Enter a positive ₩ threshold' }, { status: 400 })
+    const result = await autoFillInclusionsBySpend(sessionId, threshold)
     return NextResponse.json(result)
   }
   if (body.reset_inclusions) {

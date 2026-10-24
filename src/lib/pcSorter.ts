@@ -56,6 +56,16 @@ export async function ensurePcSorterSchema() {
     // quantities, inclusions, and the sort itself all become read-only until unlocked again.
     // NULL = unlocked (the normal, editable state).
     `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ`,
+    // "Per amount spent" inclusion mode (autoFillInclusionsBySpend below): one inclusion per
+    // this many ₩ a joiner claimed in an order. NULL = never used on this session. Only
+    // remembered so the Manage Inclusions box can pre-fill the last threshold used.
+    `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS spend_threshold_krw INTEGER`,
+    // Per-order ITEM narrowing: { order_id: [item names (order_items.description) to include] }.
+    // Same convention as order_versions: absent key = every item of that order counts (normal
+    // behaviour); present key = only claims on those items count, e.g. just the "Trading cards"
+    // line of a merch order. See itemFilterFor / rowCountsForSession below.
+    `ALTER TABLE pc_sorting_sessions ADD COLUMN IF NOT EXISTS order_items_filter JSONB DEFAULT NULL`,
+    `ALTER TABLE order_items ADD COLUMN IF NOT EXISTS price_krw NUMERIC(12,0)`,
 
     // Packs (was "versions") — one or more per session
     `CREATE TABLE IF NOT EXISTS pc_packs (
@@ -178,6 +188,17 @@ export async function ensurePcSorterSchema() {
   ])
 }
 
+// ── Per-order item narrowing (order_items_filter) ─────────────────────────────────
+// Returns the selected item names for one order, or null when that order isn't narrowed.
+// An item is identified by its claim name (order_items.description — the pricing option
+// label); a claim with no name is keyed as ''.
+export function parseOrderItemsFilter(sessionRow: any): Record<string, string[]> {
+  try { const f = sessionRow?.order_items_filter; if (!f) return {}; return typeof f === 'string' ? JSON.parse(f) : f } catch { return {} }
+}
+function itemFilterFor(filter: Record<string, string[]>, orderId: string): string[] | null {
+  return Object.prototype.hasOwnProperty.call(filter, orderId) ? filter[orderId] : null
+}
+
 // ── Auto-fill / refresh pack inclusions from the session's SELECTED orders ──────────
 // Deliberately scoped to session_row.order_ids only — NOT every order linked to the box.
 // A session only counts the orders the GOM explicitly checked off for it. Within those
@@ -226,13 +247,20 @@ export async function autoFillInclusions(sessionId: string) {
   // all of them — claim_group_id and the description/price/version fallback key are only ever
   // meant to disambiguate claims WITHIN one order, so sharing one set across orders could wrongly
   // collapse two genuinely separate claims from different orders that happen to share a key.
+  // Item narrowing: in an order where the GOM picked specific items (e.g. only "Trading cards"
+  // from a merch order), ONLY claims on those items count — and every one of them counts, one
+  // inclusion per item claimed (amount_claimed), even without "album" in its name or an
+  // inclusions_count typed in (an explicit inclusions_count still wins). Orders with no item
+  // narrowing behave exactly as before.
+  const itemsFilter = parseOrderItemsFilter(sessionRow)
+  const narrowedOrderIds = orderIds.filter(oid => itemFilterFor(itemsFilter, oid) !== null)
   const allItems = await query<any>(`
     SELECT oi.order_id, COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
            oi.description, oi.version_name, oi.price_eur, oi.claim_group_id,
            (COALESCE(oi.inclusions_count, 0) > 0) AS is_explicit,
            CASE
              WHEN COALESCE(oi.inclusions_count, 0) > 0 THEN oi.inclusions_count
-             WHEN oi.description ILIKE '%album%' THEN COALESCE(oi.amount_claimed, 1)
+             WHEN oi.description ILIKE '%album%' OR oi.order_id = ANY($2::uuid[]) THEN COALESCE(oi.amount_claimed, 1)
              ELSE 0
            END AS effective_inclusions
     FROM order_items oi
@@ -240,8 +268,8 @@ export async function autoFillInclusions(sessionId: string) {
     WHERE oi.order_id = ANY($1::uuid[])
       AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
       AND oi.lost_claim_id IS NULL
-      AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%')
-  `, [orderIds]).catch(() => [] as any[])
+      AND (COALESCE(oi.inclusions_count, 0) > 0 OR oi.description ILIKE '%album%' OR oi.order_id = ANY($2::uuid[]))
+  `, [orderIds, narrowedOrderIds]).catch(() => [] as any[])
 
   const itemsByOrder = new Map<string, any[]>()
   for (const it of allItems) {
@@ -252,7 +280,9 @@ export async function autoFillInclusions(sessionId: string) {
   const joinerTotals: Record<string, number> = {}
   for (const oid of orderIds) {
     const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
-    const items = (itemsByOrder.get(oid) || []).filter(it => !versions || versions.includes(it.version_name))
+    const picked = itemFilterFor(itemsFilter, oid)
+    const items = (itemsByOrder.get(oid) || []).filter(it =>
+      (!versions || versions.includes(it.version_name)) && (!picked || picked.includes(it.description || '')))
     // The Orders form lets a GOM claim one item for several members at once (e.g. "want a
     // photocard of any of these 4 members") — that becomes one order_items ROW PER MEMBER, and
     // an explicit "Inclusions" number typed for that claim is saved onto EVERY one of those
@@ -282,11 +312,17 @@ export async function autoFillInclusions(sessionId: string) {
     }
   }
 
+  return writeInclusionTotals(sessionId, packs, joinerTotals)
+}
+
+// Splits each joiner's total inclusion count across the session's packs and fully REPLACES
+// the session's inclusion rows with the result. Shared by both auto-fill modes.
+async function writeInclusionTotals(sessionId: string, packs: any[], joinerTotals: Record<string, number>) {
   const packTotals: Record<string, number> = {}
   for (const p of packs) packTotals[p.id] = 0
 
   const rows: { joiner_id: string; pack_id: string; inclusions_assigned: number }[] = []
-  const entries = Object.entries(joinerTotals)
+  const entries = Object.entries(joinerTotals).filter(([, t]) => t > 0)
   const multi = entries.filter(([, t]) => t > 1)
   const single = entries.filter(([, t]) => t === 1)
 
@@ -323,6 +359,80 @@ export async function autoFillInclusions(sessionId: string) {
   }
 
   return { assignments: rows }
+}
+
+// ── Auto-fill by AMOUNT SPENT ──────────────────────────────────────────────
+// One inclusion per `thresholdKrw` ₩ a joiner claimed, rounded down:
+//   threshold 70,000 → 10k ₩ = 0, 70k ₩ = 1, 150k ₩ = 2.
+// Spend = Σ price_krw × amount_claimed over the joiner's claims (same formula as the order
+// total in api/orders/[id]). Counted PER ORDER: spend in two different orders of the same
+// session never adds up — each order is checked against the threshold on its own. Uses the
+// session's selected orders + version narrowing, and skips lost claims, exactly like the
+// normal auto-fill. Every claim counts (not only albums). EMS/customs/shipping never count.
+// Joiners under the threshold get no inclusion row, so the session stays hidden for them.
+export async function autoFillInclusionsBySpend(sessionId: string, thresholdKrw: number) {
+  await ensurePcSorterSchema()
+  const threshold = Math.round(Number(thresholdKrw))
+  if (!threshold || threshold <= 0) throw new Error('Threshold must be a positive ₩ amount')
+
+  const sessionRow = await queryOne<any>(`SELECT * FROM pc_sorting_sessions WHERE id=$1`, [sessionId])
+  if (!sessionRow) throw new Error('Session not found')
+  await query(`UPDATE pc_sorting_sessions SET spend_threshold_krw=$1 WHERE id=$2`, [threshold, sessionId])
+
+  const packs = await query<any>(`SELECT * FROM pc_packs WHERE session_id=$1 ORDER BY sort_order, created_at`, [sessionId])
+  const parse = (v: any, fallback: any) => { try { if (!v) return fallback; return typeof v === 'string' ? JSON.parse(v) : v } catch { return fallback } }
+  const orderIds: string[] = parse(sessionRow.order_ids, [])
+  const orderVersions: Record<string, string[]> = parse(sessionRow.order_versions, {})
+  const itemsFilter = parseOrderItemsFilter(sessionRow)
+
+  const empty = { assignments: [] as any[], threshold, joiners: [] as any[], missingKrwClaims: 0, noPacks: !packs.length, noOrders: !orderIds.length }
+  if (!packs.length || !orderIds.length) return empty
+
+  const rows = await query<any>(`
+    SELECT oi.order_id, COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
+           oi.version_name, oi.description, oi.price_krw, oi.price_eur, COALESCE(oi.amount_claimed, 1) AS amount_claimed,
+           p.display_name, p.username
+    FROM order_items oi
+    LEFT JOIN orders o ON o.id = oi.order_id
+    LEFT JOIN profiles p ON p.id = COALESCE(oi.joiner_id, o.personal_joiner_id)
+    WHERE oi.order_id = ANY($1::uuid[])
+      AND COALESCE(oi.joiner_id, o.personal_joiner_id) IS NOT NULL
+      AND oi.lost_claim_id IS NULL
+  `, [orderIds])
+
+  // joiner -> order -> ₩ spent
+  const spend: Record<string, Record<string, number>> = {}
+  const names: Record<string, string> = {}
+  const missing: Record<string, number> = {}
+  let missingKrwClaims = 0
+  for (const r of rows) {
+    const versions = Object.prototype.hasOwnProperty.call(orderVersions, r.order_id) ? orderVersions[r.order_id] : null
+    if (versions && !versions.includes(r.version_name)) continue
+    const picked = itemFilterFor(itemsFilter, r.order_id)
+    if (picked && !picked.includes(r.description || '')) continue
+    names[r.joiner_id] = r.display_name || r.username || 'Unknown'
+    spend[r.joiner_id] ??= {}
+    spend[r.joiner_id][r.order_id] ??= 0
+    if (r.price_krw == null) {
+      // Claim has a € price but no ₩ price on its pricing option → can't be counted.
+      if (parseFloat(r.price_eur) > 0) { missingKrwClaims++; missing[r.joiner_id] = (missing[r.joiner_id] || 0) + 1 }
+      continue
+    }
+    spend[r.joiner_id][r.order_id] += (parseFloat(r.price_krw) || 0) * (parseInt(r.amount_claimed) || 1)
+  }
+
+  const joinerTotals: Record<string, number> = {}
+  const joiners: { joiner_id: string; name: string; spent_krw: number; inclusions: number; missing_krw_claims: number }[] = []
+  for (const [jid, byOrder] of Object.entries(spend)) {
+    let incl = 0, total = 0
+    for (const amt of Object.values(byOrder)) { total += amt; incl += Math.floor(amt / threshold) }
+    joinerTotals[jid] = incl
+    joiners.push({ joiner_id: jid, name: names[jid], spent_krw: total, inclusions: incl, missing_krw_claims: missing[jid] || 0 })
+  }
+  joiners.sort((a, b) => b.spent_krw - a.spent_krw)
+
+  const result = await writeInclusionTotals(sessionId, packs, joinerTotals)
+  return { ...empty, assignments: result.assignments, joiners, missingKrwClaims }
 }
 
 // Wipe every inclusion assignment for a session back to nothing — a manual "start over" the
@@ -381,6 +491,7 @@ export async function computeGuaranteedUnitClaims(
   const orderVersions: Record<string, string[]> = (() => {
     try { const ov = sessionRow.order_versions; if (!ov) return {}; return typeof ov === 'string' ? JSON.parse(ov) : ov } catch { return {} }
   })()
+  const itemsFilter = parseOrderItemsFilter(sessionRow)
 
   const allLines = await query<any>(`
     SELECT oi.order_id, COALESCE(oi.joiner_id, o.personal_joiner_id) AS joiner_id,
@@ -413,7 +524,9 @@ export async function computeGuaranteedUnitClaims(
 
     for (const oid of orderIds) {
       const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
-      const lines = (linesByOrder.get(oid) || []).filter(l => !versions || versions.includes(l.version_name))
+      const picked = itemFilterFor(itemsFilter, oid)
+      const lines = (linesByOrder.get(oid) || []).filter(l =>
+        (!versions || versions.includes(l.version_name)) && (!picked || picked.includes(l.description || '')))
       // Same claim-line dedup as autoFillInclusions, re-created per order (not shared across
       // orders) for the same reason: it's only meant to disambiguate claims WITHIN one order.
       const seenExplicit = new Set<string>()

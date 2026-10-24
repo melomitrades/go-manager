@@ -30,16 +30,48 @@ function versionsForOrder(o: any): string[] {
   } catch { return [] }
 }
 
+// Distinct claimed item names (pricing option labels) on an order, e.g. ["Trading cards",
+// "Acrylic stand"]. Claims with no name are keyed ''. Lost-claim leftovers are ignored.
+function itemNamesForOrder(o: any): string[] {
+  const set = new Set<string>()
+  for (const it of o?.items || []) { if (!it.lost_claim_id) set.add(it.description || '') }
+  return Array.from(set).sort((a, b) => a.localeCompare(b))
+}
+
 // Checkboxes for which orders (and, for multi-version orders, which specific versions of
 // each) feed inclusion counts into a session. An order with no version override selected
 // still counts every version — the override map only ever holds deliberate narrowing.
-function OrderPicker({ orders, orderIds, setOrderIds, orderVersions, setOrderVersions }: {
+function OrderPicker({ orders, orderIds, setOrderIds, orderVersions, setOrderVersions, orderItems, setOrderItems }: {
   orders: any[]
   orderIds: string[]
   setOrderIds: (fn: any) => void
   orderVersions: Record<string, string[]>
   setOrderVersions: (fn: any) => void
+  orderItems: Record<string, string[]>
+  setOrderItems: (fn: any) => void
 }) {
+  // Same "absent key = everything" convention as versions. Items default to ALL checked; the
+  // "Only this" shortcut is the quick way to sort just one item of a merch order.
+  function toggleItem(o: any, name: string) {
+    const all = itemNamesForOrder(o)
+    setOrderItems((prev: Record<string, string[]>) => {
+      const current = prev[o.id] ?? all
+      const next = current.includes(name) ? current.filter(v => v !== name) : [...current, name]
+      const copy = { ...prev }
+      if (next.length === all.length) delete copy[o.id]
+      else copy[o.id] = next
+      return copy
+    })
+  }
+  function onlyItem(o: any, name: string) {
+    const all = itemNamesForOrder(o)
+    setOrderItems((prev: Record<string, string[]>) => {
+      const copy = { ...prev }
+      if (all.length <= 1) delete copy[o.id]
+      else copy[o.id] = [name]
+      return copy
+    })
+  }
   function toggleOrder(o: any) {
     setOrderIds((prev: string[]) => prev.includes(o.id) ? prev.filter(x => x !== o.id) : [...prev, o.id])
   }
@@ -60,14 +92,21 @@ function OrderPicker({ orders, orderIds, setOrderIds, orderVersions, setOrderVer
         const allVersions = versionsForOrder(o)
         const included = orderIds.includes(o.id)
         const checkedVersions = orderVersions[o.id] ?? allVersions
+        const allItems = itemNamesForOrder(o)
+        const checkedItems = orderItems[o.id] ?? allItems
         return (
-          <div key={o.id} className={allVersions.length > 0 ? 'bg-secondary/10' : ''}>
+          <div key={o.id} className={allVersions.length > 0 || allItems.length > 1 ? 'bg-secondary/10' : ''}>
             <label className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-secondary/40 transition-colors">
               <input type="checkbox" checked={included} onChange={() => toggleOrder(o)} className="accent-primary w-3.5 h-3.5" />
               <span className="text-sm flex-1">{orderLabel(o)}</span>
               {allVersions.length > 0 && (
                 <span className="text-[10px] font-semibold text-muted-foreground">
                   {checkedVersions.length}/{allVersions.length} versions
+                </span>
+              )}
+              {allItems.length > 1 && (
+                <span className={`text-[10px] font-semibold ${orderItems[o.id] ? 'text-primary' : 'text-muted-foreground'}`}>
+                  {checkedItems.length}/{allItems.length} items
                 </span>
               )}
             </label>
@@ -81,6 +120,26 @@ function OrderPicker({ orders, orderIds, setOrderIds, orderVersions, setOrderVer
                 ))}
                 {checkedVersions.length === 0 && (
                   <p className="text-[11px] text-amber-600 dark:text-amber-400">No version selected — this order won't contribute any inclusions.</p>
+                )}
+              </div>
+            )}
+            {included && allItems.length > 1 && (
+              <div className="pl-9 pb-2 pr-4 space-y-1">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground pt-1">Items to sort</p>
+                {allItems.map(name => (
+                  <div key={name} className="flex items-center gap-2 group">
+                    <label className="flex flex-1 items-center gap-2.5 py-1 cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                      <input type="checkbox" checked={checkedItems.includes(name)} onChange={() => toggleItem(o, name)} className="accent-primary w-3 h-3" />
+                      {name || <span className="italic">(no name)</span>}
+                    </label>
+                    <button type="button" onClick={() => onlyItem(o, name)} className="text-[10px] font-semibold text-primary opacity-60 hover:opacity-100">Only this</button>
+                  </div>
+                ))}
+                {orderItems[o.id] && checkedItems.length > 0 && (
+                  <p className="text-[11px] text-muted-foreground">Only claims on the checked items count — 1 inclusion per item claimed (unless the claim has its own inclusions number).</p>
+                )}
+                {checkedItems.length === 0 && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400">No item selected — this order won't contribute any inclusions.</p>
                 )}
               </div>
             )}
@@ -104,11 +163,13 @@ export default function GomPcSorterPage() {
   const [form, setForm] = useState({ title: '', group_id: '', box_id: '', deadline: '' })
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([])
   const [selectedOrderVersions, setSelectedOrderVersions] = useState<Record<string, string[]>>({})
+  const [selectedOrderItems, setSelectedOrderItems] = useState<Record<string, string[]>>({})
 
   const [editingSession, setEditingSession] = useState<any>(null)
   const [editForm, setEditForm] = useState({ title: '', group_id: '', deadline: '', box_id: '' })
   const [editOrderIds, setEditOrderIds] = useState<string[]>([])
   const [editOrderVersions, setEditOrderVersions] = useState<Record<string, string[]>>({})
+  const [editOrderItems, setEditOrderItems] = useState<Record<string, string[]>>({})
 
   const [expandedSession, setExpandedSession] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<Record<string, 'packs' | 'forms' | 'results'>>({})
@@ -130,6 +191,8 @@ export default function GomPcSorterPage() {
 
   const [inclusionsModal, setInclusionsModal] = useState<string | null>(null)
   const [inclusionDrafts, setInclusionDrafts] = useState<Record<string, Record<string, string>>>({}) // joiner_id -> pack_id -> value
+  const [spendThresholdDraft, setSpendThresholdDraft] = useState<Record<string, string>>({}) // session_id -> ₩ threshold typed in the "per amount spent" auto-fill
+  const [spendResult, setSpendResult] = useState<Record<string, any>>({}) // session_id -> last "per amount spent" auto-fill breakdown
   const [inclusionSourcesOpenFor, setInclusionSourcesOpenFor] = useState<string | null>(null) // joiner_id whose "sources" dropdown is expanded, in the Manage Inclusions box
 
   const [sortModal, setSortModal] = useState<string | null>(null)
@@ -182,9 +245,10 @@ export default function GomPcSorterPage() {
     await loadDetails(sessionId)
   }
 
-  function onBoxChange(boxId: string, setIds: (ids: string[]) => void, setF: (fn: any) => void, setVersions: (v: any) => void) {
+  function onBoxChange(boxId: string, setIds: (ids: string[]) => void, setF: (fn: any) => void, setVersions: (v: any) => void, setItems?: (v: any) => void) {
     setF((f: any) => ({ ...f, box_id: boxId }))
-    setVersions({}) // switching boxes invalidates any per-order version narrowing from before
+    setVersions({})
+    setItems?.({}) // switching boxes invalidates any per-order version narrowing from before
     if (!boxId) { setIds([]); return }
     const box = boxes.find((b: any) => b.id === boxId)
     const linkedIds: string[] = (box?.linked_orders || []).map((o: any) => o.order_id || o.id).filter(Boolean)
@@ -207,12 +271,14 @@ export default function GomPcSorterPage() {
         deadline: form.deadline || null,
         order_ids: selectedOrderIds.length > 0 ? selectedOrderIds : null,
         order_versions: selectedOrderVersions,
+        order_items_filter: Object.fromEntries(Object.entries(selectedOrderItems).filter(([oid]) => selectedOrderIds.includes(oid))),
       }),
     })
     setCreateModal(false)
     setForm({ title: '', group_id: '', box_id: '', deadline: '' })
     setSelectedOrderIds([])
     setSelectedOrderVersions({})
+    setSelectedOrderItems({})
     await fetchData()
     setSaving(false)
   }
@@ -231,6 +297,7 @@ export default function GomPcSorterPage() {
         box_id: editForm.box_id || null,
         order_ids: editOrderIds.length > 0 ? editOrderIds : null,
         order_versions: editOrderVersions,
+        order_items_filter: Object.fromEntries(Object.entries(editOrderItems).filter(([oid]) => editOrderIds.includes(oid))),
       }),
     })
     setEditingSession(null)
@@ -347,6 +414,24 @@ export default function GomPcSorterPage() {
     setSaving(false)
   }
 
+  // One inclusion per X ₩ claimed in an order (rounded down). Joiners under X get nothing.
+  async function autoFillBySpend(sessionId: string) {
+    const raw = spendThresholdDraft[sessionId] ?? String(sessions.find((s: any) => s.id === sessionId)?.spend_threshold_krw ?? '')
+    const threshold = parseInt(String(raw).replace(/[^0-9]/g, '')) || 0
+    if (threshold <= 0) { alert('Enter the ₩ amount per inclusion first (e.g. 70000).'); return }
+    if (!confirm(`Replace every inclusion in this session with 1 per ${threshold.toLocaleString()} ₩ claimed?`)) return
+    setSaving(true)
+    const res = await fetch(`/api/pc-sorter/${sessionId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auto_fill_by_spend: { threshold_krw: threshold } }),
+    }).then(r => r.json()).catch(() => null)
+    if (res?.error) alert(res.error)
+    else if (res) setSpendResult(p => ({ ...p, [sessionId]: res }))
+    setSessions(prev => prev.map((s: any) => s.id === sessionId ? { ...s, spend_threshold_krw: threshold } : s))
+    await loadDetails(sessionId)
+    setSaving(false)
+  }
+
   async function resetInclusions(sessionId: string) {
     if (!confirm('Clear every inclusion count for this session? This cannot be undone.')) return
     setSaving(true)
@@ -429,16 +514,21 @@ export default function GomPcSorterPage() {
     const orderVersions: Record<string, string[]> = (() => {
       try { const v = sessionRow.order_versions; if (!v) return {}; return typeof v === 'string' ? JSON.parse(v) : v } catch { return {} }
     })()
+    const itemsFilter: Record<string, string[]> = (() => {
+      try { const v = sessionRow.order_items_filter; if (!v) return {}; return typeof v === 'string' ? JSON.parse(v) : v } catch { return {} }
+    })()
     const results: { order: any; amount: number }[] = []
     for (const oid of orderIds) {
       const order = allOrders.find((o: any) => o.id === oid)
       if (!order) { results.push({ order: { id: oid }, amount: -1 }); continue } // -1 = "can't tell, order not loaded"
       const versions = Object.prototype.hasOwnProperty.call(orderVersions, oid) ? orderVersions[oid] : null
+      const picked: string[] | null = Object.prototype.hasOwnProperty.call(itemsFilter, oid) ? itemsFilter[oid] : null
       const relevant = (order.items || []).filter((it: any) => {
         if (it.lost_claim_id) return false // leftover from a lost claim — nobody's inclusion anymore
         const jid = it.joiner_id || order.personal_joiner_id
         if (jid !== joinerId) return false
         if (versions && !versions.includes(it.version_name)) return false
+        if (picked) return picked.includes(it.description || '') // narrowed order: every checked item counts
         return (parseInt(it.inclusions_count) || 0) > 0 || (it.description || '').toLowerCase().includes('album')
       })
       const seenExplicit = new Set<string>()
@@ -592,6 +682,8 @@ export default function GomPcSorterPage() {
                         setEditOrderIds(savedIds.length > 0 ? savedIds : boxLinkedOrderIds(s.box_id))
                         const savedVersions = (() => { try { const v = s.order_versions; if (!v) return {}; return typeof v === 'string' ? JSON.parse(v) : v } catch { return {} } })()
                         setEditOrderVersions(savedVersions)
+                        const savedItems = (() => { try { const v = s.order_items_filter; if (!v) return {}; return typeof v === 'string' ? JSON.parse(v) : v } catch { return {} } })()
+                        setEditOrderItems(savedItems)
                         setEditingSession(s)
                       }}>Edit</Button>
                       <Button variant="ghost" size="icon" onClick={() => handleDelete(s.id)}><Trash2 size={13} className="text-destructive/50" /></Button>
@@ -1062,7 +1154,7 @@ export default function GomPcSorterPage() {
       </div>
 
       {/* Create Session Modal */}
-      <Modal open={createModal} onClose={() => { setCreateModal(false); setForm({ title: '', group_id: '', box_id: '', deadline: '' }); setSelectedOrderIds([]); setSelectedOrderVersions({}) }} title="New Sorting Session" size="lg">
+      <Modal open={createModal} onClose={() => { setCreateModal(false); setForm({ title: '', group_id: '', box_id: '', deadline: '' }); setSelectedOrderIds([]); setSelectedOrderVersions({}); setSelectedOrderItems({}) }} title="New Sorting Session" size="lg">
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             <FormField label="Session Title" required>
@@ -1074,7 +1166,7 @@ export default function GomPcSorterPage() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             <FormField label="EMS/customs box" required>
-              <Select options={boxes.map((b: any) => ({ value: b.id, label: b.label || 'Box' }))} placeholder="Select box…" value={form.box_id} onChange={e => onBoxChange(e.target.value, setSelectedOrderIds, setForm, setSelectedOrderVersions)} />
+              <Select options={boxes.map((b: any) => ({ value: b.id, label: b.label || 'Box' }))} placeholder="Select box…" value={form.box_id} onChange={e => onBoxChange(e.target.value, setSelectedOrderIds, setForm, setSelectedOrderVersions, setSelectedOrderItems)} />
             </FormField>
             <FormField label="Group">
               <Select options={groups.map((g: any) => ({ value: g.id, label: g.name }))} placeholder="Select group…" value={form.group_id} onChange={e => setForm(f => ({ ...f, group_id: e.target.value }))} />
@@ -1082,11 +1174,12 @@ export default function GomPcSorterPage() {
           </div>
           {form.box_id && (
             <FormField label="Orders included in this session">
-              <p className="text-xs text-muted-foreground mb-2">Inclusion counts will be pulled from these orders. All orders from the box are pre-selected. For a multi-version order, uncheck the versions you don't want feeding this session.</p>
+              <p className="text-xs text-muted-foreground mb-2">Inclusion counts will be pulled from these orders. All orders from the box are pre-selected. For a multi-version order, uncheck the versions you don't want feeding this session. For an order with several items (e.g. merch), pick only the item to sort, like the trading cards.</p>
               <OrderPicker
                 orders={orders.filter((o: any) => boxLinkedOrderIds(form.box_id).includes(o.id))}
                 orderIds={selectedOrderIds} setOrderIds={setSelectedOrderIds}
                 orderVersions={selectedOrderVersions} setOrderVersions={setSelectedOrderVersions}
+                orderItems={selectedOrderItems} setOrderItems={setSelectedOrderItems}
               />
               {selectedOrderIds.length > 0 && <p className="text-xs text-primary font-semibold mt-1">{selectedOrderIds.length} order{selectedOrderIds.length !== 1 ? 's' : ''} selected</p>}
             </FormField>
@@ -1116,7 +1209,7 @@ export default function GomPcSorterPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                 <FormField label="Box">
                   <Select options={boxes.map((b: any) => ({ value: b.id, label: b.label || 'Box' }))} placeholder="No box…" value={editForm.box_id}
-                    onChange={e => onBoxChange(e.target.value, setEditOrderIds, setEditForm, setEditOrderVersions)} />
+                    onChange={e => onBoxChange(e.target.value, setEditOrderIds, setEditForm, setEditOrderVersions, setEditOrderItems)} />
                 </FormField>
                 <FormField label="Group">
                   <Select options={groups.map((g: any) => ({ value: g.id, label: g.name }))} placeholder="Select…" value={editForm.group_id} onChange={e => setEditForm(f => ({ ...f, group_id: e.target.value }))} />
@@ -1124,11 +1217,12 @@ export default function GomPcSorterPage() {
               </div>
               {editForm.box_id && (
                 <FormField label="Orders included in this session">
-                  <p className="text-xs text-muted-foreground mb-2">For a multi-version order, uncheck the versions you don't want feeding this session.</p>
+                  <p className="text-xs text-muted-foreground mb-2">For a multi-version order, uncheck the versions you don't want feeding this session. For an order with several items (e.g. merch), pick only the item to sort, like the trading cards.</p>
                   <OrderPicker
                     orders={editBoxOrders}
                     orderIds={editOrderIds} setOrderIds={setEditOrderIds}
                     orderVersions={editOrderVersions} setOrderVersions={setEditOrderVersions}
+                    orderItems={editOrderItems} setOrderItems={setEditOrderItems}
                   />
                 </FormField>
               )}
@@ -1155,10 +1249,64 @@ export default function GomPcSorterPage() {
               <div className="flex items-center justify-between p-3 bg-primary/5 border border-primary/15 rounded-xl">
                 <div>
                   <p className="text-sm font-semibold">Auto-fill / refresh from orders</p>
-                  <p className="text-xs text-muted-foreground">Sums inclusion counts from this session's selected orders only (plus any claim mentioning "album" in those orders) and splits across packs. Fully replaces every current value, including clearing joiners who no longer qualify.</p>
+                  <p className="text-xs text-muted-foreground">Sums inclusion counts from this session's selected orders only (plus any claim mentioning "album" in those orders — or, for an order narrowed to specific items, every claim on those items) and splits across packs. Fully replaces every current value, including clearing joiners who no longer qualify.</p>
                 </div>
                 <Button size="sm" onClick={() => autoFillInclusions(inclusionsModal).then(() => setInclusionsModal(inclusionsModal))}>✨ Auto-fill</Button>
               </div>
+              {(() => {
+                const sid = inclusionsModal
+                const sRow = sessions.find((s: any) => s.id === sid)
+                const val = spendThresholdDraft[sid] ?? (sRow?.spend_threshold_krw ? String(sRow.spend_threshold_krw) : '')
+                const res = spendResult[sid]
+                return (
+                  <div className="p-3 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-3">
+                    <div className="flex flex-wrap items-end justify-between gap-3">
+                      <div className="flex-1 min-w-[220px]">
+                        <p className="text-sm font-semibold">Auto-fill per amount spent</p>
+                        <p className="text-xs text-muted-foreground">1 inclusion per ₩ amount a joiner claimed in an order, rounded down (e.g. 70,000 ₩ → 10k = 0, 70k = 1, 150k = 2). Uses the ₩ prices of the pricing options. All claims count (only the picked items, if the order is narrowed to some items), lost claims don't. Each order is checked separately. Joiners under the amount get nothing and won't see this session. Fully replaces current values — you can still edit any number by hand afterwards.</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="relative">
+                          <input type="number" min="1" step="1000" value={val} placeholder="70000"
+                            onChange={e => setSpendThresholdDraft(p => ({ ...p, [sid]: e.target.value }))}
+                            className="w-32 pl-3 pr-7 py-1.5 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25" />
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">₩</span>
+                        </div>
+                        <Button size="sm" onClick={() => autoFillBySpend(sid)} disabled={saving}>₩ Auto-fill</Button>
+                      </div>
+                    </div>
+                    {res && (
+                      <div className="space-y-2">
+                        {res.noOrders && <p className="text-xs text-destructive">This session has no order selected — link the order first (edit the session).</p>}
+                        {res.noPacks && <p className="text-xs text-destructive">This session has no pack yet — add one so inclusions can be assigned.</p>}
+                        {res.missingKrwClaims > 0 && (
+                          <p className="text-xs text-amber-700 dark:text-amber-400">⚠ {res.missingKrwClaims} claim{res.missingKrwClaims > 1 ? 's have' : ' has'} a € price but no ₩ price, so {res.missingKrwClaims > 1 ? 'they were' : 'it was'} not counted. Add the ₩ price on the order's pricing option and auto-fill again.</p>
+                        )}
+                        {(res.joiners || []).length > 0 && (
+                          <div className="max-h-56 overflow-y-auto border border-border rounded-lg bg-background">
+                            <table className="w-full text-xs">
+                              <thead><tr className="text-muted-foreground uppercase tracking-wider">
+                                <th className="text-left px-3 py-1.5 font-bold">Joiner</th>
+                                <th className="text-right px-3 py-1.5 font-bold">Claimed</th>
+                                <th className="text-right px-3 py-1.5 font-bold">Inclusions</th>
+                              </tr></thead>
+                              <tbody>
+                                {res.joiners.map((j: any) => (
+                                  <tr key={j.joiner_id} className={`border-t border-border ${j.inclusions === 0 ? 'text-muted-foreground' : ''}`}>
+                                    <td className="px-3 py-1.5 font-medium">{j.name}{j.missing_krw_claims > 0 && <span className="ml-1 text-amber-600" title={`${j.missing_krw_claims} claim(s) without a ₩ price`}>⚠</span>}</td>
+                                    <td className="px-3 py-1.5 text-right tabular-nums">{Math.round(j.spent_krw).toLocaleString()} ₩</td>
+                                    <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{j.inclusions === 0 ? 'none' : j.inclusions}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
               <div className="flex items-center justify-between p-3 bg-destructive/5 border border-destructive/15 rounded-xl">
                 <div>
                   <p className="text-sm font-semibold">Reset all inclusions</p>

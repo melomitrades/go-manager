@@ -1,3 +1,37 @@
+# PC Sorter: sort only some items of an order — 2026-10-24
+
+No manual SQL needed: the new column self-migrates on first use.
+
+**Edited:** `src/lib/pcSorter.ts`, `src/app/api/pc-sorter/route.ts`, `src/app/gom/pc-sorter/page.tsx`
+
+## What it does
+- In **New session / Edit session**, each checked order with more than one item now lists its items under
+  "Items to sort" (all checked by default). Uncheck items, or click **Only this** next to e.g. "Trading cards".
+- In a narrowed order, only claims on the checked items count, and **every** claim on them counts:
+  1 inclusion per item claimed (no need for "album" in the name or an inclusions number; a typed inclusions
+  number still wins).
+- Applies to the normal auto-fill, the "per amount spent" auto-fill (only ₩ spent on the checked items counts),
+  the guaranteed unit claims, and the per-joiner sources breakdown in Manage inclusions.
+- Orders with nothing unchecked behave exactly as before. Changing the box clears the item choices.
+
+# PC Sorter: inclusions per amount spent — 2026-10-24
+
+No manual SQL needed: the new column self-migrates on first use.
+
+**Edited:** `src/lib/pcSorter.ts`, `src/app/api/pc-sorter/[sessionId]/route.ts`, `src/app/gom/pc-sorter/page.tsx`
+
+## What it does
+- **Manage inclusions → "Auto-fill per amount spent".** Type a ₩ amount (e.g. 70000) and click "₩ Auto-fill":
+  each joiner gets 1 inclusion per that amount claimed, rounded down (10k ₩ → 0, 70k → 1, 150k → 2).
+- **Spend** = ₩ price of the pricing option × quantity, for every claim of the joiner in the session's selected
+  order(s). Lost claims and version-narrowed-out claims don't count. EMS/customs/shipping don't count.
+- **Each order is checked separately**: 40k in one order + 40k in another order doesn't make 1 inclusion.
+- Joiners under the amount get no inclusion, so the session stays hidden for them (existing behaviour).
+- After running, a table shows each joiner's ₩ total and inclusions ("none" when under the amount). Claims that
+  have a € price but no ₩ price are flagged ⚠, since they can't be counted — add the ₩ price on the order and rerun.
+- It fully replaces the session's inclusions, split across packs like the normal auto-fill. You can still edit any
+  number by hand and save. The amount is remembered per session.
+
 # Eras: album, versions and inclusion packs — 2026-10-24
 
 No manual SQL needed: everything self-migrates on first use.
