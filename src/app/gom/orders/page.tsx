@@ -58,6 +58,9 @@ export default function GomOrdersPage() {
   const [orderType, setOrderType] = useState<OrderType>('group')
   const [form, setForm] = useState({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered' as OrderStatus, notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false })
   const [albumsPerVersion, setAlbumsPerVersion] = useState<Record<string, string>>({})
+  // Which era album version each part of the order buys, saved as orders.era_version_map:
+  // { section: era_version_id } — section = version name (multi-version), 'vce' / 'fansign', or '__all__'
+  const [versionLinks, setVersionLinks] = useState<Record<string, string>>({})
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
   const [pricingOptions, setPricingOptions] = useState<PricingOption[]>([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
   const [versionSections, setVersionSections] = useState<{id:string;name:string;options:PricingOption[]}[]>([])
@@ -189,14 +192,47 @@ export default function GomOrdersPage() {
 
   function handleEraSelect(eraId: string) {
     setForm(f => ({ ...f, era_id: eraId }))
+    setVersionLinks({})
     // On a new order, switching era swaps in that era's semi-fixed joiners
     if (!editingOrder) setJoinerRows(buildAutoRows(selectedGroup, eraId))
+  }
+
+  // Era album versions of the era picked in the form
+  const formEraVersions: any[] = (eras.find(e => e.id === form.era_id)?.versions) || []
+  const linkSelect = (key: string, className = '') => formEraVersions.length === 0 ? null : (
+    <select value={versionLinks[key] || ''} title="Era album version"
+      onChange={e => { const v = e.target.value; setVersionLinks(prev => { const n = { ...prev }; if (v) n[key] = v; else delete n[key]; return n }) }}
+      className={`text-xs border border-border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 ${className}`}>
+      <option value="">{key === '__all__' ? 'Album version…' : 'Era version (match by name)'}</option>
+      {formEraVersions.map(v => <option key={v.id} value={v.id}>💿 {v.name}</option>)}
+      <option value="none">Not one of the era versions</option>
+    </select>
+  )
+  // Add a multi-version section for an era version (named after it, linked, its weight profile
+  // put on the section's album options that don't have one yet)
+  function newSectionFromEraVersion(v: any) {
+    return { id: uid(), name: v.name, options: [{ id: uid(), label: '', price_eur: '0', price_krw: '', weight_category: 'photocard', weight_g: '1', entries: '' }] as PricingOption[] }
+  }
+  function addEraVersionSection(v: any) {
+    setVersionSections(prev => [...prev, newSectionFromEraVersion(v)])
+    setVersionLinks(prev => ({ ...prev, [v.name]: v.id }))
+  }
+  function linkSectionToEraVersion(vi: number, versionId: string) {
+    const cur = versionSections[vi]; if (!cur) return
+    const v = formEraVersions.find(x => x.id === versionId)
+    const newName = v ? v.name : cur.name
+    setVersionLinks(links => { const n = { ...links }; delete n[cur.name]; if (versionId) n[newName] = versionId; return n })
+    setAlbumsPerVersion(ap => { if (!(cur.name in ap) || cur.name === newName) return ap; const n: Record<string, string> = { ...ap, [newName]: ap[cur.name] }; delete n[cur.name]; return n })
+    setVersionSections(prev => prev.map((sec, i) => i !== vi ? sec : {
+      ...sec, name: newName,
+      options: v?.weight_variant_id ? sec.options.map(o => o.weight_category === 'album' && !o.weight_variant_id ? { ...o, weight_variant_id: v.weight_variant_id } : o) : sec.options,
+    }))
   }
 
   function openNew() {
     setEditingOrder(null)
     setOrderType('group')
-    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false }); setAlbumsPerVersion({})
+    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false }); setAlbumsPerVersion({}); setVersionLinks({})
     setSelectedGroup(null)
     setPricingOptions([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
     setVceOptions([{ id: uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }])
@@ -238,6 +274,7 @@ export default function GomOrdersPage() {
       era_id: (order as any).era_id || '',
       exclude_from_semi_fixed: !!(order as any).exclude_from_semi_fixed,
     })
+    setVersionLinks((() => { try { const m = (order as any).era_version_map; const o = typeof m === 'string' ? JSON.parse(m) : m; return o && typeof o === 'object' ? o : {} } catch { return {} } })())
     // If albums_bought is a per-version object, restore it
     if ((order as any).albums_bought && typeof (order as any).albums_bought === 'object') {
       setAlbumsPerVersion(Object.fromEntries(Object.entries((order as any).albums_bought).map(([k,v]) => [k, String(v)])))
@@ -558,6 +595,14 @@ export default function GomOrdersPage() {
         return form.albums_bought ? parseInt(form.albums_bought) : null
       })(),
       items:itemsPayload,
+      // Only the sections this order actually has, and only for an era order
+      era_version_map: (() => {
+        if (orderType !== 'group' || !form.era_id) return null
+        const keys = form.is_multi_version ? versionSections.map(v => v.name) : form.is_vce_fansign ? ['vce', 'fansign'] : ['__all__']
+        const m: Record<string, string> = {}
+        for (const k of keys) if (versionLinks[k]) m[k] = versionLinks[k]
+        return Object.keys(m).length ? m : null
+      })(),
     }
 
     let saved: any = null
@@ -585,7 +630,7 @@ export default function GomOrdersPage() {
 
   function resetModal() {
     setModalOpen(false); setEditingOrder(null); setOrderType('group')
-    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false }); setAlbumsPerVersion({})
+    setForm({ shop_id:'', group_id:'', round_number:'', is_fancall:false, is_vce_fansign:false, status:'to_be_ordered', notes:'', deadline:'', ordered_at:'', preview_image_url:'', hide_leftovers:false, payment_info:'', is_multi_version:false, albums_bought:'', era_id:'', exclude_from_semi_fixed:false }); setAlbumsPerVersion({}); setVersionLinks({})
     setSelectedGroup(null); setPricingOptions([{ id:uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }]); setJoinerRows([])
   }
 
@@ -771,7 +816,13 @@ export default function GomOrdersPage() {
             <Checkbox id="is_multi_version" label="Multi-version album" checked={form.is_multi_version} onChange={e=>{
               setForm(f=>({...f,is_multi_version:e.target.checked}))
               if (e.target.checked && versionSections.length === 0) {
-                setVersionSections([{ id:uid(), name:'Version A', options:[{ id:uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }] }])
+                if (formEraVersions.length > 0) {
+                  // One section per era version, already linked
+                  setVersionSections(formEraVersions.map(newSectionFromEraVersion))
+                  setVersionLinks(prev => ({ ...prev, ...Object.fromEntries(formEraVersions.map(v => [v.name, v.id])) }))
+                } else {
+                  setVersionSections([{ id:uid(), name:'Version A', options:[{ id:uid(), label:'', price_eur:'0', price_krw:'', weight_category:'photocard', weight_g:'1', entries:'' }] }])
+                }
               }
             }}/>
 
@@ -840,10 +891,23 @@ export default function GomOrdersPage() {
                         <input
                           type="text"
                           value={ver.name}
-                          onChange={e => setVersionSections(prev => prev.map((v,i) => i===vi ? {...v, name:e.target.value} : v))}
+                          onChange={e => {
+                            const newName = e.target.value
+                            setVersionLinks(links => { if (!(ver.name in links)) return links; const n = { ...links, [newName]: links[ver.name] }; delete n[ver.name]; return n })
+                            setAlbumsPerVersion(ap => { if (!(ver.name in ap) || ver.name === newName) return ap; const n: Record<string, string> = { ...ap, [newName]: ap[ver.name] }; delete n[ver.name]; return n })
+                            setVersionSections(prev => prev.map((v,i) => i===vi ? {...v, name:newName} : v))
+                          }}
                           className="text-sm font-semibold bg-transparent focus:outline-none w-24"
                           placeholder="Version name"
                         />
+                        {formEraVersions.length > 0 && (
+                          <select value={versionLinks[ver.name] || ''} title="Era album version" onChange={e => linkSectionToEraVersion(vi, e.target.value)}
+                            className={`text-[11px] border rounded-md px-1 py-0.5 bg-background focus:outline-none ${versionLinks[ver.name] && versionLinks[ver.name] !== 'none' ? 'border-primary/40 text-primary' : 'border-border text-muted-foreground'}`}>
+                            <option value="">💿 by name</option>
+                            {formEraVersions.map(v => <option key={v.id} value={v.id}>💿 {v.name}</option>)}
+                            <option value="none">not an era version</option>
+                          </select>
+                        )}
                         {versionSections.length > 1 && (
                           <button onClick={() => setVersionSections(prev => prev.filter((_,i) => i!==vi))}
                             className="text-muted-foreground/50 hover:text-destructive transition-colors"><X size={13}/></button>
@@ -852,6 +916,15 @@ export default function GomOrdersPage() {
                     ))}
                   </div>
                 </div>
+                {formEraVersions.some(v => !versionSections.some(sec => sec.name.trim().toLowerCase() === v.name.trim().toLowerCase())) && (
+                  <div className="flex flex-wrap items-center gap-1.5 -mt-1">
+                    <span className="text-xs text-muted-foreground">Add from era:</span>
+                    {formEraVersions.filter(v => !versionSections.some(sec => sec.name.trim().toLowerCase() === v.name.trim().toLowerCase())).map(v => (
+                      <button key={v.id} type="button" onClick={() => addEraVersionSection(v)}
+                        className="text-xs font-semibold border border-primary/30 text-primary rounded-full px-2.5 py-0.5 hover:bg-primary/5 flex items-center gap-1"><Plus size={11}/> {v.name}</button>
+                    ))}
+                  </div>
+                )}
                 {/* Pricing per version */}
                 {versionSections.map((ver, vi) => {
                   const updateOpt = (id: string, field: keyof PricingOption, val: string) =>
@@ -1161,12 +1234,17 @@ export default function GomOrdersPage() {
                     <Input type="number" min="0" step="1" placeholder="0"
                       value={albumsPerVersion[key] || ''}
                       onChange={e => setAlbumsPerVersion(prev => ({ ...prev, [key]: e.target.value }))}/>
+                    {form.era_id && linkSelect(key)}
                   </div>
                 ))}
               </div>
             ) : (
-              <Input type="number" min="0" step="1" placeholder="e.g. 10" value={form.albums_bought} onChange={e=>setForm(f=>({...f,albums_bought:e.target.value}))}/>
+              <div className="flex items-center gap-2">
+                <Input type="number" min="0" step="1" placeholder="e.g. 10" value={form.albums_bought} onChange={e=>setForm(f=>({...f,albums_bought:e.target.value}))}/>
+                {form.era_id && linkSelect('__all__', 'py-2.5')}
+              </div>
             )}
+            {form.era_id && formEraVersions.length === 0 && <p className="text-xs text-muted-foreground mt-1.5">Add album versions to this era on the Eras page to link what this order buys.</p>}
           </FormField>
 
           <FormField label="Payment Info">

@@ -1,3 +1,56 @@
+# Eras: album, versions and inclusion packs — 2026-10-24
+
+No manual SQL needed: everything self-migrates on first use.
+
+**New files:** `src/lib/eraAlbums.ts`, `src/app/api/era-albums/route.ts`, `src/app/gom/eras/page.tsx`,
+`src/app/gom/eras/[id]/page.tsx`, `src/components/shared/EraAlbum.tsx`
+
+**Edited:** `src/app/gom/orders/page.tsx`, `src/app/api/orders/route.ts`, `src/app/api/eras/route.ts`,
+`src/components/shared/EraManager.tsx`, `src/components/shared/Sidebar.tsx`
+
+## What it does
+- **Eras page** (new in the GOM menu, under Orders). It lists every group's eras with their pack totals. Click an era
+  to open its page. Creating, ending and the semi-fixed settings stay in Settings, and each era there now has a
+  "💿 Album" shortcut to its page.
+- **One era = one album.** On the era page:
+  - **Album name:** set it at the top.
+  - **Versions:** each has a name, an optional weight profile and an optional photo. You can reorder them. Version names
+    are unique within an era.
+- **Counted in inclusion packs: one album copy = one pack.**
+  - *Inclusions bought* = albums bought on the era's orders + extra albums.
+  - *Inclusions claimed* = for each claim line, its Inclusions number, or one per album copy claimed (item type Album,
+    or "album" in the option name, the same rule as the PC Sorter). If a line has both, the larger one counts, never
+    both added. An Inclusions number is counted once per claim line, however many members it's split across.
+  - *Inclusions unclaimed* = bought − claimed. A negative number shows as "Over-claimed" in red.
+  - Lost claims don't count as claimed, so they show up as unclaimed.
+  - The era page shows these totals overall, per version, per order, and for parts of orders not linked to a version.
+- **Extra albums:** copies bought outside an order (quantity, version, note). They count as bought.
+
+## Orders ↔ versions
+- An order is split into parts:
+  - a multi-version order: one part per version
+  - a VCE/Fansign order: one VCE part and one Fansign part
+  - any other order: one "All albums" part.
+
+  Each part can be linked to one era version (`orders.era_version_map`).
+- **Automatic linking:** a part whose name matches a version name (ignoring case and spaces) is linked on its own,
+  so existing orders link themselves. Parts that don't match are listed under "Not linked to a version" on the era
+  page, with a picker to link them. They still count in the era totals.
+- **Order form (era picked):**
+  - Turning on "Multi-version album" creates one section per era version, already linked.
+  - "Add from era" adds any version not used yet.
+  - Each version chip has a picker to link it to an era version (or mark it as not one). Picking renames the section
+    to the version's name and puts the version's weight profile on that section's Album options that don't have one.
+  - Single-version orders get an "Album version…" picker next to Albums Bought, and VCE/Fansign orders get one per line.
+- Renaming a version section in the form now keeps its "albums bought" number and its link.
+- Deleting a version removes its extra albums and its manual links. Those parts fall back to name matching.
+
+## Fix
+- **Creating a multi-version order didn't save each claim's version.** It was only saved after editing and saving the
+  order again. It's now saved on creation.
+
+---
+
 # GOM payments rework + bulk order status + box received — 2026-10-23
 
 No manual SQL needed: everything self-migrates on first use.

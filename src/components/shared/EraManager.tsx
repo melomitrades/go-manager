@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { Plus, Pencil, Trash2, Flag, RotateCcw, UserMinus, Check, X } from 'lucide-react'
 import { Button, Modal, Input, FormField, Select, Badge } from '@/components/ui'
 import { formatDate } from '@/lib/utils'
+import Link from 'next/link'
 
 // Settings → Groups & Members → (expanded group) → Eras & semi-fixed spots.
 // An era = one album cycle of the group. Its settings decide how many events make one
@@ -147,6 +148,7 @@ export function EraManager({ groupId, members, joiners }: Props) {
                 </p>
               </div>
               <div className="flex gap-1 flex-shrink-0">
+                <Link href={`/gom/eras/${e.id}`} title="Album, versions and packs" className="inline-flex items-center gap-1 text-xs font-semibold text-primary px-2 py-1 rounded-lg hover:bg-primary/5">💿 Album</Link>
                 <Button variant="ghost" size="icon" title="Edit era" onClick={() => openEditEra(e)}><Pencil size={13} /></Button>
                 {active
                   ? <Button variant="ghost" size="sm" title="End era" onClick={() => endEra(e)}><Flag size={13} /> End era</Button>

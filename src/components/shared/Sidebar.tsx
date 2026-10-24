@@ -10,12 +10,13 @@ import {
   ShoppingBag, Box, CreditCard, Star, MapPin,
   Send, Music, Settings, LayoutDashboard, Users,
   Calendar, Truck, Package, Sun, Moon, LogOut, ToggleLeft, ToggleRight,
-  Menu, X, PackageOpen,
+  Menu, X, PackageOpen, Disc3,
 } from 'lucide-react'
 
 const GOM_NAV = [
   { href: '/gom/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/gom/orders', label: 'Orders', icon: ShoppingBag },
+  { href: '/gom/eras', label: 'Eras', icon: Disc3 },
   { href: '/gom/payments', label: 'Payments', icon: CreditCard },
   { href: '/gom/addy', label: 'Addy', icon: MapPin },
   { href: '/gom/boxes', label: 'Boxes', icon: Box },

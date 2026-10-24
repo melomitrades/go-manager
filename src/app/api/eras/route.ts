@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureSemiFixedSchema, listSpots } from '@/lib/semiFixed'
+import { ensureEraAlbumsSchema } from '@/lib/eraAlbums'
 
 async function requireGom() {
   const session = await getServerSession(authOptions)
@@ -17,6 +18,7 @@ export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   await ensureSemiFixedSchema()
+  await ensureEraAlbumsSchema()
   const groupId = new URL(req.url).searchParams.get('group_id')
   const params: any[] = []
   let where = ''
@@ -28,7 +30,11 @@ export async function GET(req: NextRequest) {
   const user = session.user as any
   const isGom = ['gom', 'admin'].includes(user.role)
   const spots = isGom ? await listSpots({ groupId: groupId || undefined, includeClosed: true }) : []
-  return NextResponse.json(eras.map((e: any) => ({ ...e, spots: spots.filter((s: any) => s.era_id === e.id) })))
+  // Album versions (no photos — those are only loaded on the era page)
+  const versions = eras.length ? await query<any>(
+    `SELECT id, era_id, name, weight_variant_id, sort_order FROM era_versions WHERE era_id = ANY($1::text[]) ORDER BY sort_order, created_at`,
+    [eras.map((e: any) => e.id)]).catch(() => [] as any[]) : []
+  return NextResponse.json(eras.map((e: any) => ({ ...e, spots: spots.filter((s: any) => s.era_id === e.id), versions: versions.filter((v: any) => v.era_id === e.id) })))
 }
 
 export async function POST(req: NextRequest) {
@@ -76,6 +82,10 @@ export async function DELETE(req: NextRequest) {
   const { id } = await req.json()
   await query(`UPDATE orders SET era_id=NULL WHERE era_id=$1`, [id])
   await query(`DELETE FROM semi_fixed_spots WHERE era_id=$1`, [id])
+  await ensureEraAlbumsSchema()
+  await query(`DELETE FROM era_extra_albums WHERE era_id=$1`, [id])
+  await query(`DELETE FROM era_versions WHERE era_id=$1`, [id])
+  await query(`UPDATE orders SET era_version_map=NULL WHERE era_id IS NULL AND era_version_map IS NOT NULL`)
   await query(`DELETE FROM eras WHERE id=$1`, [id])
   return NextResponse.json({ ok: true })
 }

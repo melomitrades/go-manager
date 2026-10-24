@@ -7,6 +7,7 @@ import { ensureLostClaimsSchema } from '@/lib/lostClaims'
 import { ensureSemiFixedSchema, refreshSpots } from '@/lib/semiFixed'
 import { ensureGomPaymentsSchema } from '@/lib/gomPayments'
 import { setOrderStatus } from '@/lib/orderStatus'
+import { ensureEraAlbumsSchema } from '@/lib/eraAlbums'
 
 async function notifyJoiners(orderId: string, status: string, shopName: string | null) {
   const statusLabels: Record<string, string> = {
@@ -39,6 +40,8 @@ async function ensureOrderColumns() {
   await ensureSemiFixedSchema()
   // gom_order_payments (amount the GOM paid per order) — summed into the list below
   await ensureGomPaymentsSchema()
+  // orders.era_version_map (which era album version each part of the order buys)
+  await ensureEraAlbumsSchema()
   // Idempotent backfill — belongs in the once-per-cold-start gate below, not run unconditionally
   // on every request (it used to fire outside the gate on every single GET/POST/PATCH).
   query(`UPDATE order_items SET inclusions_count = COALESCE(amount_claimed, 1)
@@ -160,7 +163,7 @@ export async function POST(req: NextRequest) {
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   await ensureOrderColumns()
-  const { type, shop_id, group_id, round_number, is_fancall, is_vce_fansign, is_multi_version, version_names, version_options, status, notes, items, deadline, ordered_at, joiner_id: personal_joiner_id, preview_image_url, hide_leftovers, payment_info, albums_bought, era_id, exclude_from_semi_fixed } = await req.json()
+  const { type, shop_id, group_id, round_number, is_fancall, is_vce_fansign, is_multi_version, version_names, version_options, status, notes, items, deadline, ordered_at, joiner_id: personal_joiner_id, preview_image_url, hide_leftovers, payment_info, albums_bought, era_id, exclude_from_semi_fixed, era_version_map } = await req.json()
   const addy_country = ADDY_MAP[status] || null
 
   const order = await queryOne(
@@ -173,10 +176,12 @@ export async function POST(req: NextRequest) {
   if (items?.length) {
     for (const item of items) {
       await query(
-        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, claim_group_id, weight_variant_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        // version_name: which version of a multi-version order the claim is for (was missing on
+        // create, so new multi-version orders only got it after being edited and saved again)
+        `INSERT INTO order_items (order_id, member_id, joiner_id, pricing_type, description, amount_claimed, price_eur, price_krw, weight_g, item_type, inclusions_count, entries_count, claim_group_id, weight_variant_id, version_name)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [order.id, item.member_id || null, item.joiner_id || null, item.pricing_type, item.description || null,
-          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.claim_group_id || null, item.weight_variant_id || null]
+          item.amount_claimed || 1, item.price_eur || null, (item.price_krw != null && item.price_krw !== '' ? item.price_krw : null), item.weight_g || null, item.item_type || 'photocard', (item.inclusions_count > 0 ? item.inclusions_count : (item.description && item.description.toLowerCase().includes('inclu') ? (item.amount_claimed || 1) : 0)), item.entries_count || 0, item.claim_group_id || null, item.weight_variant_id || null, item.version_name || null]
       )
     }
   }
@@ -187,6 +192,12 @@ export async function POST(req: NextRequest) {
 
   // A new order in an era may complete someone's semi-fixed round.
   if (order.era_id) await refreshSpots({ eraId: order.era_id }).catch(() => {})
+
+  // Which era album version each part of the order buys ({ section: era_version_id })
+  if (order.era_id && era_version_map && typeof era_version_map === 'object' && Object.keys(era_version_map).length) {
+    await query('UPDATE orders SET era_version_map=$1 WHERE id=$2', [JSON.stringify(era_version_map), order.id])
+    order.era_version_map = era_version_map
+  }
 
   return NextResponse.json(order, { status: 201 })
 }
@@ -248,6 +259,14 @@ export async function PATCH(req: NextRequest) {
       ;(order as any).exclude_from_semi_fixed = !!body.exclude_from_semi_fixed
     }
     if (prevEra && prevEra !== nextEra) await refreshSpots({ eraId: prevEra }).catch(() => {})
+  }
+
+  // Era album version links, only when the edit form sends them
+  if ('era_version_map' in body && order) {
+    const m = body.era_version_map && typeof body.era_version_map === 'object' && Object.keys(body.era_version_map).length && (order as any).era_id
+      ? JSON.stringify(body.era_version_map) : null
+    await query('UPDATE orders SET era_version_map=$1 WHERE id=$2', [m, id])
+    ;(order as any).era_version_map = m ? body.era_version_map : null
   }
 
   if (is_fancall === true) {
