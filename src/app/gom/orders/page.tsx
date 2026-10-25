@@ -8,6 +8,7 @@ import {
 } from '@/components/ui'
 import { formatDate } from '@/lib/utils'
 import { OrderDetail } from '@/components/shared/OrderDetail'
+import { PackSummary } from '@/components/shared/PackMark'
 import { WeightVariantPicker } from '@/components/shared/WeightVariantPicker'
 import { GomPaidPrompt, type PromptOrder } from '@/components/shared/GomPaidModal'
 import type { Order, Shop, Group, Member, Profile, OrderStatus, OrderType } from '@/types'
@@ -684,7 +685,7 @@ export default function GomOrdersPage() {
             <Tr key={order.id} onClick={() => setSelectedOrderId(order.id)} className={`cursor-pointer ${selected.has(order.id) ? 'bg-primary/[0.05]' : ''}`}>
               <Td className="w-10 pr-0" onClick={e => e.stopPropagation()}><input type="checkbox" aria-label="Select order" className="w-4 h-4 accent-primary cursor-pointer align-middle" checked={selected.has(order.id)} onChange={() => toggleSelect(order.id)}/></Td>
               <Td><Badge className="capitalize bg-secondary text-secondary-foreground">{order.type}</Badge></Td>
-              <Td className="font-semibold">{order.shop?.name||'—'}</Td>
+              <Td className="font-semibold">{order.shop?.name||'—'}{(order as any).pack_summary && <span className="block mt-1"><PackSummary summary={(order as any).pack_summary}/></span>}</Td>
               <Td className="text-muted-foreground">
                 {order.type === 'personal'
                   ? (() => { const j = joiners.find(jj => jj.id === (order as any).personal_joiner_id); return j ? <span className="text-xs text-primary font-semibold">→ {j.display_name || j.username}</span> : '—' })()
@@ -723,6 +724,7 @@ export default function GomOrdersPage() {
                     </div>
                     <p className="font-display font-semibold text-base leading-tight">{(order as any).shop?.name || '—'}{order.round_number ? ` · ${order.round_number}` : ''}</p>
                     {(order as any).group?.name && <p className="text-xs text-muted-foreground mt-0.5">{(order as any).group.name}</p>}
+                    {(order as any).pack_summary && <div className="mt-1.5"><PackSummary summary={(order as any).pack_summary}/></div>}
                   </div>
                   <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
                     <StatusBadge status={order.status}/>

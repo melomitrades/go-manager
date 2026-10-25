@@ -247,7 +247,7 @@ export default function JoinerShippingPage() {
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <p className="text-sm font-semibold">{step.label}</p>
-                              {step.sub_label && <p className="text-xs text-muted-foreground">{step.sub_label}</p>}
+                              {(step.group_name || step.sub_label) && <p className="text-xs text-muted-foreground">{[step.group_name, step.sub_label].filter(Boolean).join(' · ')}</p>}
                             </div>
                             {step.has_preview && step.order_id && (
                               <Button variant="outline" size="sm" onClick={() => setPreviewOrder({ id: step.order_id, title: step.label })}>

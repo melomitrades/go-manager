@@ -200,7 +200,15 @@ export async function listWinnerItems(where: { eraId?: string; orderId?: string;
   if (where.recipientId) { params.push(where.recipientId); conds.push(`wi.recipient_id = $${params.length} AND wi.status = ANY('{sold,given}'::text[])`) }
   const rows = await query<any>(`${SELECT} ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
     ORDER BY wi.event_date DESC NULLS LAST, wi.created_at DESC`, params)
-  return decorate(rows)
+  const items = await decorate(rows)
+  // 📦 / ✉️ / ✅ per item from the Sending Out packing checklist. Dynamic import: shipments.ts
+  // already imports this module.
+  try {
+    const { getPackMarks } = await import('./shipments')
+    const marks = await getPackMarks('winner_item', items.map((i: any) => String(i.id)))
+    for (const i of items as any[]) i.pack_mark = marks[String(i.id)] || null
+  } catch (err: any) { console.error('[winner pack marks]', err?.message) }
+  return items
 }
 
 export async function getWinnerItem(id: string) {
@@ -220,6 +228,7 @@ export function forJoiner(r: any) {
     sale_date: r.status === 'sold' ? r.sale_date : null,
     has_photo: r.has_photo, era_name: r.era_name,
     order_id: r.order_id, order_shop_name: r.order_shop_name, order_round: r.order_round,
+    pack_mark: r.pack_mark || null,
   }
 }
 

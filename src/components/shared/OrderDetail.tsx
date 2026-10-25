@@ -5,6 +5,7 @@ import { StatusBadge, Badge } from '@/components/ui'
 import { formatEur, formatKrw, formatDate } from '@/lib/utils'
 import { MarkLostModal, LostBadge } from './MarkLostModal'
 import { OrderWinnerItems, JoinerWinnerList } from './WinnerItems'
+import { PackMark, PackMarks } from './PackMark'
 
 interface OrderDetailProps {
   orderId: string | null
@@ -81,7 +82,8 @@ function SortResultsList({ results }: { results: any[] }) {
       <p className="text-xs font-bold text-primary uppercase tracking-widest mb-1.5">🎴 Sorting results</p>
       <div className="space-y-0.5">
         {results.map((r: any) => (
-          <p key={r.id} className="text-xs">
+          <p key={r.id} className="text-xs flex items-center gap-1 flex-wrap">
+            <PackMark mark={r.pack_mark} size={11} />
             <span className="text-muted-foreground">{r.pack_name} · {r.item_name}:</span>{' '}
             <span className="font-semibold">{r.member_name}</span>
             {r.is_guaranteed && <span className="text-emerald-600 ml-1">(guaranteed — matched their claimed version)</span>}
@@ -803,9 +805,13 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                       {grouped.map((g, gi) => (
                         <div key={gi} className="flex items-center justify-between px-4 py-2.5 gap-4">
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm font-medium leading-snug">
-                              {g.qty > 1 && <span className="text-primary font-bold mr-1.5">×{g.qty}</span>}
-                              {g.label}
+                            <p className="text-sm font-medium leading-snug flex items-center gap-1.5 flex-wrap">
+                              <span>
+                                {g.qty > 1 && <span className="text-primary font-bold mr-1.5">×{g.qty}</span>}
+                                {g.label}
+                              </span>
+                              {/* Claims without a member have no pill to carry their mark — show it on the line. */}
+                              <PackMarks marks={g.rows.filter((r: any) => !r.member_id).map((r: any) => r.pack_mark)} />
                             </p>
                             {g.rows.some((r: any) => r.member_id) && (
                               <div className="flex flex-wrap gap-1 mt-1">
@@ -814,11 +820,14 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                                   return (
                                     <button key={r.id} onClick={() => openChange(r, name)}
                                       title={changed ? `Changed from ${r.member?.name || '?'}${r.override_reason ? ` — “${r.override_reason}”` : ''}. Click to edit.` : 'Change claim (not guaranteed)'}
-                                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${changed
+                                      className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${changed
                                         ? 'bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-900/20 dark:text-amber-200 dark:border-amber-700'
                                         : 'bg-background text-muted-foreground border-border hover:border-primary/40 hover:text-primary'}`}>
-                                      {changed ? <><span className="line-through opacity-60 mr-1">{r.member?.name}</span>{r.override_member?.name}</> : r.member?.name}
-                                      {(r.amount_claimed || 1) > 1 && ` ×${r.amount_claimed}`}
+                                      <PackMark mark={r.pack_mark} size={10} />
+                                      <span>
+                                        {changed ? <><span className="line-through opacity-60 mr-1">{r.member?.name}</span>{r.override_member?.name}</> : r.member?.name}
+                                        {(r.amount_claimed || 1) > 1 && ` ×${r.amount_claimed}`}
+                                      </span>
                                     </button>
                                   )
                                 })}
@@ -961,9 +970,12 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                         {grouped.map((g, gi) => (
                           <div key={gi} className="flex items-center justify-between px-4 py-3 gap-4">
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-medium leading-snug">
-                                {g.qty > 1 && <span className="text-primary font-bold mr-1.5">×{g.qty}</span>}
-                                {g.label}
+                              <p className="text-sm font-medium leading-snug flex items-center gap-1.5 flex-wrap">
+                                <span>
+                                  {g.qty > 1 && <span className="text-primary font-bold mr-1.5">×{g.qty}</span>}
+                                  {g.label}
+                                </span>
+                                <PackMarks marks={g.rows.map((r: any) => r.pack_mark)} />
                               </p>
                               {g.members.length > 0 && (
                                 <p className="text-xs text-muted-foreground mt-0.5">{g.members.join(', ')}</p>

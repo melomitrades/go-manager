@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureLostClaimsSchema, getMyLostClaims } from '@/lib/lostClaims'
 import { ensureEventsSchema } from '@/lib/events'
+import { getPackMarks } from '@/lib/shipments'
 
 // Schema migrations only need to run once per cold start — previously these 6 ALTERs plus the
 // order_joiner_paid CREATE TABLE ran unconditionally on every single order view, which is by far
@@ -109,6 +110,10 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }
   // Joiner view: their own lost claims in this order, for the "Lost — unpaid" badges.
   const myLost = !isGom ? (await getMyLostClaims(user.id, params.id).catch(() => ({ claims: [] as any[] }))).claims : []
+
+  // 📦 / ✉️ / ✅ next to each claim: its packing state from the Sending Out checklist.
+  const packMarks = await getPackMarks('order_item', claimItems.map((i: any) => String(i.id))).catch(() => ({} as Record<string, any>))
+  for (const item of claimItems) (item as any).pack_mark = packMarks[String((item as any).id)] || null
 
   // Group by joiner
   const byJoiner: Record<string, any> = {}

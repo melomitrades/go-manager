@@ -467,16 +467,45 @@ export async function getShipmentChecklist(shipmentId: string) {
     })
   }
 
-  const orderOut = [...orderGroups.values()].map(g => {
+  // Packing order: by GROUP (A→Z), then SHOP (A→Z) within a group, then round number
+  // (numeric-aware, so #2 comes before #10), then when the claim was added. Orders with no group
+  // (personal orders) go last. Each step also carries its group's position (group_index of
+  // group_count, and 1-based position inside that group) for the wizard's group banner.
+  const cmp = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true })
+  const sortedGroups = [...orderGroups.values()].sort((a, b) => {
+    const ga = (a.d0?.group_name || '').trim(), gb = (b.d0?.group_name || '').trim()
+    if (!ga !== !gb) return ga ? -1 : 1
+    const byGroup = cmp(ga, gb); if (byGroup) return byGroup
+    const sa = (a.d0?.shop_name || '').trim(), sb = (b.d0?.shop_name || '').trim()
+    if (!sa !== !sb) return sa ? -1 : 1
+    const byShop = cmp(sa, sb); if (byShop) return byShop
+    const byRound = cmp(String(a.d0?.round_number ?? ''), String(b.d0?.round_number ?? '')); if (byRound) return byRound
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  })
+  const groupKeyOf = (g: OrderGroup) => (g.d0?.group_name || '').trim().toLowerCase() || '__none__'
+  const groupKeys = Array.from(new Set(sortedGroups.map(groupKeyOf)))
+  const groupSizes = new Map<string, number>()
+  for (const g of sortedGroups) groupSizes.set(groupKeyOf(g), (groupSizes.get(groupKeyOf(g)) || 0) + 1)
+  const seenInGroup = new Map<string, number>()
+
+  const orderOut = sortedGroups.map(g => {
     const d = g.d0
     const total = g.item_ids.length
+    const gk = groupKeyOf(g)
+    seenInGroup.set(gk, (seenInGroup.get(gk) || 0) + 1)
     return {
+      group_name: d?.group_name || null,
+      group_index: groupKeys.indexOf(gk) + 1,
+      group_count: groupKeys.length,
+      group_position: seenInGroup.get(gk)!,
+      group_size: groupSizes.get(gk) || 1,
+      shop_name: d?.shop_name || null,
       id: `order:${g.order_id}`, source_type: 'order_item_group', item_ids: g.item_ids,
       confirmed: total > 0 && g.confirmed_count === total,
       skipped: total > 0 && g.skipped_count === total,
       label: [d?.shop_name, d?.round_number ? `#${d.round_number}` : null].filter(Boolean).join(' ') || 'Order',
       member_name: null,
-      sub_label: [d?.group_name, `${total} claimed item${total === 1 ? '' : 's'}`].filter(Boolean).join(' · '),
+      sub_label: `${total} claimed item${total === 1 ? '' : 's'}`,
       lines: g.lines,
       amount_claimed: total,
       price_eur: null,
@@ -552,4 +581,83 @@ export async function getShipmentChecklist(shipmentId: string) {
 
   // previewImages is kept (empty) so existing consumers don't break — images load lazily now.
   return { items: [...orderOut, ...pcOut, ...winnerOut], previewImages: {} as Record<string, string> }
+}
+
+// ============================================================
+// PACK MARKS — the little 📦 / ✉️ / ✅ icons shown next to a claim on its order (GOM + joiner),
+// next to sorted photocards and next to winner items.
+//
+// Derived purely from the packing checklist, nothing new is stored:
+//  - 'packed'   → the item's checklist row was confirmed in the Pack wizard (box icon). Shows
+//                 as soon as its step is confirmed, before the shipment itself is finalized.
+//  - 'skipped'  → the row was skipped in the Pack wizard (crossed-out box) — it did NOT go in.
+//  - 'shipped'  → confirmed, and its shipment's status is 'shipped' (envelope).
+//  - 'complete' → confirmed, and its shipment's status is 'complete' — joiner confirmed receipt.
+// Only CONFIRMED rows move on to shipped/complete: a skipped item stays "skipped" even after the
+// parcel leaves, because it wasn't in it. An item on several shipments (overlapping forms) takes
+// its most advanced mark. Unpacked items have no entry in the returned map.
+// ============================================================
+
+export type PackMarkState = 'packed' | 'skipped' | 'shipped' | 'complete'
+export type PackMark = {
+  state: PackMarkState
+  form_title: string | null
+  tracking_code: string | null
+  shipping_type: string | null
+  at: string | null // when it reached this state (confirmed / shipped / completed)
+}
+const PACK_MARK_RANK: Record<PackMarkState, number> = { skipped: 1, packed: 2, shipped: 3, complete: 4 }
+
+export async function getPackMarks(
+  sourceType: 'order_item' | 'pc_assignment' | 'winner_item',
+  ids: string[],
+): Promise<Record<string, PackMark>> {
+  const out: Record<string, PackMark> = {}
+  const uniq = Array.from(new Set(ids.filter(Boolean).map(String)))
+  if (uniq.length === 0) return out
+  await ensureShipmentsSchema()
+  const rows = await query<any>(`
+    SELECT si.source_id::text AS source_id, si.confirmed, si.skipped, si.confirmed_at,
+      sh.status, sh.tracking_code, sh.shipping_type, sh.shipped_at, sh.completed_at, f.title AS form_title
+    FROM shipment_items si
+    JOIN shipments sh ON sh.id = si.shipment_id
+    LEFT JOIN shipping_forms f ON f.id = sh.form_id
+    WHERE si.source_type = $1 AND si.source_id::text = ANY($2::text[]) AND (si.confirmed OR si.skipped)
+  `, [sourceType, uniq]).catch(err => { console.error('[pack marks]', err?.message); return [] as any[] })
+
+  for (const r of rows) {
+    let state: PackMarkState
+    let at: any
+    if (r.confirmed && r.status === 'complete') { state = 'complete'; at = r.completed_at || r.shipped_at }
+    else if (r.confirmed && r.status === 'shipped') { state = 'shipped'; at = r.shipped_at }
+    else if (r.confirmed) { state = 'packed'; at = r.confirmed_at }
+    else { state = 'skipped'; at = null }
+    const prev = out[r.source_id]
+    if (prev && PACK_MARK_RANK[prev.state] >= PACK_MARK_RANK[state]) continue
+    out[r.source_id] = {
+      state,
+      form_title: r.form_title || null,
+      // Tracking only means something once the parcel has left.
+      tracking_code: state === 'shipped' || state === 'complete' ? (r.tracking_code || null) : null,
+      shipping_type: r.shipping_type || null,
+      at: at ? new Date(at).toISOString() : null,
+    }
+  }
+  return out
+}
+
+// Per-order counts for the Orders list ("📦 2 · ✉️ 1 / 5"). `claims` is every non-lost claim in
+// scope (all of an order's claims for a GOM, only the viewer's own for a joiner).
+export type PackSummary = { total: number; packed: number; skipped: number; shipped: number; complete: number }
+export async function getOrderPackSummaries(claims: { id: string; order_id: string }[]): Promise<Record<string, PackSummary>> {
+  const out: Record<string, PackSummary> = {}
+  if (claims.length === 0) return out
+  const marks = await getPackMarks('order_item', claims.map(c => c.id))
+  for (const c of claims) {
+    const s = out[c.order_id] || (out[c.order_id] = { total: 0, packed: 0, skipped: 0, shipped: 0, complete: 0 })
+    s.total += 1
+    const m = marks[String(c.id)]
+    if (m) s[m.state] += 1
+  }
+  return out
 }

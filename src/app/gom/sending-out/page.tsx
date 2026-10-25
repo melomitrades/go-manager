@@ -163,6 +163,23 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
           <div className="h-full bg-primary transition-all" style={{ width: `${((progress.confirmed + progress.skipped) / progress.total) * 100}%` }} />
         </div>
 
+        {current.source_type === 'order_item_group' && (
+          // Group banner: steps are sorted by group A→Z, then shop A→Z (see getShipmentChecklist),
+          // so the GOM can pull one group's albums at a time.
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-2.5">
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                Group{current.group_count > 1 ? ` ${current.group_index} of ${current.group_count}` : ''}
+              </p>
+              <p className="font-display font-bold text-xl leading-tight truncate">{current.group_name || 'No group'}</p>
+            </div>
+            <div className="text-right flex-shrink-0">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-primary/70">Order</p>
+              <p className="font-display font-semibold text-lg leading-tight">{current.group_position} <span className="text-sm font-normal text-muted-foreground">of {current.group_size}</span></p>
+            </div>
+          </div>
+        )}
+
         <Card>
           {current.has_preview && current.order_id ? (
             // Loaded lazily, one image at a time, straight from its own cacheable URL — never

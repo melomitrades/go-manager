@@ -5,6 +5,7 @@ import { Trophy, Plus, Pencil, Trash2, Copy, ImagePlus, Settings2, Archive, Arch
 import { Button, Input, Modal, Textarea } from '@/components/ui'
 import { formatDate, formatEur, formatKrw } from '@/lib/utils'
 import { EventForm } from './Events'
+import { PackMark } from './PackMark'
 
 // Winner items (polaroids, signed PCs…) — see src/lib/winnerItems.ts for the rules.
 // Kept client-side copies of the labels so this file has no server imports.
@@ -480,6 +481,7 @@ function WinnerRow({ i, onEdit, onChanged, compact }: { i: any; onEdit: () => vo
           <p className="text-sm font-semibold">{i.type_name || 'Item'}</p>
           <span className="text-sm text-muted-foreground">· {membersText(i)}</span>
           <WinnerStatusChip status={i.status}/>
+          <PackMark mark={i.pack_mark} size={11}/>
         </div>
         <p className="text-xs text-muted-foreground truncate">
           {sourceText(i)} · {formatDate(i.event_date)}
@@ -689,7 +691,7 @@ export function JoinerWinnerList({ items, onOpenOrder, showOrder = true }: { ite
               {i.has_photo ? <img src={`/api/winner-items/${i.id}/photo`} alt="" className="w-full h-full object-cover" loading="lazy"/> : <Trophy size={16} className="text-amber-500/60"/>}
             </button>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold">{i.type_name || 'Winner item'} <span className="font-normal text-muted-foreground">· {membersText(i)}</span></p>
+              <p className="text-sm font-semibold flex items-center gap-1.5 flex-wrap"><span>{i.type_name || 'Winner item'} <span className="font-normal text-muted-foreground">· {membersText(i)}</span></span><PackMark mark={i.pack_mark} size={11}/></p>
               <p className="text-xs text-muted-foreground">
                 {i.source_text} · {formatDate(i.event_date)}{i.version_name ? ` · 💿 ${i.version_name}` : ''}
               </p>

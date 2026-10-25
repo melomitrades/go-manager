@@ -9,6 +9,7 @@ import { ensureGomPaymentsSchema } from '@/lib/gomPayments'
 import { setOrderStatus } from '@/lib/orderStatus'
 import { ensureEraAlbumsSchema } from '@/lib/eraAlbums'
 import { ensureEventsSchema, ensureFancallEventForOrder } from '@/lib/events'
+import { getOrderPackSummaries } from '@/lib/shipments'
 
 async function notifyJoiners(orderId: string, status: string, shopName: string | null) {
   const statusLabels: Record<string, string> = {
@@ -156,6 +157,18 @@ export async function GET(req: NextRequest) {
     row.has_preview_image = !!row.preview_image_url
     row.preview_image_url = null
   }
+  // Packing summary per order for the list (📦 packed · ✉️ shipped · ✅ received · skipped).
+  // A joiner only counts their own claims; a GOM counts every claim. Lost-claim leftovers excluded.
+  const scopedClaims: { id: string; order_id: string }[] = []
+  for (const row of rows) {
+    for (const it of (Array.isArray(row.items) ? row.items : [])) {
+      if (it.lost_claim_id) continue
+      if (filterByJoiner && (it.joiner_id || row.personal_joiner_id) !== user.id) continue
+      scopedClaims.push({ id: String(it.id), order_id: String(row.id) })
+    }
+  }
+  const summaries = await getOrderPackSummaries(scopedClaims).catch(() => ({} as Record<string, any>))
+  for (const row of rows) row.pack_summary = summaries[String(row.id)] || null
   return NextResponse.json(rows)
 }
 

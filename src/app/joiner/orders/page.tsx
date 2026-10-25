@@ -5,6 +5,7 @@ import { Card, Table, Th, Td, Tr, PageHeader, EmptyState, StatusBadge, Badge, Bu
 import { formatDate, formatEur } from '@/lib/utils'
 import { LostBadge } from '@/components/shared/MarkLostModal'
 import { OrderDetail } from '@/components/shared/OrderDetail'
+import { PackSummary } from '@/components/shared/PackMark'
 import { JoinerWinnerList } from '@/components/shared/WinnerItems'
 import type { Order } from '@/types'
 
@@ -171,6 +172,7 @@ export default function JoinerOrdersPage() {
                           {changedOrderIds.has(o.id) && (
                             <Badge className="ml-2 bg-amber-50 text-amber-700 border border-amber-200 align-middle"><AlertTriangle size={10} className="inline mr-1" />Claim changed</Badge>
                           )}
+                          {(o as any).pack_summary && <span className="block mt-1 font-normal"><PackSummary summary={(o as any).pack_summary} /></span>}
                         </Td>
                         <Td className="text-muted-foreground">{(o.group as any)?.name || '—'}</Td>
                         <Td className="text-muted-foreground">{o.round_number ? o.round_number : '—'}</Td>

@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query } from '@/lib/db'
 import { ensurePcSorterSchema } from '@/lib/pcSorter'
+import { getPackMarks } from '@/lib/shipments'
 
 // GET /api/pc-sorter/results?order_id=...&joiner_id=...
 // Used by OrderDetail (scoped to one order) and the Sending Out page (scoped to one joiner,
@@ -33,6 +34,10 @@ export async function GET(req: NextRequest) {
       AND ($2::text IS NULL OR (s.order_ids IS NOT NULL AND s.order_ids::jsonb @> to_jsonb($2::text)))
     ORDER BY a.created_at DESC
   `, [joinerId, orderId]).catch((err) => { console.error('[pc-sorter results]', err); return [] as any[] })
+
+  // 📦 / ✉️ / ✅ per sorted photocard, from the Sending Out packing checklist.
+  const marks = await getPackMarks('pc_assignment', rows.map((r: any) => String(r.id))).catch(() => ({} as Record<string, any>))
+  for (const r of rows as any[]) r.pack_mark = marks[String(r.id)] || null
 
   return NextResponse.json(rows)
 }

@@ -1,3 +1,28 @@
+# Packing order by group/shop + pack marks (📦 / ✉️ / ✅) on orders — 2026-10-25
+
+No manual SQL needed: nothing new is stored, marks are read from the existing packing checklist (`shipment_items`).
+
+**New:** `src/components/shared/PackMark.tsx`
+**Edited:** `src/lib/shipments.ts`, `src/lib/winnerItems.ts`, `src/app/api/orders/route.ts`, `src/app/api/orders/[id]/route.ts`,
+`src/app/api/pc-sorter/results/route.ts`, `src/app/gom/sending-out/page.tsx`, `src/app/joiner/shipping/page.tsx`,
+`src/app/gom/orders/page.tsx`, `src/app/joiner/orders/page.tsx`, `src/components/shared/OrderDetail.tsx`, `src/components/shared/WinnerItems.tsx`
+
+## Packing order
+- Claimed orders in the Pack wizard are sorted by **group A→Z**, then **shop A→Z**, then round number (#2 before #10). Orders
+  with no group (personal orders) come last. Sorted photocards and winner items stay at the end, as before.
+- Each order step has a **group banner**: group name, "Group 1 of 3", and "Order 2 of 5" within that group.
+- The joiner's Shipping page "Your items" list follows the same order.
+
+## Pack marks
+- 📦 **Packed**: the claim's step was confirmed in the Pack wizard (shows right away, before "Mark as Packed").
+- Crossed-out box **Skipped**: skipped in the Pack wizard. It stays skipped even after shipping, because it wasn't in the parcel.
+- ✉️ **Shipped**: confirmed and the shipment status is Shipped. Hover shows the shipping form and tracking code.
+- ✅ **Received**: confirmed and the shipment status is Complete.
+- Where: next to each claim in the order detail (GOM: inside each member pill; joiner: on the claim line), next to each
+  sorted photocard ("Sorting results"), on winner items (GOM order/era lists, joiner My Orders), and as a count summary
+  on each order row in the Orders list (GOM all claims, joiner only their own).
+- Resetting packing progress removes the marks again. Unconfirmed items in a shipped shipment get no mark.
+
 # Events (every event entered, won or lost) + winner items from events — 2026-10-24
 
 No manual SQL needed: `era_events` self-migrates, `winner_items` gets `event_id`.
