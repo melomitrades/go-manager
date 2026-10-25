@@ -5,6 +5,8 @@ import { ArrowLeft, Plus, Pencil, Trash2, ChevronUp, ChevronDown, ImagePlus, Ale
 import { Button, Card, Input, Modal, StatusBadge } from '@/components/ui'
 import { WeightVariantPicker } from '@/components/shared/WeightVariantPicker'
 import { PackCount } from '@/components/shared/EraAlbum'
+import { EraWinnerItems } from '@/components/shared/WinnerItems'
+import { EventsList } from '@/components/shared/Events'
 import { formatDate } from '@/lib/utils'
 
 // One era = one album with several versions. Everything is counted in INCLUSION PACKS:
@@ -50,6 +52,7 @@ export default function EraPage({ params }: { params: { id: string } }) {
   const [deleting, setDeleting] = useState<any | null>(null)
   const [extraForm, setExtraForm] = useState({ version_id: '', qty: '', note: '' })
   const [msg, setMsg] = useState('')
+  const [eventsKey, setEventsKey] = useState(0)  // bumps when events or winner items change, so both lists reload
   const fileRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
@@ -296,6 +299,10 @@ export default function EraPage({ params }: { params: { id: string } }) {
           )}
           <p className="text-[11px] text-muted-foreground">Chips show version · bought/claimed. Claimed counts each claim&apos;s Inclusions number, or one per album copy claimed (the larger, never both). Lost claims count as unclaimed.</p>
         </section>
+
+        <EventsList eraId={eraId} reloadKey={eventsKey} onChanged={() => setEventsKey(k => k + 1)}/>
+
+        <EraWinnerItems eraId={eraId} reloadKey={eventsKey} onChanged={() => setEventsKey(k => k + 1)}/>
       </div>
 
       {msg && <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] bg-foreground text-background text-sm font-medium px-4 py-2 rounded-xl shadow-lg">{msg}</div>}

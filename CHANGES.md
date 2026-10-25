@@ -1,3 +1,85 @@
+# Events (every event entered, won or lost) + winner items from events — 2026-10-24
+
+No manual SQL needed: `era_events` self-migrates, `winner_items` gets `event_id`.
+
+**New:** `src/lib/events.ts`, `src/lib/eventTypes.ts`, `src/components/shared/Events.tsx`, `src/components/shared/FancallArchive.tsx`,
+`src/app/api/events/route.ts`, `src/app/api/events/options/route.ts`, `src/app/gom/events/page.tsx`
+**Edited:** `src/lib/winnerItems.ts`, `src/components/shared/WinnerItems.tsx`, `src/app/api/winner-items/route.ts`,
+`src/app/api/winner-items/options/route.ts`, `src/app/api/orders/route.ts`, `src/app/api/orders/[id]/route.ts`, `src/app/api/eras/route.ts`,
+`src/app/gom/eras/[id]/page.tsx`, `src/app/gom/fancalls/page.tsx` (now a redirect), `src/app/gom/dashboard/page.tsx`,
+`src/components/shared/Sidebar.tsx`, `src/components/shared/EraManager.tsx`
+
+## Events
+- Sidebar **Fancalls → Events**. Tabs: **Events** (all types, filter by era — active eras by default —, type, result) and **Archive**.
+- An event = Fansign, Fancall, DIY event, Lucky draw, VCE, POB / pre-order event or Other + name. Era + type required; order
+  optional (one); date & time (Paris), shop, entered by, entries / albums used, **winner spots**, note.
+- **Result chips: Pending / Won / Lost.** Lost = we didn't get any winner item. Totals: "4 entered · 1 won · 1 lost · 2 pending · win rate 50%".
+- Setting **Won** (chip, form or dashboard) opens "Add winner item" for that event. An event with winner items can't be set to Lost
+  or deleted.
+- **Raffle** stays on Fancall events with an order (same entries + fixed / semi-fixed bonus). The order's 🏆 raffle badge reads
+  Fancall events and archive fancalls.
+- A new **fancall order in an era** creates a Fancall event (Pending). Without an era it still creates an archive fancall row.
+- "Benefits to K-Addy" isn't on events. "Received" is tracked on winner items only.
+- **Era page:** an Events section above Winner items, same list + totals for that era.
+- **Dashboard:** "Results to enter" card (Pending events whose date has passed) with Won / Lost buttons. Hidden when empty.
+
+## Winner items
+- Every new item is **won at an event** ("Won at" picker + "+ New event"). Era, order, source and date come from the event and
+  follow it when the event is edited. Adding an item to a Pending event marks it Won. Lost events can't be picked.
+- Item status "Lost" renamed **Missing** (existing rows converted). "Won (pending)" now reads **Not received yet**.
+- Era page groups items **by event**.
+
+## Archive (before events)
+- Old fancall records → Events → **Archive** (unchanged table, still editable, raffle included, can still add one).
+- Winner items without an event → collapsible **"🗄 Archive (before events)"** block on the era page, grouped by order, still editable
+  with their own order / source / fancall / date fields. Shipping and joiner views treat them exactly as before.
+
+# Winner items (polaroids, signed PCs…) — 2026-10-24
+
+No manual SQL needed: the new tables self-migrate on first use (`winner_items`, `winner_item_types`).
+
+**New:** `src/lib/winnerItems.ts`, `src/components/shared/WinnerItems.tsx`, `src/app/api/winner-items/route.ts`,
+`src/app/api/winner-items/options/route.ts`, `src/app/api/winner-items/types/route.ts`, `src/app/api/winner-items/[id]/photo/route.ts`
+**Edited:** `src/lib/shipments.ts`, `src/app/gom/eras/[id]/page.tsx`, `src/app/gom/eras/page.tsx`, `src/components/shared/OrderDetail.tsx`,
+`src/app/joiner/orders/page.tsx`, `src/app/gom/sending-out/page.tsx`, `src/app/joiner/shipping/page.tsx`, `src/app/api/orders/route.ts`,
+`src/app/api/eras/route.ts`, `src/components/shared/EraManager.tsx`
+
+## What an item is
+- One row per physical item. "How many identical items?" on Add, and a Duplicate button on each row (the copy isn't kept/sold yet).
+- **Type:** Polaroid and Signed PC built in, plus your own types ("+ New type" in the form, or **Types** on the era page to rename / archive).
+  Archived types stay on existing items but aren't offered for new ones.
+- **Members:** one or several of the era's group, or "Not revealed yet". Optional photo (resized), GOM-only note, era version.
+
+## Where it came from
+- Fansign, Fancall, DIY event, Lucky draw, VCE, POB / pre-order event, or Other + your own name.
+- **Fancall:** pick an existing record from the Fancalls tab (this era's first); its date becomes the event date (Paris day).
+- Event date required; received date optional.
+
+## Link
+- Era required. Order optional (one), and optionally the part of the order (version / VCE / Fansign). With an order, the era always
+  follows the order's era. Deleting an order keeps its items on the era without an order; deleting an era deletes its items.
+
+## Status
+- Won (pending) → Received → Listed for sale → Kept / Sold / Given away / Lost. Setting Received fills today's received date if empty.
+- **Kept by** a GOM/admin. **Sold to** / **Given to** any user. Sold: price € and/or ₩ + sale date (today if empty).
+  Tracking only: no joiner payment, not counted in GOM payments coverage.
+
+## Where it shows
+- **Era page → Winner items:** grouped by order (+ "No order"), filters (type, member, source, status), totals
+  ("5 items · 1 pending · 1 kept · 2 sold · 1 given · 84,00 € sold"), Add per order.
+- **Eras list:** "🏆 N winner items" on each era card.
+- **GOM order panel:** "🏆 N winner items" block with Add / edit / duplicate / delete (needs the order to be in an era).
+- **Joiners:** the buyer / recipient sees "🏆 My winner items" on My Orders (type, members, source + date, version, photo, price paid or
+  "Gift", order), a "🏆 Winner item" badge on that order, and the item in the order's detail. They're notified when it's handed to them.
+  They never see notes, who kept what, or other people's items.
+
+## Shipping
+- A sold / given item joins the recipient's packing checklist as one "🏆 Winner items" step (after claimed items and sorted
+  photocards) when it's in one of the form's boxes and physically at the GOM:
+  - with an order: the order is in a form box, and the order is At GOM **or** the item has a received date;
+  - without an order: "Ship with box…" is set to a form box **and** it has a received date.
+- Also makes the joiner eligible for that shipping form. Shown on the joiner's Shipping → Your items.
+
 # PC Sorter: complete a submitted form with new options — 2026-10-24
 
 **Edited:** `src/app/joiner/pc-sorter/page.tsx`, `src/app/api/pc-sorter/[sessionId]/route.ts`, `src/lib/pcSorter.ts`,

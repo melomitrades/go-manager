@@ -4,6 +4,7 @@ import { X, Check, Clock, ShoppingBag, Users, PackageX, PackageOpen } from 'luci
 import { StatusBadge, Badge } from '@/components/ui'
 import { formatEur, formatKrw, formatDate } from '@/lib/utils'
 import { MarkLostModal, LostBadge } from './MarkLostModal'
+import { OrderWinnerItems, JoinerWinnerList } from './WinnerItems'
 
 interface OrderDetailProps {
   orderId: string | null
@@ -97,6 +98,7 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [sortResults, setSortResults] = useState<any[]>([])
+  const [myWinners, setMyWinners] = useState<any[]>([])
   const [lostFor, setLostFor] = useState<{ joinerId: string; name: string } | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   // "Change claim" — pack a claim as another member (shared with the Sending Out packing wizard).
@@ -147,6 +149,10 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
     fetch(`/api/orders/${orderId}?viewAs=${viewAs}`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false) })
+    if (viewAs === 'joiner') {
+      fetch(`/api/winner-items?order_id=${orderId}&viewAs=joiner`).then(r => r.json())
+        .then(d => setMyWinners(Array.isArray(d?.items) ? d.items : [])).catch(() => setMyWinners([]))
+    } else setMyWinners([])
     fetch(`/api/pc-sorter/results?order_id=${orderId}`)
       .then(r => r.json())
       .then(d => setSortResults(Array.isArray(d) ? d : []))
@@ -264,6 +270,9 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                   <p className="font-display font-bold text-lg text-primary">{formatEur(data.totalPrice)}{data.totalKrw > 0 && <span className="text-sm font-normal text-muted-foreground ml-1.5">({formatKrw(data.totalKrw)})</span>}</p>
                 </div>
               </div>
+
+              {/* Winner items (GOM only) */}
+              <OrderWinnerItems orderId={orderId} eraId={(data.order as any)?.era_id || null} />
 
               {/* Leftover calculator */}
               {(data.order as any)?.payment_info && (
@@ -908,8 +917,18 @@ export function OrderDetail({ orderId, onClose, viewAs }: OrderDetailProps) {
                 </div>
               )}
 
+              {/* Winner items sold / given to this joiner from this order */}
+              {myWinners.length > 0 && (
+                <div className="border border-amber-200 dark:border-amber-900 rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-amber-100 dark:border-amber-900 bg-amber-50/60 dark:bg-amber-900/10">
+                    <p className="text-xs font-bold uppercase tracking-widest text-amber-700 dark:text-amber-300">🏆 Your winner items</p>
+                  </div>
+                  <JoinerWinnerList items={myWinners} showOrder={false} />
+                </div>
+              )}
+
               {data.joiners.length === 0 ? (
-                (data.myLost || []).length > 0 ? null : (
+                (data.myLost || []).length > 0 || myWinners.length > 0 ? null : (
                 <div className="text-center py-12">
                   <ShoppingBag size={28} className="mx-auto mb-2 text-muted-foreground/30" />
                   <p className="text-sm text-muted-foreground">No items found for you in this order.</p>

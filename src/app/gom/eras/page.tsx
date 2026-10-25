@@ -10,6 +10,10 @@ import { PackCount } from '@/components/shared/EraAlbum'
 export default function ErasPage() {
   const [eras, setEras] = useState<any[] | null>(null)
   const [showEnded, setShowEnded] = useState(true)
+  const [winnerCounts, setWinnerCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    fetch('/api/winner-items?era_counts=1').then(r => r.ok ? r.json() : {}).then(d => setWinnerCounts(d && typeof d === 'object' ? (d as Record<string, number>) : {})).catch(() => {})
+  }, [])
 
   useEffect(() => {
     fetch('/api/era-albums').then(r => r.json()).then(d => setEras(Array.isArray(d) ? d : [])).catch(() => setEras([]))
@@ -66,6 +70,9 @@ export default function ErasPage() {
                           <PackCount label="Claimed" value={t.claimed} tone="muted"/>
                           <PackCount label="Unclaimed" value={t.unclaimed} tone={t.unclaimed < 0 ? 'bad' : t.unclaimed > 0 ? 'good' : 'muted'}/>
                         </div>
+                        {winnerCounts[e.id] > 0 && (
+                          <p className="mt-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">🏆 {winnerCounts[e.id]} winner item{winnerCounts[e.id] === 1 ? '' : 's'}</p>
+                        )}
                         {e.unlinked > 0 && (
                           <p className="mt-2 text-[11px] font-semibold text-amber-600 flex items-center gap-1"><AlertTriangle size={11}/> {e.unlinked} part{e.unlinked === 1 ? '' : 's'} of orders not linked to a version</p>
                         )}

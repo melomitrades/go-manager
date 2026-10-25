@@ -73,7 +73,7 @@ export function EraManager({ groupId, members, joiners }: Props) {
     if (await api('/api/eras', 'PATCH', { id: e.id, reopen: true })) load()
   }
   async function deleteEra(e: any) {
-    if (!confirm(`Delete era "${e.name}"? Its orders are kept (just untagged) and its semi-fixed spots are deleted.`)) return
+    if (!confirm(`Delete era "${e.name}"? Its orders are kept (just untagged); its semi-fixed spots, events and winner items are deleted.`)) return
     if (await api('/api/eras', 'DELETE', { id: e.id })) load()
   }
 

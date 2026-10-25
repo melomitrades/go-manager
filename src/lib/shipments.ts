@@ -1,4 +1,5 @@
 import { query, queryOne } from './db'
+import { winnerItemIdsForShipment, winnerChecklistLines, ensureWinnerItemsSchema } from './winnerItems'
 
 // ============================================================
 // SHIPPING FORMS + SHIPMENTS
@@ -211,6 +212,8 @@ export async function getFormBoxIds(formId: string): Promise<string[]> {
 // entry know which joiners are actually relevant to a form.
 export async function joinerEligibleForBoxes(joinerId: string, boxIds: string[]): Promise<boolean> {
   if (boxIds.length === 0) return false
+  // Sold / given winner items count too (see src/lib/winnerItems.ts).
+  if ((await winnerItemIdsForShipment(joinerId, boxIds)).length > 0) return true
   const row = await queryOne<{ found: boolean }>(`
     SELECT (
       EXISTS (
@@ -237,6 +240,7 @@ export async function joinerEligibleForBoxes(joinerId: string, boxIds: string[])
 // only genuinely new items get inserted.
 export async function buildShipmentItems(shipmentId: string, joinerId: string, boxIds: string[]) {
   await ensureShipmentsSchema()
+  await ensureWinnerItemsSchema()
   if (boxIds.length === 0) {
     // A form with no boxes selected covers nothing — drop any checklist rows left over from
     // when it still had some, instead of leaving them behind.
@@ -273,6 +277,8 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
 
   const validOrderItemIds = orderItems.map(r => r.id)
   const validPcAssignmentIds = pcAssignments.map(r => r.id)
+  // Winner items sold / given to this joiner, in these boxes and at the GOM (src/lib/winnerItems.ts).
+  const validWinnerIds = await winnerItemIdsForShipment(joinerId, boxIds)
 
   // Prune any shipment_items row whose source no longer matches the current valid set — the
   // claim was edited/unclaimed, the order moved off At-GOM, or (the case behind the "sorted
@@ -287,13 +293,15 @@ export async function buildShipmentItems(shipmentId: string, joinerId: string, b
        AND (
          (source_type = 'order_item' AND NOT (source_id = ANY($2::uuid[])))
          OR (source_type = 'pc_assignment' AND NOT (source_id = ANY($3::uuid[])))
+         OR (source_type = 'winner_item' AND NOT (source_id::text = ANY($4::text[])))
        )`,
-    [shipmentId, validOrderItemIds, validPcAssignmentIds]
+    [shipmentId, validOrderItemIds, validPcAssignmentIds, validWinnerIds]
   ).catch(err => console.error('[shipments prune]', err))
 
   const rows: { source_type: string; source_id: string }[] = [
     ...orderItems.map(r => ({ source_type: 'order_item', source_id: r.id })),
     ...pcAssignments.map(r => ({ source_type: 'pc_assignment', source_id: r.id })),
+    ...validWinnerIds.map(id => ({ source_type: 'winner_item', source_id: id })),
   ]
   if (rows.length === 0) return
 
@@ -358,6 +366,12 @@ export async function getShipmentChecklist(shipmentId: string) {
 
   const orderItemIds = allItems.filter(i => i.source_type === 'order_item').map(i => i.source_id)
   const pcAssignmentIds = allItems.filter(i => i.source_type === 'pc_assignment').map(i => i.source_id)
+  const winnerIds = allItems.filter(i => i.source_type === 'winner_item').map(i => String(i.source_id))
+  const shipmentJoiner = winnerIds.length ? await queryOne<any>('SELECT joiner_id FROM shipments WHERE id=$1', [shipmentId]) : null
+  const winnerLines = winnerIds.length && shipmentJoiner
+    ? await winnerChecklistLines(winnerIds, boxIds, String(shipmentJoiner.joiner_id)).catch(err => { console.error('[winner checklist]', err?.message); return [] as any[] })
+    : []
+  const winnerById = new Map(winnerLines.map(l => [l.id, l]))
 
   // One parallel round for everything the checklist needs. NOTE: preview images are deliberately
   // NOT selected here — preview_image_url is a multi-MB base64 blob, and this query used to pull
@@ -411,7 +425,9 @@ export async function getShipmentChecklist(shipmentId: string) {
   // form's boxes). Stale rows — e.g. left over from before the GOM removed a box from the form,
   // or from a since-deleted assignment — are simply never displayed, instead of relying solely
   // on buildShipmentItems having pruned them first.
-  items = allItems.filter(it => it.source_type === 'order_item' ? orderById.has(it.source_id) : pcById.has(it.source_id))
+  items = allItems.filter(it => it.source_type === 'order_item' ? orderById.has(it.source_id)
+    : it.source_type === 'winner_item' ? winnerById.has(String(it.source_id))
+    : pcById.has(it.source_id))
   if (items.length === 0) return { items: [] as any[], previewImages: {} as Record<string, string> }
 
 
@@ -520,6 +536,20 @@ export async function getShipmentChecklist(shipmentId: string) {
       price_eur: null, order_id: null, has_preview: false,
     }))
 
+  // Winner items: one step for all of them, after claimed items and sorted photocards.
+  const winnerRows = items.filter(it => it.source_type === 'winner_item')
+  const winnerOut = winnerRows.length ? [{
+    id: 'winner', source_type: 'winner_item_group', item_ids: winnerRows.map(r => r.id),
+    confirmed: winnerRows.every(r => r.confirmed),
+    skipped: winnerRows.every(r => r.skipped),
+    label: '🏆 Winner items',
+    member_name: null,
+    sub_label: `${winnerRows.length} winner item${winnerRows.length === 1 ? '' : 's'}`,
+    lines: winnerRows.map(r => ({ ...winnerById.get(String(r.source_id)), id: r.id, winner_item_id: String(r.source_id) })),
+    amount_claimed: winnerRows.length,
+    price_eur: null, order_id: null, has_preview: false,
+  }] : []
+
   // previewImages is kept (empty) so existing consumers don't break — images load lazily now.
-  return { items: [...orderOut, ...pcOut], previewImages: {} as Record<string, string> }
+  return { items: [...orderOut, ...pcOut, ...winnerOut], previewImages: {} as Record<string, string> }
 }

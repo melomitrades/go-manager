@@ -8,6 +8,7 @@ import { ensureSemiFixedSchema, refreshSpots } from '@/lib/semiFixed'
 import { ensureGomPaymentsSchema } from '@/lib/gomPayments'
 import { setOrderStatus } from '@/lib/orderStatus'
 import { ensureEraAlbumsSchema } from '@/lib/eraAlbums'
+import { ensureEventsSchema, ensureFancallEventForOrder } from '@/lib/events'
 
 async function notifyJoiners(orderId: string, status: string, shopName: string | null) {
   const statusLabels: Record<string, string> = {
@@ -30,6 +31,7 @@ const ADDY_MAP: Record<string, string> = { at_k_addy: 'KR', at_c_addy: 'CN', at_
 // Run migrations once per cold start only
 let migrationsDone = false
 async function ensureOrderColumns() {
+  await ensureEventsSchema().catch(() => {})
   if (migrationsDone) return
   migrationsDone = true
   await ensureWeightVariantsSchema()
@@ -119,7 +121,8 @@ export async function GET(req: NextRequest) {
     LEFT JOIN groups g ON g.id = o.group_id
     LEFT JOIN eras era ON era.id = o.era_id
     LEFT JOIN fancalls f ON f.order_id = o.id
-    LEFT JOIN profiles w ON w.id = f.raffle_winner_id
+    LEFT JOIN LATERAL (SELECT ev.raffle_winner_id FROM era_events ev WHERE ev.order_id = o.id::text AND ev.type = 'fancall' AND ev.raffle_winner_id IS NOT NULL LIMIT 1) fev ON true
+    LEFT JOIN profiles w ON w.id::text = COALESCE(fev.raffle_winner_id, f.raffle_winner_id::text)
     LEFT JOIN (
       SELECT order_id, json_agg(oi ORDER BY oi.created_at) AS items
       FROM order_items oi
@@ -186,8 +189,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  if (is_fancall && shop_id) {
-    await query('INSERT INTO fancalls (order_id, shop_id) VALUES ($1,$2)', [order.id, shop_id])
+  // Fancall order: a Fancall event when the order is in an era (Events tab), else an archive fancall row.
+  if (is_fancall) {
+    const inEvents = await ensureFancallEventForOrder(String(order.id), shop_id || null, user.id).catch(() => false)
+    if (!inEvents && shop_id) await query('INSERT INTO fancalls (order_id, shop_id) VALUES ($1,$2)', [order.id, shop_id])
   }
 
   // A new order in an era may complete someone's semi-fixed round.
@@ -270,8 +275,9 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (is_fancall === true) {
-    const existing = await queryOne('SELECT id FROM fancalls WHERE order_id=$1', [(order as any).id]).catch(() => null)
-    if (!existing) await query('INSERT INTO fancalls (order_id, shop_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [(order as any).id, shop_id || (order as any).shop_id || null]).catch(() => {})
+    const archived = await queryOne('SELECT id FROM fancalls WHERE order_id=$1', [(order as any).id]).catch(() => null)
+    const inEvents = archived ? false : await ensureFancallEventForOrder(String((order as any).id), shop_id || null, user.id).catch(() => false)
+    if (!archived && !inEvents) await query('INSERT INTO fancalls (order_id, shop_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [(order as any).id, shop_id || (order as any).shop_id || null]).catch(() => {})
   }
 
   if (addy_country && ['KR','CN','JP'].includes(addy_country)) {
@@ -336,6 +342,9 @@ export async function DELETE(req: NextRequest) {
   const { id } = await req.json()
   await ensureOrderColumns()
   await query('DELETE FROM gom_order_payments WHERE order_id=$1', [String(id)]).catch(() => {})
+  // Winner items and events stay in their era, just without an order.
+  await query('UPDATE era_events SET order_id=NULL WHERE order_id=$1', [String(id)]).catch(() => {})
+  await query('UPDATE winner_items SET order_id=NULL, order_section=NULL WHERE order_id=$1', [String(id)]).catch(() => {})
   await query('DELETE FROM orders WHERE id=$1', [id])
   return NextResponse.json({ ok: true })
 }

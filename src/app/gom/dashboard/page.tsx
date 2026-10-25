@@ -6,6 +6,7 @@ import {
   RefreshCw, ChevronDown, ChevronRight, TrendingUp,
 } from 'lucide-react'
 import { formatEur, formatDate } from '@/lib/utils'
+import { ResultsDueWidget } from '@/components/shared/Events'
 
 // ── types ──────────────────────────────────────────────────────────────────────
 
@@ -166,6 +167,9 @@ export default function GomDashboardPage() {
             </div>
           </div>
         </Widget>
+
+        {/* ── Events whose result hasn't been entered (hidden when none) ─────── */}
+        <ResultsDueWidget/>
 
         {/* ── Upcoming deadlines ─────────────────────────────────────────────── */}
         <Widget title="Deadlines This Week" icon={Clock} count={data?.deadlines.length}>

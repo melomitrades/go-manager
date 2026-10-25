@@ -23,7 +23,7 @@ const GOM_NAV = [
   { href: '/gom/pc-sorter', label: 'Sorting', icon: Music },
   { href: '/gom/sending-out', label: 'Sending Out', icon: Send },
   { href: '/gom/leftovers', label: 'Leftovers', icon: PackageOpen },
-  { href: '/gom/fancalls', label: 'Fancalls', icon: Star },
+  { href: '/gom/events', label: 'Events', icon: Star },
   { href: '/gom/settings', label: 'Settings', icon: Settings },
 ]
 

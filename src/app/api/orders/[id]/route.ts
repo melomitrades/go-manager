@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureLostClaimsSchema, getMyLostClaims } from '@/lib/lostClaims'
+import { ensureEventsSchema } from '@/lib/events'
 
 // Schema migrations only need to run once per cold start — previously these 6 ALTERs plus the
 // order_joiner_paid CREATE TABLE ran unconditionally on every single order view, which is by far
@@ -12,6 +13,7 @@ async function ensureOrderDetailSchema() {
   if (migDone) return
   migDone = true
   await ensureLostClaimsSchema()
+  await ensureEventsSchema().catch(() => {})
   await Promise.all([
     // Real copies per member counted once the order is At GOM (Albums Bought panel), keyed by
     // section: '__all__' for a plain order, the version name for multi-version orders, 'VCE' /
@@ -55,13 +57,14 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
           'id', g.id, 'name', g.name,
           'members', (SELECT json_agg(m ORDER BY m.sort_order NULLS LAST, m.name) FROM members m WHERE m.group_id = g.id)
         ) as "group",
-        f.raffle_winner_id,
+        COALESCE(fev.raffle_winner_id, f.raffle_winner_id::text) AS raffle_winner_id,
         w.display_name as raffle_winner_name
       FROM orders o
       LEFT JOIN shops s ON s.id = o.shop_id
       LEFT JOIN groups g ON g.id = o.group_id
       LEFT JOIN fancalls f ON f.order_id = o.id
-      LEFT JOIN profiles w ON w.id = f.raffle_winner_id
+      LEFT JOIN LATERAL (SELECT ev.raffle_winner_id FROM era_events ev WHERE ev.order_id = o.id::text AND ev.type = 'fancall' AND ev.raffle_winner_id IS NOT NULL LIMIT 1) fev ON true
+      LEFT JOIN profiles w ON w.id::text = COALESCE(fev.raffle_winner_id, f.raffle_winner_id::text)
       WHERE o.id = $1
     `, [params.id]),
     // GOM: fetch ALL items. Joiner (or admin in joiner view): fetch ONLY their items.

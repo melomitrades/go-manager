@@ -85,6 +85,8 @@ export async function DELETE(req: NextRequest) {
   await ensureEraAlbumsSchema()
   await query(`DELETE FROM era_extra_albums WHERE era_id=$1`, [id])
   await query(`DELETE FROM era_versions WHERE era_id=$1`, [id])
+  await query(`DELETE FROM winner_items WHERE era_id=$1`, [id]).catch(() => {})
+  await query(`DELETE FROM era_events WHERE era_id=$1`, [id]).catch(() => {})
   await query(`UPDATE orders SET era_version_map=NULL WHERE era_id IS NULL AND era_version_map IS NOT NULL`)
   await query(`DELETE FROM eras WHERE id=$1`, [id])
   return NextResponse.json({ ok: true })

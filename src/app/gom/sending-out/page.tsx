@@ -175,8 +175,8 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
           )}
           <CardContent className="space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge className={current.source_type === 'pc_assignment_group' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-secondary text-muted-foreground border border-border'}>
-                {current.source_type === 'pc_assignment_group' ? '🎴 Sorted items' : 'Claimed items'}
+              <Badge className={current.source_type === 'pc_assignment_group' ? 'bg-primary/10 text-primary border border-primary/20' : current.source_type === 'winner_item_group' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-secondary text-muted-foreground border border-border'}>
+                {current.source_type === 'pc_assignment_group' ? '🎴 Sorted items' : current.source_type === 'winner_item_group' ? '🏆 Winner items' : 'Claimed items'}
               </Badge>
               {current.is_guaranteed && <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200">✓ Guaranteed</Badge>}
               {current.is_repeat && <Badge className="bg-secondary text-muted-foreground border border-border">2nd copy</Badge>}
@@ -185,7 +185,24 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
               {current.skipped && <Badge className="bg-amber-50 text-amber-700 border border-amber-200">Skipped</Badge>}
             </div>
             <p className="font-display font-semibold text-lg">{current.label}</p>
-            {current.source_type === 'pc_assignment_group' ? (
+            {current.source_type === 'winner_item_group' ? (
+              <>
+                {current.sub_label && <p className="text-xs text-muted-foreground">{current.sub_label}</p>}
+                <div className="space-y-2 pt-1">
+                  {(current.lines || []).map((line: any) => (
+                    <div key={line.id} className="rounded-xl border border-border bg-secondary/30 px-3 py-2.5 flex items-center gap-3">
+                      {line.has_photo
+                        ? <img src={`/api/winner-items/${line.winner_item_id}/photo`} alt="" className="w-14 h-14 rounded-lg object-cover border border-border flex-shrink-0" />
+                        : <div className="w-14 h-14 rounded-lg bg-background border border-border flex items-center justify-center flex-shrink-0">🏆</div>}
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">{line.label}<span className="font-normal text-muted-foreground"> · {line.member_name}</span>{line.version_name ? <span className="font-normal text-muted-foreground"> · {line.version_name}</span> : null}</p>
+                        <p className="text-xs text-muted-foreground">{line.source_text}{line.event_date ? ` · ${formatDate(line.event_date)}` : ''}{line.order_label ? ` · ${line.order_label}` : ''} · {line.status === 'sold' ? 'sold' : 'gift'}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : current.source_type === 'pc_assignment_group' ? (
               <>
                 {current.sub_label && <p className="text-xs text-muted-foreground">{current.sub_label}</p>}
                 <div className="flex flex-wrap gap-1.5 pt-1">

@@ -255,7 +255,20 @@ export default function JoinerShippingPage() {
                               </Button>
                             )}
                           </div>
-                          {step.source_type === 'pc_assignment_group' ? (
+                          {step.source_type === 'winner_item_group' ? (
+                            <div className="space-y-1">
+                              {(step.lines || []).map((line: any) => (
+                                <div key={line.id} className="flex items-center justify-between gap-3 text-xs">
+                                  <span>
+                                    <span className="font-medium">{line.label}</span>
+                                    <span className="text-muted-foreground"> · {line.member_name}</span>
+                                    {line.version_name ? <span className="text-muted-foreground"> · {line.version_name}</span> : null}
+                                  </span>
+                                  <span className="text-muted-foreground">{line.source_text}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : step.source_type === 'pc_assignment_group' ? (
                             <div className="flex flex-wrap gap-1.5">
                               {(step.members || []).map((m: any, i: number) => (
                                 <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-primary/10 text-primary border border-primary/20 text-xs font-medium">

@@ -5,6 +5,7 @@ import { Card, Table, Th, Td, Tr, PageHeader, EmptyState, StatusBadge, Badge, Bu
 import { formatDate, formatEur } from '@/lib/utils'
 import { LostBadge } from '@/components/shared/MarkLostModal'
 import { OrderDetail } from '@/components/shared/OrderDetail'
+import { JoinerWinnerList } from '@/components/shared/WinnerItems'
 import type { Order } from '@/types'
 
 export default function JoinerOrdersPage() {
@@ -31,6 +32,13 @@ export default function JoinerOrdersPage() {
     }).catch(() => {})
   }, [])
   const lostOrderIds = new Set(lost.claims.map((c: any) => c.order_id))
+
+  // Winner items (polaroids, signed PCs…) the GOM sold or gave to this joiner.
+  const [winners, setWinners] = useState<any[]>([])
+  useEffect(() => {
+    fetch('/api/winner-items?mine=1').then(r => r.json()).then(d => setWinners(Array.isArray(d) ? d : [])).catch(() => {})
+  }, [])
+  const winnerOrderIds = new Set(winners.map((w: any) => w.order_id).filter(Boolean))
 
   // Semi-fixed spots in active eras (progress + renewal)
   const [spots, setSpots] = useState<any[]>([])
@@ -93,6 +101,15 @@ export default function JoinerOrdersPage() {
             </div>
           </div>
         )}
+        {winners.length > 0 && (
+          <div className="mb-5 border border-amber-200 dark:border-amber-900 rounded-2xl overflow-hidden bg-card">
+            <div className="px-4 py-3 border-b border-amber-100 dark:border-amber-900 bg-amber-50/60 dark:bg-amber-900/10">
+              <p className="text-sm font-bold">🏆 My winner items</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Event items (polaroids, signed PCs…) you bought or were given. They&apos;re packed with your shipment for that order&apos;s box.</p>
+            </div>
+            <JoinerWinnerList items={winners} onOpenOrder={id => setSelectedOrderId(id)} />
+          </div>
+        )}
         {(lost.claims.length > 0 || lost.pcs.length > 0) && (
           <div className="mb-5 border border-red-200 dark:border-red-900 rounded-2xl overflow-hidden bg-card">
             <div className="px-4 py-3 border-b border-red-100 dark:border-red-900 bg-red-50/60 dark:bg-red-900/10">
@@ -147,6 +164,9 @@ export default function JoinerOrdersPage() {
                           {o.shop?.name || '—'}
                           {lostOrderIds.has(o.id) && (
                             <Badge className="ml-2 bg-red-50 text-red-700 border border-red-200 align-middle">Lost claims</Badge>
+                          )}
+                          {winnerOrderIds.has(o.id) && (
+                            <Badge className="ml-2 bg-amber-50 text-amber-700 border border-amber-200 align-middle">🏆 Winner item</Badge>
                           )}
                           {changedOrderIds.has(o.id) && (
                             <Badge className="ml-2 bg-amber-50 text-amber-700 border border-amber-200 align-middle"><AlertTriangle size={10} className="inline mr-1" />Claim changed</Badge>
