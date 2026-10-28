@@ -1,3 +1,14 @@
+# Packing: joiner's note as the last step + full name in the address preview — 2026-10-28
+
+**Edited:** `src/app/gom/sending-out/page.tsx`
+
+- **Pack wizard:** when the joiner filled in the Notes field on their shipping form, it's shown as an extra **final step**
+  after every item (highlighted card, line breaks kept). It's not a checklist row: nothing to confirm or skip, and it
+  doesn't count in progress. The subtitle shows "+ note" so the GOM knows one is coming. Empty notes add no step.
+- **Shipment list address preview:** shows the **full name** (bold) above the address, and keeps the address's line breaks.
+- **Shipping Address** in the GOM's manual-entry and edit forms is now a **multi-line text box** (3 rows, resizable), like
+  the joiner form already was.
+
 # Packing order by group/shop + pack marks (📦 / ✉️ / ✅) on orders — 2026-10-25
 
 No manual SQL needed: nothing new is stored, marks are read from the existing packing checklist (`shipment_items`).

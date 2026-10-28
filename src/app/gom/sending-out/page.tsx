@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Plus, Send, Pencil, Trash2, ToggleLeft, ToggleRight,
-  Package, CreditCard, Truck, CheckCircle2, Check, SkipForward, ArrowLeft, Image as ImageIcon, Settings2, RotateCcw,
+  Package, CreditCard, Truck, CheckCircle2, Check, SkipForward, ArrowLeft, Image as ImageIcon, Settings2, RotateCcw, StickyNote,
 } from 'lucide-react'
 import { Button, Card, CardHeader, CardContent, Badge, Modal, Input, Select, FormField, PageHeader, EmptyState, Checkbox } from '@/components/ui'
 import { formatEur, formatDate } from '@/lib/utils'
@@ -100,7 +100,9 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
       const skippedCount = items.filter((i: any) => i.skipped).length
       return { ...prev, items, progress: { total: items.length, confirmed: confirmedCount, skipped: skippedCount, remaining: items.length - confirmedCount - skippedCount } }
     })
-    setIndex(i => Math.min(i + 1, (data?.items?.length || 1) - 1))
+    // The joiner's shipping note (when filled in) is one extra, final step after every item.
+    const noteSteps = String(data?.shipment?.notes ?? shipment.notes ?? '').trim() ? 1 : 0
+    setIndex(i => Math.min(i + 1, (data?.items?.length || 1) - 1 + noteSteps))
     fetch(`/api/shipments/${shipment.id}/pack`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, item_ids: step.item_ids }),
@@ -155,14 +157,25 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
 
   const current = items[Math.min(index, items.length - 1)]
   const allDone = progress.remaining === 0
+  // Joiner's shipping note ("please add bubble wrap"…): only when filled in, shown as the very
+  // last step, after every claimed order, sorted photocard and winner item. Not a checklist row —
+  // nothing to confirm or skip, it doesn't count in the progress.
+  const noteText = String(data?.shipment?.notes ?? shipment.notes ?? '').trim()
+  const onNote = !!noteText && index >= items.length
 
   return (
-    <Modal open onClose={onClose} title={`Packing — ${joinerName}`} subtitle={`Item ${Math.min(index + 1, items.length)} of ${items.length}`} size="lg">
+    <Modal open onClose={onClose} title={`Packing — ${joinerName}`} subtitle={onNote ? 'Note from the joiner' : `Item ${Math.min(index + 1, items.length)} of ${items.length}${noteText ? ' · + note' : ''}`} size="lg">
       <div className="space-y-4">
         <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
           <div className="h-full bg-primary transition-all" style={{ width: `${((progress.confirmed + progress.skipped) / progress.total) * 100}%` }} />
         </div>
 
+        {onNote ? (
+          <div className="rounded-2xl border-2 border-amber-300 bg-amber-50 dark:bg-amber-900/15 dark:border-amber-700 px-5 py-4 space-y-2">
+            <p className="text-xs font-bold uppercase tracking-widest text-amber-700 dark:text-amber-300 flex items-center gap-1.5"><StickyNote size={13} /> Note from {joinerName}</p>
+            <p className="text-base whitespace-pre-wrap break-words text-amber-950 dark:text-amber-100">{noteText}</p>
+          </div>
+        ) : (<>
         {current.source_type === 'order_item_group' && (
           // Group banner: steps are sorted by group A→Z, then shop A→Z (see getShipmentChecklist),
           // so the GOM can pull one group's albums at a time.
@@ -308,6 +321,7 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
             )}
           </CardContent>
         </Card>
+        </>)}
 
         {error && <p className="text-xs text-destructive">{error}</p>}
 
@@ -315,6 +329,9 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
           <Button variant="ghost" size="sm" onClick={() => setIndex(i => Math.max(0, i - 1))} disabled={index === 0}>
             <ArrowLeft size={13} /> Back
           </Button>
+          {onNote ? (
+            <p className="text-xs text-muted-foreground">{allDone ? 'All items done — mark the shipment as packed below.' : `${progress.remaining} item${progress.remaining === 1 ? '' : 's'} still to confirm or skip.`}</p>
+          ) : (
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => markStep(current, 'skip')}>
               <SkipForward size={13} /> Skip
@@ -323,6 +340,7 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
               <Check size={13} /> Confirm in box
             </Button>
           </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between pt-2 border-t border-border">
@@ -592,7 +610,15 @@ export default function GomSendingOutPage() {
                               {sh.tracking_code && <span className="ml-2">📮 {sh.tracking_code}</span>}
                             </p>
                             <div className="mt-1.5 space-y-0.5">
-                              {sh.address && <p className="text-xs text-muted-foreground">📍 {sh.address}</p>}
+                              {(sh.full_name || sh.address) && (
+                                <div className="flex items-start gap-1 text-xs text-muted-foreground">
+                                  <span>📍</span>
+                                  <div className="min-w-0">
+                                    {sh.full_name && <p className="font-semibold text-foreground">{sh.full_name}</p>}
+                                    {sh.address && <p className="whitespace-pre-line break-words">{sh.address}</p>}
+                                  </div>
+                                </div>
+                              )}
                               {sh.email && <p className="text-xs text-muted-foreground">✉️ {sh.email}</p>}
                               {sh.phone && <p className="text-xs text-muted-foreground">📞 {sh.phone}</p>}
                             </div>
@@ -636,7 +662,7 @@ export default function GomSendingOutPage() {
               <Select options={SHIPPING_TYPES} placeholder="Select…" value={manualForm.shipping_type} onChange={e => setManualForm((f: any) => ({ ...f, shipping_type: e.target.value }))} />
             </FormField>
           </div>
-          <FormField label="Shipping Address"><Input value={manualForm.address} onChange={e => setManualForm((f: any) => ({ ...f, address: e.target.value }))} /></FormField>
+          <FormField label="Shipping Address"><textarea className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-primary/30" rows={3} placeholder="Street, postcode, city, country — one per line" value={manualForm.address} onChange={e => setManualForm((f: any) => ({ ...f, address: e.target.value }))} /></FormField>
           <div className="grid grid-cols-2 gap-3">
             <FormField label="Email"><Input type="email" value={manualForm.email} onChange={e => setManualForm((f: any) => ({ ...f, email: e.target.value }))} /></FormField>
             <FormField label="Phone"><Input type="tel" value={manualForm.phone} onChange={e => setManualForm((f: any) => ({ ...f, phone: e.target.value }))} /></FormField>
@@ -660,7 +686,7 @@ export default function GomSendingOutPage() {
                 <Select options={SHIPPING_TYPES} placeholder="Select…" value={editForm.shipping_type} onChange={e => setEditForm((f: any) => ({ ...f, shipping_type: e.target.value }))} />
               </FormField>
             </div>
-            <FormField label="Shipping Address"><Input value={editForm.address} onChange={e => setEditForm((f: any) => ({ ...f, address: e.target.value }))} /></FormField>
+            <FormField label="Shipping Address"><textarea className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-primary/30" rows={3} placeholder="Street, postcode, city, country — one per line" value={editForm.address} onChange={e => setEditForm((f: any) => ({ ...f, address: e.target.value }))} /></FormField>
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Email"><Input type="email" value={editForm.email} onChange={e => setEditForm((f: any) => ({ ...f, email: e.target.value }))} /></FormField>
               <FormField label="Phone"><Input type="tel" value={editForm.phone} onChange={e => setEditForm((f: any) => ({ ...f, phone: e.target.value }))} /></FormField>
