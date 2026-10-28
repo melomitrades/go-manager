@@ -99,6 +99,10 @@ export async function ensureShipmentsSchema() {
   // the original, and the original is always recoverable. `original_member_id` snapshots what the
   // joiner claimed at override time so the trace survives even if the order is edited later.
   await Promise.all([
+    // GOM who packs a form's parcels (Packing stats). Set per FORM only: every shipment on the form
+    // is packed by that GOM — read through the form, never copied onto shipments, so assigning or
+    // changing it applies to past shipments too and can't drift.
+    query(`ALTER TABLE shipping_forms ADD COLUMN IF NOT EXISTS gom_id UUID REFERENCES profiles(id) ON DELETE SET NULL`),
     query(`ALTER TABLE shipment_items ADD COLUMN IF NOT EXISTS override_member_id UUID REFERENCES members(id) ON DELETE SET NULL`),
     query(`ALTER TABLE shipment_items ADD COLUMN IF NOT EXISTS original_member_id UUID REFERENCES members(id) ON DELETE SET NULL`),
     query(`ALTER TABLE shipment_items ADD COLUMN IF NOT EXISTS override_reason TEXT`),

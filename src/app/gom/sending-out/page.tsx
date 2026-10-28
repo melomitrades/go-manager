@@ -2,10 +2,11 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Plus, Send, Pencil, Trash2, ToggleLeft, ToggleRight,
-  Package, CreditCard, Truck, CheckCircle2, Check, SkipForward, ArrowLeft, Image as ImageIcon, Settings2, RotateCcw, StickyNote,
+  Package, CreditCard, Truck, CheckCircle2, Check, SkipForward, ArrowLeft, Image as ImageIcon, Settings2, RotateCcw, StickyNote, BarChart3, UserRound,
 } from 'lucide-react'
 import { Button, Card, CardHeader, CardContent, Badge, Modal, Input, Select, FormField, PageHeader, EmptyState, Checkbox } from '@/components/ui'
 import { formatEur, formatDate } from '@/lib/utils'
+import Link from 'next/link'
 
 const STATUS_OPTIONS = [
   { value: 'pending', label: 'Pending' },
@@ -34,7 +35,7 @@ const SHIPPING_TYPES = [
 const shippingLabel = (v: string) => SHIPPING_TYPES.find(t => t.value === v)?.label || v
 
 const emptyManualForm = { form_id: '', joiner_id: '', full_name: '', email: '', phone: '', address: '', shipping_type: '', notes: '' }
-const emptyFormDraft = { id: '', title: '', box_ids: [] as string[], deadline: '', form_open: false }
+const emptyFormDraft = { id: '', title: '', box_ids: [] as string[], deadline: '', form_open: false, gom_id: '' }
 
 // ── Pack wizard ─────────────────────────────────────────────
 function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () => void; onDone: () => void }) {
@@ -365,13 +366,13 @@ function PackWizard({ shipment, onClose, onDone }: { shipment: any; onClose: () 
 }
 
 // ── Forms manager ────────────────────────────────────────────
-function FormsManager({ forms, boxes, onClose, onChanged }: { forms: any[]; boxes: any[]; onClose: () => void; onChanged: () => void }) {
+function FormsManager({ forms, boxes, goms, onClose, onChanged }: { forms: any[]; boxes: any[]; goms: any[]; onClose: () => void; onChanged: () => void }) {
   const [draft, setDraft] = useState<any>(null)
   const [saving, setSaving] = useState(false)
 
   async function save() {
     setSaving(true)
-    const payload = { title: draft.title, box_ids: draft.box_ids, deadline: draft.deadline || null, form_open: draft.form_open }
+    const payload = { title: draft.title, box_ids: draft.box_ids, deadline: draft.deadline || null, form_open: draft.form_open, gom_id: draft.gom_id || null }
     if (draft.id) {
       await fetch('/api/shipping-forms', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, id: draft.id }) })
     } else {
@@ -413,6 +414,12 @@ function FormsManager({ forms, boxes, onClose, onChanged }: { forms: any[]; boxe
                   ))}
                 </div>
               </FormField>
+              <FormField label="Packed by (GOM)">
+                <Select
+                  options={[{ value: '', label: 'Not assigned yet' }, ...goms.map((g: any) => ({ value: g.id, label: g.display_name || g.username }))]}
+                  value={draft.gom_id} onChange={e => setDraft((d: any) => ({ ...d, gom_id: e.target.value }))} />
+                <p className="text-xs text-muted-foreground mt-1">Every shipment on this form counts for this GOM in Packing stats, including ones already packed or shipped.</p>
+              </FormField>
               <FormField label="Deadline (optional)">
                 <input type="datetime-local" value={draft.deadline} onChange={e => setDraft((d: any) => ({ ...d, deadline: e.target.value }))}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25" />
@@ -442,12 +449,15 @@ function FormsManager({ forms, boxes, onClose, onChanged }: { forms: any[]; boxe
                       {(f.boxes || []).map((b: any) => b.label || 'Untitled').join(', ') || 'No boxes'}
                       {f.deadline && <span> · Deadline {formatDate(f.deadline)}</span>}
                     </p>
+                    <p className={`text-xs mt-0.5 flex items-center gap-1 ${f.gom_id ? 'text-foreground' : 'text-amber-600 dark:text-amber-400'}`}>
+                      <UserRound size={11} /> {f.gom_id ? <>Packed by <span className="font-semibold">{f.gom_name || '?'}</span></> : 'No packing GOM assigned'}
+                    </p>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     <button onClick={() => toggleOpen(f)} className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground" title={f.form_open ? 'Close form' : 'Open form'}>
                       {f.form_open ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
                     </button>
-                    <Button variant="ghost" size="icon" onClick={() => setDraft({ id: f.id, title: f.title, box_ids: (f.boxes || []).map((b: any) => b.id), deadline: f.deadline?.slice(0, 16) || '', form_open: f.form_open })}><Pencil size={13} /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => setDraft({ id: f.id, title: f.title, box_ids: (f.boxes || []).map((b: any) => b.id), deadline: f.deadline?.slice(0, 16) || '', form_open: f.form_open, gom_id: f.gom_id || '' })}><Pencil size={13} /></Button>
                     <Button variant="ghost" size="icon" onClick={() => del(f)}><Trash2 size={13} className="text-destructive/50 hover:text-destructive" /></Button>
                   </div>
                 </CardContent>
@@ -481,6 +491,7 @@ export default function GomSendingOutPage() {
   const [saving, setSaving] = useState(false)
 
   const [filterForm, setFilterForm] = useState('')
+  const [filterGom, setFilterGom] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [filterType, setFilterType] = useState('')
   const [sortBy, setSortBy] = useState('newest')
@@ -547,6 +558,7 @@ export default function GomSendingOutPage() {
 
   let filtered = shipments
   if (filterForm) filtered = filtered.filter(s => s.form_id === filterForm)
+  if (filterGom) filtered = filtered.filter(s => filterGom === '__none__' ? !s.gom_id : s.gom_id === filterGom)
   if (filterStatus) filtered = filtered.filter(s => s.status === filterStatus)
   if (filterType) filtered = filtered.filter(s => s.shipping_type === filterType)
   filtered = [...filtered].sort((a, b) => {
@@ -555,6 +567,7 @@ export default function GomSendingOutPage() {
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   })
 
+  const goms = users.filter((u: any) => ['gom', 'admin'].includes(u.role)).sort((a: any, b: any) => String(a.display_name || a.username).localeCompare(String(b.display_name || b.username)))
   const manualFormBoxIds = (forms.find(f => f.id === manualForm.form_id)?.boxes || []).map((b: any) => b.id)
 
   return (
@@ -564,6 +577,7 @@ export default function GomSendingOutPage() {
         subtitle="Manage shipping forms, packing, payment and shipping"
         action={
           <div className="flex items-center gap-2">
+            <Link href="/gom/sending-out/stats"><Button variant="outline"><BarChart3 size={14} /> Packing stats</Button></Link>
             <Button variant="outline" onClick={() => setFormsModalOpen(true)}><Settings2 size={14} /> Forms ({forms.filter(f => f.form_open).length} open)</Button>
             <Button onClick={() => setManualModalOpen(true)}><Plus size={14} /> Manual Entry</Button>
           </div>
@@ -572,6 +586,7 @@ export default function GomSendingOutPage() {
 
       <div className="flex flex-wrap items-center gap-2 px-6 py-3 border-b border-border">
         <Select options={[{ value: '', label: 'All forms' }, ...forms.map(f => ({ value: f.id, label: f.title }))]} value={filterForm} onChange={e => setFilterForm(e.target.value)} className="w-auto max-w-[220px]" />
+        <Select options={[{ value: '', label: 'All GOMs' }, ...goms.map((g: any) => ({ value: g.id, label: g.display_name || g.username })), { value: '__none__', label: 'No GOM assigned' }]} value={filterGom} onChange={e => setFilterGom(e.target.value)} className="w-auto max-w-[200px]" />
         <Select options={[{ value: '', label: 'All statuses' }, ...STATUS_OPTIONS]} value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="w-auto max-w-[200px]" />
         <Select options={[{ value: '', label: 'All shipping types' }, ...SHIPPING_TYPES]} value={filterType} onChange={e => setFilterType(e.target.value)} className="w-auto max-w-[220px]" />
         <Select options={[{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }, { value: 'name', label: 'Joiner name A–Z' }]} value={sortBy} onChange={e => setSortBy(e.target.value)} className="w-auto max-w-[180px]" />
@@ -596,6 +611,7 @@ export default function GomSendingOutPage() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <p className="font-semibold text-sm">{joinerName}</p>
                               <Badge className="bg-secondary text-muted-foreground border border-border text-xs">{sh.form_title || 'No form'}</Badge>
+                              {sh.gom_name && <span className="text-xs text-muted-foreground flex items-center gap-0.5" title="Packing GOM (set on the form)"><UserRound size={11} /> {sh.gom_name}</span>}
                               <Badge className={STATUS_COLORS[sh.status] || STATUS_COLORS.pending}>{STATUS_OPTIONS.find(s => s.value === sh.status)?.label || sh.status}</Badge>
                               {sh.lost_claims_note && (
                                 <Badge className="bg-red-50 text-red-700 border border-red-200 text-xs" title={sh.lost_claims_note}>⚠ Lost claims</Badge>
@@ -644,7 +660,7 @@ export default function GomSendingOutPage() {
         }
       </div>
 
-      {formsModalOpen && <FormsManager forms={forms} boxes={boxes} onClose={() => setFormsModalOpen(false)} onChanged={fetchData} />}
+      {formsModalOpen && <FormsManager forms={forms} boxes={boxes} goms={goms} onClose={() => setFormsModalOpen(false)} onChanged={fetchData} />}
       {packing && <PackWizard shipment={packing} onClose={() => setPacking(null)} onDone={() => { setPacking(null); fetchData() }} />}
 
       {/* Manual entry */}

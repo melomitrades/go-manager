@@ -18,10 +18,12 @@ export async function GET(req: NextRequest) {
   const formId = searchParams.get('form_id')
 
   let sql = `
-    SELECT sh.*, row_to_json(p) as joiner, f.title as form_title
+    SELECT sh.*, row_to_json(p) as joiner, f.title as form_title,
+      f.gom_id, COALESCE(gp.display_name, gp.username) as gom_name
     FROM shipments sh
     LEFT JOIN profiles p ON p.id = sh.joiner_id
     LEFT JOIN shipping_forms f ON f.id = sh.form_id
+    LEFT JOIN profiles gp ON gp.id = f.gom_id
     WHERE 1=1
   `
   const params: any[] = []

@@ -1,3 +1,34 @@
+# Packing stats: pink chart colours — 2026-10-28
+
+**Edited:** `src/app/gom/sending-out/stats/page.tsx`
+
+- New pink-forward series palette (rose, lavender, peach, mint, berry, periwinkle, honey, orchid) with its own dark-mode
+  steps. Both sets pass the palette validator (colour-blind separation, normal-vision floor, lightness, chroma).
+  "Not assigned" is a soft mauve-grey. The chart layout and styling are otherwise unchanged (square markers, plain card).
+
+# Packing GOM per shipping form + Packing stats page — 2026-10-28
+
+No manual SQL needed: `shipping_forms.gom_id` self-migrates.
+
+**New:** `src/lib/packingStats.ts`, `src/app/api/packing-stats/route.ts`, `src/app/gom/sending-out/stats/page.tsx`
+**Edited:** `src/lib/shipments.ts`, `src/app/api/shipping-forms/route.ts`, `src/app/api/shipments/route.ts`, `src/app/gom/sending-out/page.tsx`
+
+## Packing GOM
+- Sending Out › Forms: each form has a **"Packed by (GOM)"** picker (GOM / admin accounts). The form card shows who packs
+  it, or "No packing GOM assigned" in amber.
+- Set on the **form only**: every shipment on the form belongs to that GOM, read through the form (not copied onto
+  shipments), so assigning a GOM to an old form counts all its past shipments, and changing it moves them all.
+- Shipment rows show the packing GOM. New **"All GOMs"** filter (plus "No GOM assigned") in the shipment list.
+
+## Packing stats (Sending Out › Packing stats, GOM + admin)
+- **Volume:** parcels packed (of submitted), shipped, received by joiners, joiners served (counted once overall), claims /
+  sorted PCs / winner items confirmed in the Pack wizard.
+- **Backlog right now:** to pack, packed with no payment request, waiting for payment, paid and ready to ship.
+- **Parcels packed per month:** last 12 months, stacked by GOM, with a hover tooltip and a "Show as table" view.
+- **Per GOM table:** all of the above side by side. Click a row (or use the filter) to focus on one GOM.
+- "Packed" = status past Pending. A packing reset (back to Pending) stops counting. Month = packed date, falling back to
+  shipped/received date for shipments whose status was set by hand.
+
 # Packing: joiner's note as the last step + full name in the address preview — 2026-10-28
 
 **Edited:** `src/app/gom/sending-out/page.tsx`

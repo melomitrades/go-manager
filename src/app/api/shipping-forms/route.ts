@@ -4,6 +4,13 @@ import { authOptions } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { ensureShipmentsSchema, joinerEligibleForBoxes } from '@/lib/shipments'
 
+// gom_id must be a GOM/admin profile (or empty to unassign). Returns the id, null, or an error.
+async function validGomId(v: any): Promise<{ id: string | null } | { error: string }> {
+  if (v === null || v === undefined || v === '') return { id: null }
+  const p = await queryOne<any>(`SELECT id FROM profiles WHERE id=$1 AND role IN ('gom','admin')`, [String(v)])
+  return p ? { id: String(p.id) } : { error: 'That person is not a GOM' }
+}
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -14,8 +21,9 @@ export async function GET(req: NextRequest) {
   const asJoiner = user.role === 'joiner' || (['gom', 'admin'].includes(user.role) && viewAsJoiner)
 
   const forms = await query<any>(`
-    SELECT f.*, COALESCE(bx.boxes, '[]'::json) as boxes
+    SELECT f.*, COALESCE(bx.boxes, '[]'::json) as boxes, COALESCE(gp.display_name, gp.username) as gom_name
     FROM shipping_forms f
+    LEFT JOIN profiles gp ON gp.id = f.gom_id
     LEFT JOIN (
       SELECT sfb.form_id, json_agg(json_build_object('id', b.id, 'label', b.label)) as boxes
       FROM shipping_form_boxes sfb JOIN boxes b ON b.id = sfb.box_id
@@ -55,14 +63,16 @@ export async function POST(req: NextRequest) {
   if (!['gom', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   await ensureShipmentsSchema()
 
-  const { title, box_ids, deadline, form_open } = await req.json()
+  const { title, box_ids, deadline, form_open, gom_id } = await req.json()
   if (!title || !Array.isArray(box_ids) || box_ids.length === 0) {
     return NextResponse.json({ error: 'title and at least one box are required' }, { status: 400 })
   }
+  const gom = await validGomId(gom_id)
+  if ('error' in gom) return NextResponse.json({ error: gom.error }, { status: 400 })
 
   const form = await queryOne<any>(
-    `INSERT INTO shipping_forms (title, deadline, form_open, created_by) VALUES ($1,$2,$3,$4) RETURNING *`,
-    [title, deadline || null, !!form_open, user.id]
+    `INSERT INTO shipping_forms (title, deadline, form_open, created_by, gom_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [title, deadline || null, !!form_open, user.id, gom.id]
   )
   for (const boxId of box_ids) {
     await query('INSERT INTO shipping_form_boxes (form_id, box_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [form!.id, boxId])
@@ -82,15 +92,24 @@ export async function PATCH(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
   // Tri-state: the key absent means "don't touch"; present (even as '' to clear) means "set it".
   const deadlineProvided = Object.prototype.hasOwnProperty.call(body, 'deadline')
+  // Same tri-state for the packing GOM ('' / null = unassign).
+  const gomProvided = Object.prototype.hasOwnProperty.call(body, 'gom_id')
+  let gomId: string | null = null
+  if (gomProvided) {
+    const gom = await validGomId(body.gom_id)
+    if ('error' in gom) return NextResponse.json({ error: gom.error }, { status: 400 })
+    gomId = gom.id
+  }
 
   const form = await queryOne<any>(
     `UPDATE shipping_forms SET
        title = COALESCE($1, title),
        deadline = CASE WHEN $2 THEN $3::timestamptz ELSE deadline END,
        form_open = COALESCE($4, form_open),
+       gom_id = CASE WHEN $6 THEN $7::uuid ELSE gom_id END,
        updated_at = now()
      WHERE id=$5 RETURNING *`,
-    [title || null, deadlineProvided, deadlineProvided ? (body.deadline || null) : null, form_open ?? null, id]
+    [title || null, deadlineProvided, deadlineProvided ? (body.deadline || null) : null, form_open ?? null, id, gomProvided, gomId]
   )
 
   if (Array.isArray(box_ids)) {
